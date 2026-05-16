@@ -244,3 +244,70 @@ def test_doctor_report_verdict_all_skip_is_all_green():
     rep.append(CheckResult(id="x", status="skip", detail="n/a"))
     rep.finalize()
     assert rep.verdict == "all-green"
+
+
+# ---------------------------------------------------------------------------
+# --print-fixes mode
+# ---------------------------------------------------------------------------
+
+
+from mesh.scripts.mesh_doctor import render_fixes  # noqa: E402 — grouped
+
+
+def test_render_fixes_empty_when_all_passing():
+    rep = DoctorReport()
+    rep.append(CheckResult(id="x", status="pass", detail="ok"))
+    rep.append(CheckResult(id="y", status="skip", detail="n/a"))
+    rep.finalize()
+    assert render_fixes(rep) == ""
+
+
+def test_render_fixes_emits_shell_script_with_actionable_fixes():
+    rep = DoctorReport()
+    rep.append(CheckResult(id="x", status="pass", detail="ok"))
+    rep.append(
+        CheckResult(
+            id="y", status="warn", detail="env unset",
+            fix="export FOO=bar",
+        ),
+    )
+    rep.append(
+        CheckResult(
+            id="z", status="fail", detail="thing down",
+            fix="systemctl --user start thing.service",
+        ),
+    )
+    rep.finalize()
+    out = render_fixes(rep)
+    assert out.startswith("#!/usr/bin/env bash")
+    assert "set -e" in out
+    assert "# [warn] y: env unset" in out
+    assert "export FOO=bar" in out
+    assert "# [fail] z: thing down" in out
+    assert "systemctl --user start thing.service" in out
+
+
+def test_render_fixes_handles_multi_step_fix_hints():
+    """Fix hints with '  ' (two-space) separators split into ordered lines."""
+    rep = DoctorReport()
+    rep.append(
+        CheckResult(
+            id="a", status="fail", detail="multi",
+            fix="step one  step two  step three",
+        ),
+    )
+    rep.finalize()
+    out = render_fixes(rep)
+    lines = out.splitlines()
+    # Each step appears as its own line in order
+    one_idx = next(i for i, ln in enumerate(lines) if "step one" in ln)
+    two_idx = next(i for i, ln in enumerate(lines) if "step two" in ln)
+    three_idx = next(i for i, ln in enumerate(lines) if "step three" in ln)
+    assert one_idx < two_idx < three_idx
+
+
+def test_render_fixes_skips_checks_without_fix_field():
+    rep = DoctorReport()
+    rep.append(CheckResult(id="x", status="warn", detail="no fix here", fix=""))
+    rep.finalize()
+    assert render_fixes(rep) == ""
