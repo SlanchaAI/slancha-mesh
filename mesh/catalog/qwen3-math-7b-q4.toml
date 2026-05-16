@@ -1,0 +1,24 @@
+# Tier-1 specialist: math reasoning (hard difficulty).
+# Card schema: SpecialistCard in mesh/models.py.
+model_id = "Qwen/Qwen3-Math-7B-Instruct"
+specialist_id = "qwen3-math-7b-q4"
+domain = "math"
+difficulty_tiers = ["medium", "hard"]
+languages = ["en"]
+required_backend = "vllm"
+requires_fp4 = false
+storage_gb = 4.2
+runtime_gb = 6.5
+min_vram_gb = 7.0
+context_window = 32768
+n_layers = 28
+hidden_size = 3584
+supports_lora_finetune = true
+upstream_model_card = "mlx-community/Qwen3-Math-7B-Instruct-4bit"
+coverage_tier = 1
+
+[estimated_tps_at]
+gb10 = 65.0
+m4_pro = 55.0
+m3_ultra = 90.0
+l40 = 110.0

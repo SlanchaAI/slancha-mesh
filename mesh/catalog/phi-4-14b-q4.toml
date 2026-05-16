@@ -1,0 +1,26 @@
+# Tier-1 specialist: reasoning (with math secondary).
+# Phi-4-14B is positioned as a small-but-strong reasoner; we list math
+# in its domains but the allocator should prefer qwen3-math-7b for pure
+# math when both are loaded (model_fit_score handles this via coverage).
+model_id = "microsoft/phi-4"
+specialist_id = "phi-4-14b-q4"
+domain = "reasoning"
+difficulty_tiers = ["medium", "hard"]
+languages = ["en"]
+required_backend = "vllm"
+requires_fp4 = false
+storage_gb = 8.4
+runtime_gb = 12.0
+min_vram_gb = 13.0
+context_window = 16384
+n_layers = 40
+hidden_size = 5120
+supports_lora_finetune = true
+upstream_model_card = "microsoft/phi-4"
+coverage_tier = 1
+
+[estimated_tps_at]
+gb10 = 32.0
+m4_pro = 25.0
+m3_ultra = 48.0
+l40 = 70.0
