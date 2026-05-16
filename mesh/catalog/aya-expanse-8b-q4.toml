@@ -1,0 +1,24 @@
+# Tier-2 specialist: multilingual.
+model_id = "CohereForAI/aya-expanse-8b"
+specialist_id = "aya-expanse-8b-q4"
+domain = "multilingual"
+difficulty_tiers = ["easy", "medium", "hard"]
+# Aya Expanse covers 23 languages; listing the most common in classifier traffic.
+languages = ["en", "es", "fr", "de", "pt", "it", "nl", "pl", "ru", "ja", "ko", "zh", "ar", "tr", "vi", "id", "hi"]
+required_backend = "vllm"
+requires_fp4 = false
+storage_gb = 4.6
+runtime_gb = 7.0
+min_vram_gb = 8.0
+context_window = 8192
+n_layers = 32
+hidden_size = 4096
+supports_lora_finetune = true
+upstream_model_card = "CohereForAI/aya-expanse-8b"
+coverage_tier = 2
+
+[estimated_tps_at]
+gb10 = 55.0
+m4_pro = 45.0
+m3_ultra = 78.0
+l40 = 95.0

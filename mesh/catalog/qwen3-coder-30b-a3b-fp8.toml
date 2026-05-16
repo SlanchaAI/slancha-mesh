@@ -1,0 +1,28 @@
+# Tier-1 specialist: code / programming. Locally-cached, runs today on GB10.
+# 30B MoE with 3B active params, native FP8 weights — vLLM serves it via the
+# Triton FP8 MoE backend on Blackwell (sm_121). Wired up in v0.0.2 as the
+# first specialist with real weights + a real serving process.
+model_id = "Qwen/Qwen3-Coder-30B-A3B-Instruct-FP8"
+specialist_id = "qwen3-coder-30b-a3b-fp8"
+domain = "code"
+difficulty_tiers = ["easy", "medium", "hard"]
+languages = ["en"]
+required_backend = "vllm"
+requires_fp4 = false
+# Total weight footprint on disk (FP8 safetensors)
+storage_gb = 30.0
+# Runtime VRAM budget at gpu_memory_utilization=0.55 on 128GB unified pool
+runtime_gb = 70.0
+# Hard filter: any node with <30GB effective RAM/VRAM cannot host this
+min_vram_gb = 30.0
+context_window = 8192
+n_layers = 48
+hidden_size = 2048
+supports_lora_finetune = false
+upstream_model_card = "Qwen/Qwen3-Coder-30B-A3B-Instruct-FP8"
+coverage_tier = 1
+
+[estimated_tps_at]
+gb10 = 30.0
+m3_ultra = 45.0
+l40 = 70.0
