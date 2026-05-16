@@ -429,6 +429,42 @@ def render_json(report: DoctorReport) -> str:
     )
 
 
+def render_fixes(report: DoctorReport) -> str:
+    """Emit only the fix-hints, formatted as a shell-runnable script.
+
+    Useful for: run `mesh-doctor` once → see what's broken → run with
+    `--print-fixes` to dump the recommended commands → copy-paste-run.
+
+    Each fix is prefixed with `# <check_id>: <detail>` so the operator
+    can see what they're about to do before they run it. Commands the
+    fix-hint already shows (multi-step joined by "  ") become separate
+    bash lines.
+
+    Returns empty string if no fixes apply (all checks pass / skip).
+    """
+    lines: list[str] = []
+    actionable = [c for c in report.checks if c.status in ("warn", "fail") and c.fix]
+    if not actionable:
+        return ""
+
+    lines.append("#!/usr/bin/env bash")
+    lines.append("# mesh-doctor --print-fixes")
+    lines.append("# Apply each section to address the corresponding diagnostic.")
+    lines.append("# Review each command before running; some are best-effort.")
+    lines.append("set -e")
+    lines.append("")
+    for c in actionable:
+        lines.append(f"# [{c.status}] {c.id}: {c.detail}")
+        # Multi-step fixes joined by "  " (two spaces) in the original;
+        # split into ordered shell lines so a copy-paste runs them
+        # sequentially.
+        parts = [p.strip() for p in c.fix.split("  ") if p.strip()]
+        for p in parts:
+            lines.append(p)
+        lines.append("")
+    return "\n".join(lines)
+
+
 # ---------------------------------------------------------------------------
 # CLI
 # ---------------------------------------------------------------------------
@@ -439,8 +475,17 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--registry-url", default=None, help="Override SLANCHA_MESH_REGISTRY_URL.")
     ap.add_argument("--token", default=None, help="Override SLANCHA_NODE_TOKEN.")
     ap.add_argument("--json", action="store_true", help="Emit JSON instead of text.")
+    ap.add_argument(
+        "--print-fixes",
+        action="store_true",
+        help="Emit a shell-runnable script of the recommended fixes only.",
+    )
     ap.add_argument("--skip-systemd", action="store_true", help="Skip systemd checks.")
     args = ap.parse_args(argv)
+
+    if args.json and args.print_fixes:
+        print("error: --json and --print-fixes are mutually exclusive", file=sys.stderr)
+        return 2
 
     report = run_doctor(
         registry_url=args.registry_url,
@@ -450,6 +495,12 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.json:
         print(render_json(report))
+    elif args.print_fixes:
+        fixes = render_fixes(report)
+        if fixes:
+            print(fixes)
+        else:
+            print("# mesh-doctor: nothing to fix.", file=sys.stderr)
     else:
         print(render_text(report))
 
