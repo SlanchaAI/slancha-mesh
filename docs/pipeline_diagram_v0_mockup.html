@@ -1,0 +1,294 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Slancha Pipeline — Spec v1 Mockup</title>
+<meta name="viewport" content="width=1280, initial-scale=1">
+<style>
+  :root {
+    --supply: #f97316;
+    --return: #06b6d4;
+    --recirculate: #a855f7;
+    --redeploy-glow: #d8b4fe;
+    --control: #64748b;
+    --idle: #94a3b8;
+    --error: #ef4444;
+    --success: #22c55e;
+    --bg: #0f172a;
+    --bg-card: #1e293b;
+    --text: #f8fafc;
+    --text-muted: #cbd5e1;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font: 14px/1.4 ui-sans-serif, system-ui, "Inter", "Segoe UI", Roboto, sans-serif;
+    min-height: 100vh;
+  }
+  header { padding: 20px 32px 12px; border-bottom: 1px solid #1e293b; }
+  header h1 { margin: 0; font-size: 22px; font-weight: 600; }
+  header .sub { color: var(--text-muted); margin-top: 4px; }
+  header .recirc-symbol { color: var(--recirculate); font-size: 24px; margin-right: 6px; vertical-align: -3px; }
+  main { padding: 24px 32px; }
+  svg { width: 100%; max-width: 1180px; display: block; margin: 0 auto; }
+
+  /* Component boxes */
+  .node rect, .node path, .node circle, .node polygon {
+    fill: var(--bg-card);
+    stroke: #334155;
+    stroke-width: 1.5;
+    filter: drop-shadow(0 4px 12px rgba(0,0,0,0.35));
+  }
+  .node text { fill: var(--text); font-size: 14px; font-weight: 600; }
+  .node .sub { fill: var(--text-muted); font-size: 11px; font-weight: 400; }
+  .node.idle rect, .node.idle polygon { opacity: 0.5; filter: grayscale(0.6); }
+  .node.active rect, .node.active polygon { stroke: var(--supply); }
+
+  /* Flow lines */
+  .flow-supply  { fill: none; stroke: var(--supply); stroke-width: 3; stroke-dasharray: 8 6; animation: dash-fwd 2s linear infinite; }
+  .flow-return  { fill: none; stroke: var(--return); stroke-width: 3; stroke-dasharray: 8 6; animation: dash-rev 2s linear infinite; }
+  .flow-recirc-fast { fill: none; stroke: var(--recirculate); stroke-width: 2.5; stroke-dasharray: 8 6; animation: dash-fwd 3s linear infinite; }
+  .flow-recirc-slow { fill: none; stroke: var(--recirculate); stroke-width: 2.5; stroke-dasharray: 12 8; opacity: 0.7; animation: dash-fwd 6s linear infinite; }
+  .flow-control { fill: none; stroke: var(--control); stroke-width: 1.5; stroke-dasharray: 4 4; }
+
+  @keyframes dash-fwd { to { stroke-dashoffset: -14; } }
+  @keyframes dash-rev { to { stroke-dashoffset: 14; } }
+
+  /* REDEPLOY event — apply to .registry via JS pulse */
+  .redeploy-throb rect { animation: throb 0.6s ease-in-out; }
+  .redeploy-halo {
+    pointer-events: none;
+    fill: var(--redeploy-glow);
+    opacity: 0;
+    animation: halo 1.5s ease-out;
+  }
+  @keyframes throb {
+    0%, 100% { transform: scale(1); }
+    50%      { transform: scale(1.08); }
+  }
+  @keyframes halo {
+    0%   { opacity: 0.0; r: 28; }
+    20%  { opacity: 0.6; r: 80; }
+    100% { opacity: 0.0; r: 120; }
+  }
+
+  /* REDEPLOY label */
+  .redeploy-label {
+    fill: var(--recirculate);
+    font-size: 13px;
+    font-weight: 700;
+    opacity: 0;
+    animation: label-fade 1.5s ease-out;
+    text-anchor: middle;
+  }
+  @keyframes label-fade {
+    0%   { opacity: 0; transform: translateY(8px); }
+    30%  { opacity: 1; transform: translateY(0); }
+    100% { opacity: 0; transform: translateY(-8px); }
+  }
+
+  /* Pulse for active nodes */
+  .pulse-active rect { animation: pulse 1.2s ease-in-out infinite; }
+  @keyframes pulse {
+    0%, 100% { stroke: #334155; stroke-width: 1.5; }
+    50%      { stroke: var(--supply); stroke-width: 2.5; }
+  }
+
+  /* Legend */
+  .legend {
+    display: flex;
+    gap: 28px;
+    align-items: center;
+    flex-wrap: wrap;
+    margin-top: 28px;
+    padding: 16px 24px;
+    background: #0b1426;
+    border: 1px solid #1e293b;
+    border-radius: 8px;
+  }
+  .legend .item { display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--text-muted); font-weight: 500; }
+  .legend .swatch { width: 36px; height: 0; border-top: 3px solid; }
+  .legend .swatch.supply { border-color: var(--supply); }
+  .legend .swatch.return { border-color: var(--return); }
+  .legend .swatch.recirc-fast { border-color: var(--recirculate); }
+  .legend .swatch.recirc-slow { border-color: var(--recirculate); border-top-style: dashed; }
+  .legend .swatch.control { border-color: var(--control); border-top-style: dashed; }
+  .legend .dot { width: 12px; height: 12px; border-radius: 50%; }
+  .legend .dot.error { background: var(--error); }
+  .legend .dot.success { background: transparent; border: 2px solid var(--success); }
+  .legend .item.violet { color: var(--recirculate); font-weight: 700; }
+
+  /* Reduced motion */
+  @media (prefers-reduced-motion: reduce) {
+    .flow-supply, .flow-return, .flow-recirc-fast, .flow-recirc-slow,
+    .pulse-active rect, .redeploy-throb rect, .redeploy-halo, .redeploy-label {
+      animation: none !important;
+    }
+  }
+</style>
+</head>
+<body>
+<header>
+  <h1><span class="recirc-symbol">↻</span>Slancha Pipeline — Spec v1 Mockup</h1>
+  <div class="sub">recirculating-loop semantic · synthetic demo (no live data) · spec ref: <code>docs/PIPELINE_DIAGRAM_SPEC.md</code></div>
+</header>
+<main>
+<svg viewBox="0 0 1180 660" xmlns="http://www.w3.org/2000/svg">
+
+  <!-- =====================  FLOW LINES (drawn first so nodes overlay) ===================== -->
+
+  <!-- Supply: corpus → classifier → probe → proxy -->
+  <path class="flow-supply" d="M 175 80 L 285 80" />
+  <path class="flow-supply" d="M 405 80 L 515 80" />
+  <path class="flow-supply" d="M 615 80 L 725 80" />
+
+  <!-- Supply branch out of proxy → models -->
+  <path class="flow-supply" d="M 845 80 L 955 80 L 955 130" />
+  <path class="flow-supply" d="M 845 80 L 955 80 L 955 200" />
+
+  <!-- Return from models → capture -->
+  <path class="flow-return" d="M 955 175 L 955 280 L 600 280" />
+  <path class="flow-return" d="M 955 245 L 955 280" />
+
+  <!-- Return capture → oracle + slow ft -->
+  <path class="flow-return" d="M 500 320 L 500 400 L 280 400" />
+  <path class="flow-return" d="M 500 320 L 500 400 L 760 400" />
+
+  <!-- Recirc FAST: oracle → ft_fast → registry -->
+  <path class="flow-recirc-fast" d="M 220 440 L 220 510 L 480 510" />
+  <!-- Recirc SLOW: ft_slow → registry -->
+  <path class="flow-recirc-slow" d="M 800 440 L 800 510 L 600 510" />
+  <!-- Recirc registry → proxy (THE PUMP CLOSURE) -->
+  <path class="flow-recirc-fast" d="M 540 540 L 540 590 L 785 590 L 785 110" />
+
+  <!-- REDEPLOY label slot -->
+  <text id="redeploy-label" class="redeploy-label" x="540" y="497"></text>
+
+  <!-- =====================  NODES  ===================== -->
+
+  <!-- Corpus -->
+  <g class="node active" transform="translate(85, 50)">
+    <rect width="180" height="60" rx="12" ry="12"></rect>
+    <text x="90" y="28" text-anchor="middle">Corpus</text>
+    <text class="sub" x="90" y="45" text-anchor="middle">100K v3.1 · sha 65621525</text>
+  </g>
+
+  <!-- Classifier -->
+  <g class="node active pulse-active" transform="translate(285, 50)">
+    <rect width="180" height="60" rx="12" ry="12"></rect>
+    <text x="90" y="28" text-anchor="middle">Classifier</text>
+    <text class="sub" x="90" y="45" text-anchor="middle">mmbert-6h · live retrain</text>
+  </g>
+
+  <!-- Probe (hexagon) -->
+  <g class="node" transform="translate(515, 30)">
+    <polygon points="25,50 75,10 125,10 175,50 125,90 75,90" />
+    <text x="100" y="48" text-anchor="middle">Probe</text>
+    <text class="sub" x="100" y="64" text-anchor="middle">jailbreak · PII gate</text>
+  </g>
+
+  <!-- Proxy -->
+  <g class="node active pulse-active" id="proxy-node" transform="translate(725, 50)">
+    <rect width="180" height="60" rx="12" ry="12"></rect>
+    <text x="90" y="28" text-anchor="middle">slancha-local Proxy</text>
+    <text class="sub" x="90" y="45" text-anchor="middle">:8766 · 23 in-flight</text>
+  </g>
+
+  <!-- Local Models (pill stack) -->
+  <g class="node active" transform="translate(865, 130)">
+    <rect width="180" height="50" rx="25" ry="25"></rect>
+    <text x="90" y="28" text-anchor="middle">5× Local OSS (ollama)</text>
+  </g>
+
+  <!-- Cloud OSS -->
+  <g class="node" transform="translate(865, 200)">
+    <rect width="180" height="50" rx="12" ry="12"></rect>
+    <text x="90" y="22" text-anchor="middle">Cloud OSS</text>
+    <text class="sub" x="90" y="38" text-anchor="middle">OpenRouter · 9% flow</text>
+  </g>
+
+  <!-- Capture -->
+  <g class="node active" transform="translate(410, 260)">
+    <rect width="180" height="60" rx="12" ry="12"></rect>
+    <text x="90" y="28" text-anchor="middle">Capture · ledger.jsonl</text>
+    <text class="sub" x="90" y="45" text-anchor="middle">42 MB · 519 rows</text>
+  </g>
+
+  <!-- Oracle -->
+  <g class="node active pulse-active" transform="translate(120, 380)">
+    <rect width="200" height="60" rx="12" ry="12"></rect>
+    <text x="100" y="28" text-anchor="middle">Oracle Judge</text>
+    <text class="sub" x="100" y="45" text-anchor="middle">Qwen3-Coder-30B · 472e</text>
+  </g>
+
+  <!-- ft_fast -->
+  <g class="node active" transform="translate(120, 470)">
+    <rect width="200" height="60" rx="12" ry="12"></rect>
+    <text x="100" y="28" text-anchor="middle">FT (FAST)</text>
+    <text class="sub" x="100" y="45" text-anchor="middle">mmbert-head live retrain</text>
+  </g>
+
+  <!-- ft_slow -->
+  <g class="node idle" transform="translate(700, 380)">
+    <rect width="200" height="60" rx="12" ry="12" stroke-dasharray="6 4"></rect>
+    <text x="100" y="28" text-anchor="middle">FT (SLOW)</text>
+    <text class="sub" x="100" y="45" text-anchor="middle">QLoRA · awaiting 1K labels</text>
+  </g>
+
+  <!-- Registry (REDEPLOY target) -->
+  <g class="node" id="registry-node" transform="translate(440, 510)">
+    <rect width="200" height="60" rx="12" ry="12" stroke="var(--recirculate)" stroke-width="2"></rect>
+    <text x="100" y="28" text-anchor="middle">Model Registry</text>
+    <text class="sub" x="100" y="45" text-anchor="middle">atomic-swap · ↻ pump</text>
+  </g>
+
+  <!-- REDEPLOY halo (positioned over registry; circle is recreated by JS each pulse) -->
+  <circle id="redeploy-halo" class="redeploy-halo" cx="540" cy="540" r="28"></circle>
+
+</svg>
+
+<div class="legend">
+  <div class="item"><span class="swatch supply"></span>Prompt forward (supply)</div>
+  <div class="item"><span class="swatch return"></span>Response back (return)</div>
+  <div class="item violet"><span class="swatch recirc-fast"></span>↻ Classifier retrain (FAST loop)</div>
+  <div class="item violet"><span class="swatch recirc-slow"></span>↻ Generator retrain (SLOW loop)</div>
+  <div class="item"><span class="swatch control"></span>Control / monitoring</div>
+  <div class="item"><span class="dot error"></span>Error / block</div>
+  <div class="item"><span class="dot success"></span>Loop closed</div>
+</div>
+
+</main>
+
+<script>
+  // Simulated REDEPLOY events — fires every 8s on the FAST loop with v{N+1} label.
+  // Production HTML will fire when overrides.json's from_oracle_rows or count delta-changes.
+  let version = 1;
+  const label = document.getElementById('redeploy-label');
+  const halo  = document.getElementById('redeploy-halo');
+  const reg   = document.getElementById('registry-node');
+
+  function pulseRedeploy(kind) {
+    version += 1;
+    label.textContent = `REDEPLOY ↻ ${kind} v${version}`;
+    // Restart animations by toggling classes
+    label.style.animation = 'none';
+    halo.style.animation = 'none';
+    reg.classList.remove('redeploy-throb');
+    void label.offsetWidth;  // force reflow
+    void halo.offsetWidth;
+    label.style.animation = '';
+    halo.style.animation = '';
+    reg.classList.add('redeploy-throb');
+    setTimeout(() => reg.classList.remove('redeploy-throb'), 600);
+  }
+
+  // Demo cadence — FAST loop fires every 8s, SLOW loop every 40s
+  setInterval(() => pulseRedeploy('classifier'), 8000);
+  setInterval(() => pulseRedeploy('generator'), 40000);
+  setTimeout(() => pulseRedeploy('classifier'), 1500);  // initial pulse for first impression
+</script>
+
+</body>
+</html>
