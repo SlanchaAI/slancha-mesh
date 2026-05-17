@@ -38,6 +38,13 @@ from mesh.dashboard.cost import (
     cost_summary,
     estimated_field_explanation,
 )
+from mesh.dashboard.eval import (
+    eval_summary,
+    load_eval_results,
+    mean_score_over_time,
+    per_domain_score_over_time,
+    per_version_summary,
+)
 from mesh.dashboard.live_run import (
     cost_and_latency_summary,
     error_rate_over_time,
@@ -391,6 +398,48 @@ def _render_operator(st, args) -> None:  # pragma: no cover — UI runtime
         st.bar_chart({k: v for k, v in decision_mix.items()})
     else:
         st.info("No decisions log yet — recirc proxy may not be running.")
+
+    # ----- EVAL HARNESS (the central product claim — IS the loop improving?) -----
+    eval_path = dashboard_dir / "eval_results.jsonl"
+    if eval_path.exists():
+        eval_records = load_eval_results(eval_path)
+        if eval_records:
+            st.subheader("Eval — is the loop actually improving?")
+            es = eval_summary(eval_records)
+            ec1, ec2, ec3, ec4 = st.columns(4)
+            ec1.metric("Eval passes", es["n_passes"])
+            ec2.metric("Latest mean score", f"{es['latest_score']:.2f}",
+                       delta=f"{es['improvement_pp']:+.2f} pp")
+            ec3.metric("Improvement",
+                       f"{es['improvement_pct']:+.1f}%",
+                       help=f"vs first pass ({es['first_score']:.2f})")
+            ec4.metric("Router versions tested", es["distinct_router_versions"])
+
+            ts_data = mean_score_over_time(eval_records)
+            if ts_data:
+                st.caption("Mean judge score over time (held-out set, fixed seed)")
+                st.line_chart({"mean_score": [pt[1] for pt in ts_data]})
+
+            per_dom = per_domain_score_over_time(eval_records)
+            if per_dom:
+                st.caption("Per-domain trajectory")
+                # Build a domain × pass-index matrix
+                # All domains share the same pass indices in our data
+                chart_data = {
+                    domain: [pt[1] for pt in series]
+                    for domain, series in per_dom.items()
+                }
+                st.line_chart(chart_data)
+
+            with st.expander("Per-router-version table"):
+                st.dataframe(per_version_summary(eval_records), use_container_width=True)
+        else:
+            st.info("eval_results.jsonl exists but is empty.")
+    else:
+        st.info(
+            "No eval_results.jsonl yet. Spark runs the route-through-eval; "
+            "results will appear here as soon as the first pass writes a row."
+        )
 
     # ----- COUNTERFACTUAL COST (the Stripe pitch number) -----
     if decisions:
