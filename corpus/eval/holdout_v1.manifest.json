@@ -1,0 +1,18 @@
+{
+  "holdout_version": 1,
+  "seed": 12648430,
+  "source_corpus": "corpus/training/v3.1-mmbert/prompts.jsonl",
+  "size": 500,
+  "per_domain": {
+    "code": 138,
+    "general": 112,
+    "reasoning": 75,
+    "math": 50,
+    "multilingual": 50,
+    "creative": 50,
+    "tool-use": 25
+  },
+  "output_path": "corpus/eval/holdout_v1.jsonl",
+  "output_sha256": "c5c9140179f3eb2e0faf28d013ea1733bac3313654ff33b9c26b669ab47fe865",
+  "built_at": "2026-05-17T14:30:48Z"
+}
