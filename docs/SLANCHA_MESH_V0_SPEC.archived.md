@@ -1,6 +1,14 @@
-# Slancha-Mesh v0 — Spec
+# Slancha-Mesh v0 — Spec [ARCHIVED]
 
-> **Status**: Draft, 2026-05-15. Author: slancha-local Claude session.
+> ⚠️ **SUPERSEDED** 2026-05-22 by [`SLANCHA_PROTOCOL_v0.1_DRAFT.md`](./SLANCHA_PROTOCOL_v0.1_DRAFT.md) (tagged `v0.1.0-spec`).
+>
+> The successor spec inverts the architecture: mesh = placement substrate + signal-rich protocol (not classifier-owning router). Edge-side L@E origin-request routing, signed `did:web` cards, multi-axis agent preferences, OpenAI + Anthropic endpoint shapes, license bifurcation (Apache spec / AGPL ref impl).
+>
+> This document retained for historical context only. **Do not implement against this spec — implement against v0.1.0-spec.**
+
+---
+
+> **Original status**: Draft, 2026-05-15. Author: slancha-local Claude session.
 > **Sister doc**: `EXO_SPARK_PROBE_2026_05_15.md` (exo cluster prototype on 2 Sparks).
 > **Provenance**: distilled from exolabs.net days 1–12, `~/Source/exo/docs/{architecture.md,api.md}`,
 > exo placement source (`src/exo/master/placement.py`), and replay-router eval
