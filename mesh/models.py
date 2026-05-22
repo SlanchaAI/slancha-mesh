@@ -119,6 +119,23 @@ class SpecialistCard(_Frozen):
     # (multilingual/tool_use/summarization); Tier 3 = specialized.
     coverage_tier: int = 1
 
+    # Mesh substrate (Phase 5) — agents passing X-Slancha-Pref ask for
+    # capabilities by string ("tools", "json_mode", "vision", "streaming",
+    # "seed", "system_prompt"). Specialist publishes what it supports
+    # so the router can hard-gate. Empty list = nothing claimed
+    # (backwards-compatible with v0.0.x catalog TOMLs).
+    capabilities: list[str] = Field(default_factory=list)
+
+    # Mesh substrate (Phase 6) — router-observed quality. NULL until the
+    # probe service has run; cold-start uses node_self_reported × tunable
+    # bootstrap_discount (default 0.5, range 0.3-0.7) per NC4. Live updates
+    # via Phase 6 admin endpoint.
+    quality_router_observed: float | None = None
+    quality_node_self_reported: float | None = None
+    quality_observation_source: Literal["synthetic", "shadow_traffic", "real_traffic"] | None = None
+    quality_sample_count: int = 0
+    quality_ttl_s: int = 86400  # 24 hours; routers treat as null after TTL
+
 
 # ---------------------------------------------------------------------------
 # Allocator output
@@ -268,3 +285,12 @@ class MeshSelectionResult(_Frozen):
     queue_ms_estimated: int
     cluster_coverage_used: bool
     fallback_chain: list[tuple[ModelId, NodeId | None]] = Field(default_factory=list)
+
+    # Phase 5 (NC5) — structured form of the routing decision for the
+    # routing-transparency UI. None when select_mesh_route is used
+    # without a pref vector (backwards-compatible). Shape per protocol
+    # §6 conformance corpus:
+    #   {"winner": str, "alternatives_considered": [
+    #     {"id": str, "delta": float, "losing_axes": list[str]}
+    #   ], "deciding_axes": list[str], "preset_applied": str | None}
+    decision_reason_structured: dict | None = None
