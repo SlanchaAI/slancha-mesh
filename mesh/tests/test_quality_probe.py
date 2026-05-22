@@ -323,3 +323,65 @@ def test_endpoint_rejects_invalid_observation_source(monkeypatch):
         headers={"Authorization": "Bearer test-token"},
     )
     assert resp.status_code == 422
+
+
+# ── Discovery API GET /models ───────────────────────────────────────────────
+
+
+def test_get_models_returns_flat_list_by_default(monkeypatch):
+    reg = MeshRegistry(catalog=[_card("a"), _card("b")])
+    client = _make_client(monkeypatch, reg)
+    resp = client.get("/models", headers={"Authorization": "Bearer test-token"})
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["object"] == "list"
+    ids = {e["id"] for e in body["data"]}
+    assert ids == {"a", "b"}
+    # No routing_meta unless explicitly asked.
+    assert "routing_meta" not in body["data"][0]
+
+
+def test_get_models_with_routing_meta_includes_quality_and_capabilities(monkeypatch):
+    reg = MeshRegistry(catalog=[
+        _card("a", capabilities=["tools", "streaming"]),
+    ])
+    reg.record_quality_observation(
+        specialist_id="a",
+        score=4.2,
+        sample_count=20,
+        observation_source="synthetic",
+    )
+    client = _make_client(monkeypatch, reg)
+    resp = client.get(
+        "/models?include=routing_meta",
+        headers={"Authorization": "Bearer test-token"},
+    )
+    body = resp.json()
+    entry = body["data"][0]
+    assert entry["id"] == "a"
+    meta = entry["routing_meta"]
+    assert meta["capabilities"] == ["tools", "streaming"]
+    assert meta["quality"]["router_observed"] == 4.2
+    assert meta["quality"]["sample_count"] == 20
+    assert meta["quality"]["observation_source"] == "synthetic"
+
+
+def test_get_models_filter_by_domain(monkeypatch):
+    reg = MeshRegistry(catalog=[
+        _card("writer", domain="writing"),
+        _card("coder", domain="code"),
+    ])
+    client = _make_client(monkeypatch, reg)
+    resp = client.get(
+        "/models?domain=writing",
+        headers={"Authorization": "Bearer test-token"},
+    )
+    ids = {e["id"] for e in resp.json()["data"]}
+    assert ids == {"writer"}
+
+
+def test_get_models_requires_auth(monkeypatch):
+    reg = MeshRegistry(catalog=[_card("a")])
+    client = _make_client(monkeypatch, reg)
+    resp = client.get("/models")
+    assert resp.status_code in (401, 403)
