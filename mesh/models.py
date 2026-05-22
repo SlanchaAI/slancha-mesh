@@ -22,7 +22,7 @@ DomainId = str
 ModelId = str
 
 DifficultyTier = Literal["easy", "medium", "hard"]
-Backend = Literal["vllm", "llamacpp", "ollama", "mlx"]
+Backend = Literal["vllm", "llamacpp", "ollama", "mlx", "hf_transformers"]
 HealthState = Literal["healthy", "degraded", "draining", "training", "unreachable"]
 Arch = Literal["aarch64", "x86_64", "apple-silicon"]
 

@@ -126,9 +126,29 @@ def create_mesh_app(registry: MeshRegistry | None = None) -> FastAPI:
 
     Pass `registry` to share state across the host app (e.g., slancha-api
     long-lived registry) or for test injection. When `None`, a fresh
-    empty `MeshRegistry` is created.
+    `MeshRegistry` is created with the on-disk catalog auto-loaded so
+    /registry exposes specialist cards from app boot (no separate
+    bootstrap script needed; replaces the v0.0.x serve_with_catalog.py
+    pattern).
     """
-    reg = registry if registry is not None else MeshRegistry()
+    if registry is not None:
+        reg = registry
+    else:
+        from mesh.catalog import load_catalog
+
+        try:
+            cards = load_catalog()
+        except Exception:
+            # Surface load failures in logs but don't crash the service —
+            # heartbeats can still populate the registry, and an empty
+            # catalog is recoverable (matches prior v0.0.x behavior).
+            import logging
+
+            logging.getLogger(__name__).exception(
+                "Catalog auto-load failed; starting with empty catalog"
+            )
+            cards = []
+        reg = MeshRegistry(catalog=cards)
 
     app = FastAPI(
         title="Slancha-Mesh Registry",
