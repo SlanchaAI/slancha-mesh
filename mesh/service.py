@@ -199,6 +199,68 @@ def create_mesh_app(registry: MeshRegistry | None = None) -> FastAPI:
     ) -> RegistryGetResponse:
         return RegistryGetResponse(snapshot=reg.snapshot())
 
+    @app.get(
+        "/models",
+        summary="Discovery — list specialists with optional routing metadata",
+    )
+    def get_models(
+        _: Annotated[None, Depends(verify_node_token)],
+        include: str = "",
+        domain: str | None = None,
+    ) -> dict:
+        """OpenAI-compat-ish models list. Per Phase 5 H19 task #69.
+
+        Default shape mirrors GET /v1/models (a flat list of model ids).
+        `?include=routing_meta` enriches each entry with the SpecialistCard
+        fields a router needs: capabilities, quality.router_observed,
+        cost.cloud_equivalent (computed by the caller, not the node),
+        privacy posture, context window.
+
+        `?domain=writing` filters to specialists whose card domain matches.
+
+        Auth: same SLANCHA_NODE_TOKEN gate as the rest of the registry
+        endpoints. Per the §11 trust model, discovery exposes node-claimed
+        signals; consumers MUST treat node-self-reported numbers as
+        UNTRUSTED and verify against the router-observed quality field
+        (which IS trustworthy because it's written by the central probe
+        service, not the node).
+        """
+        snap = reg.snapshot()
+        want_meta = "routing_meta" in (include or "").split(",")
+
+        out: list[dict] = []
+        for specialist_id, card in snap.catalog.items():
+            if domain and card.domain != domain:
+                continue
+            entry: dict = {
+                "id": specialist_id,
+                "object": "model",
+                "owned_by": "slancha-mesh",
+            }
+            if want_meta:
+                bindings = snap.specialists.get(specialist_id, [])
+                node_urls = [b.node_url for b in bindings if b.node_url]
+                entry["routing_meta"] = {
+                    "model_id": card.model_id,
+                    "domain": card.domain,
+                    "difficulty_tiers": list(card.difficulty_tiers),
+                    "languages": list(card.languages),
+                    "context_window": card.context_window,
+                    "capabilities": list(card.capabilities),
+                    "quality": {
+                        "router_observed": card.quality_router_observed,
+                        "node_self_reported": card.quality_node_self_reported,
+                        "sample_count": card.quality_sample_count,
+                        "observation_source": card.quality_observation_source,
+                        "ttl_s": card.quality_ttl_s,
+                    },
+                    "node_urls": node_urls,
+                    "coverage_tier": card.coverage_tier,
+                }
+            out.append(entry)
+
+        return {"object": "list", "data": out}
+
     @app.post(
         "/probe-network",
         response_model=ProbeNetworkResponse,
