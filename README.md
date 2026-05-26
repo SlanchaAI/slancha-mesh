@@ -1,19 +1,15 @@
 # Slancha-Mesh
 
 Mesh of specialist small models on user hardware, fronted by Slancha's
-classifier-driven router. Current spec: `docs/SLANCHA_PROTOCOL_v0.1_DRAFT.md`
-(v0 spec archived at `docs/SLANCHA_MESH_V0_SPEC.archived.md`).
+classifier-driven router.
 
 > **Transport:** nodes are reached privately over a Tailscale/Headscale
 > tailnet (a cloud gateway dials home `tag:specialist` nodes by MagicDNS on
-> the model ports), not per-host public tunnels. See `ONBOARDING.md` and
-> `docs/MESH_TAILNET_SURVEY_2026_05_25.md`.
+> the model ports), not per-host public tunnels. See `ONBOARDING.md`.
 
-> **Status**: v0.0.2 on `main`. 56 unit tests + live-vLLM integration suite.
-> Extracted 2026-05-16 from `slancha-test` monorepo into its own repo.
-> Bring-up validated on DGX Spark (GB10) serving Qwen3-Coder-30B-A3B-FP8
-> via Marlin fallback at 46 tok/s, 150ms TTFT. See
-> `docs/MESH_V002_BUILD_2026_05_16.md`.
+> **Status**: bring-up validated on DGX Spark (GB10) serving
+> Qwen3-Coder-30B-A3B-FP8 via Marlin weight-only FP8 fallback (~46 tok/s,
+> ~150ms TTFT).
 
 ## Install
 
@@ -38,9 +34,7 @@ slancha-mesh discover                        # any consumer: walk the tailnet â†
 Discovery is **pull-based**: a consumer walks `tailscale status` for
 `tag:specialist` peers and pulls each node's `/models` over the tailnet â€” no
 heartbeat-push, no central registry, no shared token. Tailnet membership +
-the ACL is the credential. Design + the push-vs-pull decision:
-`docs/MESH_ONELINE_SETUP_PROPOSAL_2026_05_25.md`. Contributor walkthrough:
-`JAMES_NODE_SETUP.md`.
+the ACL is the credential. Contributor walkthrough: `JAMES_NODE_SETUP.md`.
 
 ## What ships (current state)
 
@@ -79,9 +73,9 @@ bash mesh/scripts/bring-up-spark.sh qwen3-coder-30b-a3b-fp8 8001
 uv run python -m mesh.serve --specialist qwen3-coder-30b-a3b-fp8
 ```
 
-See `docs/MESH_V002_BUILD_2026_05_16.md` for v0.0.2 build notes,
-including the FP8 kernel coverage gap on GB10 (Blackwell sm_121) and
-the recommended fall-back path for v0.0.3.
+The v0.0.2 bring-up surfaced the FP8 kernel coverage gap on GB10
+(Blackwell sm_121) and the Marlin weight-only fall-back path; see the
+commit history for details.
 
 ## Backend support
 

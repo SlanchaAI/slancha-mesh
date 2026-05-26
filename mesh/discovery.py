@@ -6,7 +6,7 @@ a claim-hijack class: any writer can advertise any `node_url`), the consumer
 GET each one's `/models?include=routing_meta` over the tailnet, and aggregate
 into a routing table.
 
-Why pull wins (see docs/MESH_ONELINE_SETUP_PROPOSAL_2026_05_25.md):
+Why pull wins (see the README):
 
 - **Identity == address.** A node's self-description is fetched *from its own
   tailnet address*, so the routed `node_url` is host-pinned to the peer we

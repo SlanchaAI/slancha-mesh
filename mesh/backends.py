@@ -184,7 +184,7 @@ class VLLMBackend:
             # FP8 kernel in vLLM 0.17 + torch 2.10. Marlin's weight-only
             # FP8 path bypasses it by dequantizing on the fly. The flag is
             # named `_TEST_` but is the documented workaround.
-            # See docs/MESH_V002_BUILD_2026_05_16.md.
+            # See the project history.
             env.setdefault("VLLM_TEST_FORCE_FP8_MARLIN", "1")
 
         log = open(self.log_path, "ab") if self.log_path else subprocess.DEVNULL

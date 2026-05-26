@@ -1,6 +1,6 @@
 [Unit]
 Description=Slancha-Mesh registry HTTP service
-Documentation=https://github.com/SlanchaAi/slancha-mesh/blob/main/docs/SLANCHA_PROTOCOL_v0.1_DRAFT.md
+Documentation=https://github.com/SlanchaAi/slancha-mesh
 After=network-online.target
 Wants=network-online.target
 

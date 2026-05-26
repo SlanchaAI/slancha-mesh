@@ -4,7 +4,7 @@ The right serving engine is a function of the node's silicon, not a constant
 baked into each specialist card. A vLLM-only catalog silently excludes every
 non-CUDA box; this module is what lets a heterogeneous network self-configure.
 
-Decision tree (2026 research — docs/AGENT_ONBOARDING_CHAIN_2026_05_25.md):
+Decision tree (2026 research — the README):
 
   Apple Silicon            → MLX (4-bit)            — vLLM unsupported on Metal
   GB10 / DGX Spark         → Ollama / llama.cpp     — no official vLLM sm_121

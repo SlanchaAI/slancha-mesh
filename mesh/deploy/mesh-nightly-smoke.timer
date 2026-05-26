@@ -1,6 +1,6 @@
 [Unit]
 Description=Run slancha-mesh nightly smoke at 03:00 UTC daily
-Documentation=https://github.com/SlanchaAi/slancha-mesh/blob/main/docs/SLANCHA_MESH_V0_SPEC.md
+Documentation=https://github.com/SlanchaAi/slancha-mesh
 
 [Timer]
 # 03:00 UTC every day — chosen as a low-traffic window for the mesh host,

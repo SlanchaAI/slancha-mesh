@@ -3,7 +3,7 @@
 > Two audiences below. **(1) Setting up a node** (provisioning this box as a
 > mesh specialist) — read this section. **(2) Editing this codebase** — read
 > the GitNexus section further down. Humans: `README.md`, `JAMES_NODE_SETUP.md`.
-> Deep design: `docs/AGENT_ONBOARDING_CHAIN_2026_05_25.md`.
+> Deep design: `the README`.
 
 ## Setting up this machine as a mesh node
 

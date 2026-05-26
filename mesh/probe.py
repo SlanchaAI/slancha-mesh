@@ -26,7 +26,7 @@ from mesh.models import Backend, NodeProbe
 # ---------------------------------------------------------------------------
 # FP4/FP16 lookup — spec §3.1. Manually maintained per release. Numbers in
 # TOPS at the indicated precision. Sources: vendor datasheets cross-checked
-# with EXO_SPARK_PROBE_2026_05_15.md.
+# with an exo-interop probe.
 # ---------------------------------------------------------------------------
 
 _FP4_TOPS_BY_CHIP: dict[str, float] = {

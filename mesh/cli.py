@@ -8,7 +8,7 @@ expose a live, pull-able self-description on the node-info port. The gateway
 routing table — no heartbeat-push, no central registry, no shared write
 token. Tailnet membership + the ACL is the credential.
 
-Design + rationale: docs/MESH_ONELINE_SETUP_PROPOSAL_2026_05_25.md
+Design + rationale: the README
 """
 
 from __future__ import annotations

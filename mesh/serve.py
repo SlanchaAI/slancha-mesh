@@ -380,7 +380,7 @@ def build_backend(
     if card.required_backend in ("llamacpp", "ollama", "mlx"):
         # v0.0.2 ships vLLM only; non-vllm cards return NullBackend so the
         # daemon doesn't crash on a mixed-backend catalog. Real llamacpp
-        # support is v0.0.3 (see docs/MESH_V002_BUILD_2026_05_16.md).
+        # support is v0.0.3 (see the project history).
         return NullBackend(card=card)
     raise ValueError(f"unknown backend {card.required_backend!r}")
 
