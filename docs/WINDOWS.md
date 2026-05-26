@@ -102,6 +102,7 @@ From any `tag:gateway`/admin box: `slancha-mesh discover` → this node appears.
 | `slancha-mesh up --with-router` fails | its process-launch is POSIX-only (`start_new_session`) | run `slancha serve` directly |
 | `plan` recommends Ollama, not vLLM | vLLM is Linux/WSL-only | correct — or run vLLM under WSL2 for its throughput |
 | local classifier won't load | treelite/libomp not on Windows | rules-fallback routing is automatic + fine |
+| `plan` shows `engine.installed=false` after installing Ollama | winget installs to `%LOCALAPPDATA%\Programs\Ollama` and doesn't add it to the *current* shell's PATH; `shutil.which("ollama")` misses it | open a **new** terminal (PATH refreshes), or add that dir to PATH, then re-run |
 
 ## Findings log (live)
 
@@ -120,6 +121,13 @@ doc note._
   - **tailscale not installed** — only blocks Step 4 (mesh registration).
     Steps 1–3 proceed locally; joining the tailnet tagged `tag:specialist`
     needs a human-minted auth key.
+  - **RAM probe fix VERIFIED on Win10**: after the psutil change,
+    `ram_available_gb` read `20.15` (was `0.0`) on the GTX-1070 box. cc 6.1 +
+    vram 7.14 also correct. → merged to main.
+  - **Ollama PATH**: winget installs `ollama.exe` to
+    `%LOCALAPPDATA%\Programs\Ollama`, not added to the current shell's PATH →
+    `shutil.which` (and `plan`'s `installed` check) miss it until a new shell.
+    Open a fresh terminal or add the dir to PATH. (Documented in gotchas.)
   - **wire gotcha (meta):** both agents' wire daemons were initially down →
     messages queued but never delivered ("duplicate" on re-push = already in
     the relay slot, just un-pulled). Fix: `wire up` / `wire daemon` on both
