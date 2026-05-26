@@ -157,6 +157,32 @@ doc note._
   (elevated) rule is added:
   `New-NetFirewallRule -DisplayName "slancha 8000" -Direction Inbound -LocalPort 8000 -Protocol TCP -Action Allow`.
   Outbound (the heartbeat) is unaffected, so push-registration works regardless.
+- **The `tag:specialist` tag is a TWO-WAY data-plane membrane — the registry
+  must live on a `tag:gateway` host.** [headline finding] Once a node is tagged
+  `tag:specialist`, the deny-by-default ACL (`tag:gateway → tag:specialist:8003,8004`)
+  governs it in *both* directions: the push heartbeat, the registry's active
+  health-probe, AND inference all collapse to `tag:gateway`-only. Smoking gun from
+  the live run: the node heartbeated fine into a dev registry on a `tag:paul-host`
+  laptop **while untagged**, then `last_seen` froze the instant `tag:specialist`
+  propagated (heartbeat `20:14:58` vs tag-landing `20:17:30`) — the outbound
+  `specialist → paul-host:8088` POST is now ACL-denied too. **Implication:** a dev
+  registry on an untagged laptop only works pre-tag; in production the registry
+  (the `SLANCHA_MESH_REGISTRY_URL` target) MUST run on a `tag:gateway` host (or be
+  explicitly ACL-permitted), else every tagged specialist shows `unreachable` and
+  never heartbeats. Onboarding sequencing rule: **don't tag a node until its
+  registry target is ACL-reachable from that tag.** Relatedly, "my laptop can't
+  curl the node" is the ACL *working*, not a bug — Tailscale even filters the node
+  out of a non-gateway peer's netmap (MagicDNS won't resolve; `tailscale ping` →
+  "no matching peer"). The real cross-machine proof is `gateway → specialist:8003`,
+  run from the `tag:gateway` box.
+- **Silent heartbeat death (fixed in slancha-local).** When the heartbeat died
+  post-tag, slancha-local gave zero local signal — it kept serving and the
+  heartbeat-failure log sat at `INFO` (suppressed under default `WARNING`), so the
+  node believed it was healthy while it had fallen off the mesh. Fixed: slancha-local
+  now logs the healthy→failing transition + recovery at `WARNING` and exposes
+  `mesh` registration status (`registered` / `heartbeats_sent` / `last_success`)
+  under `GET /health/detailed`. Compounds the "heartbeat INFO invisible on Windows"
+  gotcha above.
 - **Push vs pull discovery aren't unified for slancha-local nodes.**
   slancha-local registers via the **push** heartbeat (`SLANCHA_MESH_REGISTRY_URL`),
   but `slancha-mesh discover` (pull) fetches node-info on **:8088** — which
