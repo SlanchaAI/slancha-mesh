@@ -1,0 +1,31 @@
+## slancha-mesh control plane — the registry.
+##
+##   docker compose -f docker/docker-compose.yml up
+##   curl http://127.0.0.1:8088/health        # → {"status":"ok"}
+##   curl http://127.0.0.1:8088/registry      # → latest RegistrySnapshot
+##
+## This is the L2 (mesh) on-ramp: the control plane only. Nodes are the
+## slancha-local image (the data plane) — point each node at this registry:
+##
+##   # on each node box (see SlanchaAi/slancha-local docker/):
+##   SLANCHA_MESH_REGISTRY_URL=http://<this-host>:8088 \
+##   SLANCHA_MESH_ADVERTISE_HOST=<node-magicdns-or-ip> \
+##   slancha serve
+##
+## Cross-machine: run the registry on a tailnet host (tag:gateway) and have
+## tagged specialist nodes heartbeat to it — see docs/SLANCHA_PROTOCOL_v0.1_DRAFT.md.
+## Auth: set SLANCHA_NODE_TOKEN to require Bearer on every endpoint but /health.
+
+services:
+  registry:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    image: slancha-registry:0.0.6
+    ports:
+      - "8088:8088"
+    environment:
+      - MESH_REGISTRY_HOST=0.0.0.0
+      - MESH_REGISTRY_PORT=8088
+      # - SLANCHA_NODE_TOKEN=change-me   # uncomment to require Bearer auth
+    restart: on-failure
