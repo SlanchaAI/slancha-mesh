@@ -1,0 +1,19 @@
+# Build context is the repo root; keep the registry image lean.
+.git
+.github
+.venv
+venv
+__pycache__
+*.pyc
+.pytest_cache
+.ruff_cache
+.gitnexus
+.claude
+corpus
+docs
+deploy
+tests
+mesh/tests
+uv.lock
+*.md
+!README.md
