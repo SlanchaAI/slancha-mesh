@@ -430,6 +430,13 @@ def _main(argv: list[str] | None = None) -> int:
     bindings = snapshot.get("specialists", {})
 
     runner = ProbeRunner()
+    if isinstance(runner.scorer, StubScorer):
+        logger.warning(
+            "StubScorer in use: quality scores reflect response LENGTH, not "
+            "answer quality. These values are written to the registry and feed "
+            "routing decisions — wire a real Scorer (e.g. LocalJudgeScorer) "
+            "before relying on quality_router_observed."
+        )
     for specialist_id, card in catalog.items():
         nodes = bindings.get(specialist_id, [])
         if not nodes:
