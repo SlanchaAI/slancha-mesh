@@ -106,12 +106,30 @@ def test_training_pass_runs_to_completion(tmp_path: Path):
         n_steps_planned=10,
         per_step_sleep_s=0,
     )
-    out = tp.run()
+    with pytest.warns(UserWarning, match="STUB"):
+        out = tp.run()
     assert out.is_dir()
     assert tp.meta is not None
     assert tp.meta.preempted is False
     assert tp.meta.n_steps_completed == 10
     assert tp.meta.n_examples == 20
+
+
+def test_run_emits_stub_warning(tmp_path: Path):
+    """run() must announce it is a stub so a caller can't mistake the
+    seed-derived checkpoint for a real trained adapter (the meta.stub flag
+    is only informational; this is the runtime tripwire)."""
+    tp = TrainingPass(
+        specialist_id="s",
+        base_model_id="b",
+        domain="math",
+        replay_store=_store_with(5),
+        checkpoint_dir=tmp_path,
+        n_steps_planned=2,
+        per_step_sleep_s=0,
+    )
+    with pytest.warns(UserWarning, match="performs no real PEFT"):
+        tp.run()
 
 
 def test_training_pass_writes_state_and_meta(tmp_path: Path):

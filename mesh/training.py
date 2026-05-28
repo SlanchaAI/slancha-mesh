@@ -32,6 +32,7 @@ import hashlib
 import json
 import threading
 import time
+import warnings
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -151,6 +152,19 @@ class TrainingPass:
         """
         if preempt_event is None:
             preempt_event = threading.Event()  # never set; loops to completion
+
+        # Loud tripwire: this is the v0.0.4 stub. _apply_lora_step does no
+        # real PEFT, so the checkpoint written below holds seed-derived
+        # placeholder weights (meta.stub=True), not a trained adapter. The
+        # docstrings say so, but a caller wiring this into a real loop needs
+        # a runtime signal too — don't let a stub pass masquerade as training.
+        warnings.warn(
+            "TrainingPass is a v0.0.4 STUB: it performs no real PEFT and the "
+            "checkpoint it writes contains placeholder weights (meta.stub=True), "
+            "not a trained adapter. Do not treat the result as a real quality "
+            "improvement.",
+            stacklevel=2,
+        )
 
         examples = self.replay_store.recent(n=self.n_examples, domain=self.domain)
         corpus_h = _corpus_hash(examples)

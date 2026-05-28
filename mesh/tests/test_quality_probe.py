@@ -77,6 +77,33 @@ def test_stub_scorer_monotone_on_length():
     assert long >= short
 
 
+def test_main_warns_when_stub_scorer_writes_to_registry(monkeypatch, caplog):
+    """The CLI defaults to StubScorer, whose length-based scores get written
+    to the registry and feed routing. It must loudly warn so an operator
+    doesn't mistake them for a real quality signal."""
+    import json as _json
+    import logging
+
+    from mesh.quality_probe import _main
+
+    payload = _json.dumps({"snapshot": {"catalog": {}, "specialists": {}}}).encode()
+
+    class _Resp:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+        def read(self):
+            return payload
+
+    monkeypatch.setattr("urllib.request.urlopen", lambda *a, **k: _Resp())
+    with caplog.at_level(logging.WARNING):
+        _main(["--base-url", "http://registry.test", "--token", "t"])
+    assert any("StubScorer" in r.message for r in caplog.records)
+
+
 # ── LocalJudgeScorer — LLM-judge over a mocked httpx.post ────────────────────
 
 
