@@ -79,3 +79,38 @@ def test_heartbeat_is_visible_in_models_with_advertised_host():
     node_urls = data["demo-model"]["routing_meta"]["node_urls"]
     assert node_urls == ["http://test-box.taila.ts.net:8004"]
     assert all("0.0.0.0" not in u and "127.0.0.1" not in u for u in node_urls)
+
+
+def test_node_server_models_payload_parses_through_discovery():
+    """Producer/consumer contract: build_node's /models output must parse
+    cleanly through mesh.discovery's pull consumer.
+
+    test_node_server only checks the /models JSON shape; test_discovery only
+    feeds *synthetic* payloads. Neither proves the producer (node_server) and
+    the consumer (discovery) agree on the `routing_meta` schema — the exact
+    seam pull-discovery rides. This co-tests both so they can't drift apart.
+    """
+    from mesh.discovery import _specialists_from_models
+    from mesh.registry import MeshRegistry
+
+    card = _card("demo-model")
+    registry = MeshRegistry(catalog=[card])
+    backend = NullBackend(card=card, base_url="http://0.0.0.0:8004")
+    daemon = ServeDaemon(
+        backends=[backend],
+        probe=_probe(),
+        registry=registry,
+        advertise_host="test-box.taila.ts.net",
+    )
+    daemon.start(wait_ready=True)
+    daemon.post_heartbeat()
+
+    app = create_mesh_app(registry=registry)
+    client = TestClient(app)
+    models = client.get("/models", params={"include": "routing_meta"}).json()
+
+    # Feed the REAL /models payload into the discovery consumer.
+    specs = _specialists_from_models(models, peer_host="test-box.taila.ts.net")
+    by_id = {s.specialist_id: s for s in specs}
+    assert "demo-model" in by_id, "discovery could not parse build_node's /models output"
+    assert by_id["demo-model"].node_urls == ("http://test-box.taila.ts.net:8004",)
