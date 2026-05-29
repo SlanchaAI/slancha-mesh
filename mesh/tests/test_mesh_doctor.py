@@ -15,6 +15,7 @@ from mesh.scripts.mesh_doctor import (
     NODE_TOKEN_ENV,
     REGISTRY_URL_ENV,
     check_model_port_acl_reachable,
+    check_node_info_discoverable,
     check_node_token_env,
     check_nvidia_smi,
     check_port_listener,
@@ -212,6 +213,26 @@ def test_check_model_port_acl_prefers_acl_when_both_listening():
 
 def test_check_model_port_acl_skip_when_nothing_listening():
     r = check_model_port_acl_reachable(is_listening=lambda p: False)
+    assert r.status == "skip"
+
+
+def test_check_node_info_pass_when_listening():
+    r = check_node_info_discoverable(is_listening=lambda p: p == NODE_INFO_PORT)
+    assert r.status == "pass"
+    assert "discover" in r.detail
+
+
+def test_check_node_info_warns_when_serving_but_no_node_info():
+    # the "tagged but undiscoverable" trap: a model port is up (8003), the
+    # node-info port is not — pull discovery finds the peer but no /models.
+    r = check_node_info_discoverable(is_listening=lambda p: p == 8003)
+    assert r.status == "warn"
+    assert "undiscoverable" in r.detail
+    assert "slancha-mesh up" in r.fix
+
+
+def test_check_node_info_skip_when_nothing_serving():
+    r = check_node_info_discoverable(is_listening=lambda p: False)
     assert r.status == "skip"
 
 
@@ -467,7 +488,7 @@ def test_run_node_doctor_assembles_expected_checks(monkeypatch):
         "engine.installed",
         "router.reachable",
         "ports.model_acl",
-        f"ports.{NODE_INFO_PORT}",
+        "ports.node_info",
     } <= ids
     # tailnet skip + engine pass + router warn + model_acl skip + nvidia skip +
     # token warn + port warn → warnings, no failures.

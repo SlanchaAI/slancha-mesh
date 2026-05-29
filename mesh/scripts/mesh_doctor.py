@@ -535,6 +535,49 @@ def check_model_port_acl_reachable(
     )
 
 
+def check_node_info_discoverable(
+    node_info_port: int = NODE_INFO_PORT,
+    is_listening: Callable[[int], bool] | None = None,
+) -> CheckResult:
+    """Is this node *pull-discoverable* — does it expose a node-info endpoint?
+
+    Pull discovery (`slancha-mesh discover`) fetches each peer's `/models`
+    from its node-info port (default :8088 — what `build_node` / `slancha-mesh
+    up` serves). A node can be on the tailnet, tagged `tag:specialist`, and
+    serving models yet be **invisible** to discovery if nothing answers on the
+    node-info port: the "tagged but undiscoverable" trap (a raw `vllm serve`
+    with a tailscale tag, no node-server). This surfaces that as a loud,
+    actionable warning rather than a silent zero-result discovery pass.
+
+    Detection mirrors `check_model_port_acl_reachable` (loopback connect,
+    advisory); `is_listening` is injectable for tests.
+    """
+    from mesh.tailnet import DEFAULT_MODEL_PORTS
+
+    if is_listening is None:
+        is_listening = _port_has_listener
+    if is_listening(node_info_port):
+        return CheckResult(
+            id="ports.node_info", status="pass",
+            detail=f"node-info on :{node_info_port} — pull-discoverable via `slancha-mesh discover`",
+        )
+    serving = [p for p in sorted(set(DEFAULT_MODEL_PORTS.values())) if is_listening(p)]
+    if serving:
+        return CheckResult(
+            id="ports.node_info", status="warn",
+            detail=(
+                f"serving on model port(s) {serving} but NO node-info responder on "
+                f":{node_info_port} — pull consumers can't fetch /models, so this node "
+                f"is tagged but undiscoverable"
+            ),
+            fix="`slancha-mesh up` serves node-info; a bare `vllm serve` + tailscale tag is not enough",
+        )
+    return CheckResult(
+        id="ports.node_info", status="skip",
+        detail=f"no node-info on :{node_info_port} and no model server detected (not a mesh node here)",
+    )
+
+
 def run_node_doctor(node_info_port: int = NODE_INFO_PORT) -> DoctorReport:
     """Pull/tailnet-model diagnostic for a `slancha-mesh` specialist node."""
     report = DoctorReport()
@@ -544,7 +587,7 @@ def run_node_doctor(node_info_port: int = NODE_INFO_PORT) -> DoctorReport:
     report.append(check_model_port_acl_reachable())
     report.append(check_nvidia_smi())
     report.append(check_node_token_env())
-    report.append(check_port_listener(node_info_port))
+    report.append(check_node_info_discoverable(node_info_port))
     report.finalize()
     return report
 
