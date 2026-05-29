@@ -13,8 +13,8 @@ from fastapi.testclient import TestClient
 from mesh.backends import NullBackend
 from mesh.models import NodeProbe, SpecialistCard
 from mesh.node_server import build_node
+from mesh.registry_app import create_mesh_app
 from mesh.serve import ServeDaemon
-from mesh.service import create_mesh_app
 
 
 def _card(specialist_id: str = "test-spec", backend: str = "ollama") -> SpecialistCard:

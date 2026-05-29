@@ -52,7 +52,7 @@ if ! systemctl --user list-units --type=service >/dev/null 2>&1; then
 fi
 
 # ───── Sanity: uvicorn importable from the source checkout ─────
-# We test-launch a `python3 -c 'import uvicorn; from mesh.service import app'`
+# We test-launch a `python3 -c 'import uvicorn; from mesh.registry_app import app'`
 # against the same PYTHONPATH the unit will use, so a missing dep surfaces
 # during install rather than at first boot.
 SOURCE_DIR="$HOME/Source/slancha-mesh"
@@ -62,9 +62,9 @@ if [[ ! -d "$SOURCE_DIR" ]]; then
     exit 1
 fi
 if ! PYTHONPATH="$SOURCE_DIR" python3 -c \
-    'import uvicorn; from mesh.service import app' >/dev/null 2>&1; then
+    'import uvicorn; from mesh.registry_app import app' >/dev/null 2>&1; then
     cat >&2 <<EOF
-error: uvicorn + mesh.service can't be imported from $SOURCE_DIR.
+error: uvicorn + mesh.registry_app can't be imported from $SOURCE_DIR.
        Common fixes:
          pip install -e '$SOURCE_DIR'
          # or for non-editable:

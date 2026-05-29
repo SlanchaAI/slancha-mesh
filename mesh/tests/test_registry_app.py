@@ -8,7 +8,7 @@ from fastapi.testclient import TestClient
 
 from mesh.models import NetworkLink, NodeHeartbeat
 from mesh.registry import HeartbeatPostRequest, MeshRegistry
-from mesh.service import NODE_TOKEN_ENV, create_mesh_app
+from mesh.registry_app import NODE_TOKEN_ENV, create_mesh_app
 from mesh.tests.conftest import make_heartbeat
 
 
@@ -263,3 +263,27 @@ def test_gpu_reserve_rejects_null_gb(monkeypatch):
     client = _new_client(monkeypatch)
     resp = client.post("/gpu/reserve", json={"gb_requested": None})
     assert resp.status_code == 400
+
+
+# ---------------------------------------------------------------------------
+# Back-compat: `mesh.service` is a deprecated re-export of `mesh.registry_app`
+# (#33). `uvicorn mesh.service:app` and `from mesh.service import ...` must keep
+# working (with a DeprecationWarning) for one release.
+# ---------------------------------------------------------------------------
+
+
+def test_mesh_service_shim_reexports_and_warns():
+    import importlib
+    import warnings
+
+    import mesh.registry_app as registry_app
+
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        shim = importlib.reload(importlib.import_module("mesh.service"))
+
+    assert any(issubclass(w.category, DeprecationWarning) for w in caught), "no DeprecationWarning"
+    # Re-exports the SAME objects (not copies) so `uvicorn mesh.service:app` is identical.
+    assert shim.app is registry_app.app
+    assert shim.create_mesh_app is registry_app.create_mesh_app
+    assert shim.NODE_TOKEN_ENV == registry_app.NODE_TOKEN_ENV

@@ -1,5 +1,5 @@
 ## slancha-mesh registry image — Apache 2.0
-## The mesh control plane: `uvicorn mesh.service:app` on :8088.
+## The mesh control plane: `uvicorn mesh.registry_app:app` on :8088.
 ## In-memory + event-sourced (rebuilds from heartbeats in ~5s); no persistence.
 ##
 ## Build: docker build -t slancha-registry -f docker/Dockerfile .
@@ -47,4 +47,4 @@ HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
 
 # exec-form sh -c: env vars expand AND `exec` hands PID 1 to uvicorn so it
 # receives SIGTERM directly for graceful shutdown (uvicorn drains in-flight).
-CMD ["sh", "-c", "exec uvicorn mesh.service:app --host ${MESH_REGISTRY_HOST} --port ${MESH_REGISTRY_PORT} --log-level info --no-access-log"]
+CMD ["sh", "-c", "exec uvicorn mesh.registry_app:app --host ${MESH_REGISTRY_HOST} --port ${MESH_REGISTRY_PORT} --log-level info --no-access-log"]

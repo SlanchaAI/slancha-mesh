@@ -2,7 +2,7 @@
 
 Until now the two node-side processes were disconnected: `ServeDaemon`
 (mesh/serve.py) heartbeats into an in-process `MeshRegistry` *or just logs*,
-while `create_mesh_app` (mesh/service.py) built its *own* registry that no
+while `create_mesh_app` (mesh/registry_app.py) built its *own* registry that no
 heartbeat ever reached. So `/models` listed catalog cards with empty
 `node_urls` — nothing was actually routable.
 
@@ -29,7 +29,7 @@ from mesh.catalog import load_catalog
 from mesh.models import SpecialistCard
 from mesh.registry import MeshRegistry
 from mesh.serve import ServeDaemon, build_daemon
-from mesh.service import create_mesh_app
+from mesh.registry_app import create_mesh_app
 from mesh.tailnet import TailnetConfig
 
 # Convention port for the node-info / discovery surface. Must be reachable by

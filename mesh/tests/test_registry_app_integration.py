@@ -25,7 +25,7 @@ from mesh.registry import (
     HeartbeatPostRequest,
     MeshRegistry,
 )
-from mesh.service import NODE_TOKEN_ENV, create_mesh_app
+from mesh.registry_app import NODE_TOKEN_ENV, create_mesh_app
 from mesh.tests.conftest import make_heartbeat
 
 
