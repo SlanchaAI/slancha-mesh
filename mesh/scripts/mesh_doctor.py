@@ -172,7 +172,7 @@ def check_registry_health(registry_url: str, timeout: float = 3.0) -> CheckResul
             detail=f"unreachable: {type(exc).__name__}",
             fix=(
                 "1) start the registry: systemctl --user start mesh-registry.service "
-                "(or `uvicorn mesh.service:app --port 8088`)  "
+                "(or `uvicorn mesh.registry_app:app --port 8088`)  "
                 "2) check the URL is correct"
             ),
         )

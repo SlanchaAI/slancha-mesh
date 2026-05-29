@@ -39,7 +39,7 @@ token. Tailnet membership + the ACL is the credential.
 Each node *does* keep a registry — but a local one, filled by its own
 heartbeat loop and served on its `/models` endpoint. A central, cross-node
 registry is **optional** (the *push* model): run it standalone with the
-[`docker/`](docker/docker-compose.yml) image, or mount `mesh.service` into
+[`docker/`](docker/docker-compose.yml) image, or mount `mesh.registry_app` into
 slancha-api ([Wire to slancha-api](#wire-to-slancha-api)). One gotcha — the
 per-node `/models` endpoint and the central registry **both default to
 `:8088`** but mean opposite things (a node's own self-description vs. one

@@ -19,7 +19,7 @@ from mesh.quality_probe import (
     detect_drift,
 )
 from mesh.registry import MeshRegistry, QualityObservationEvent
-from mesh.service import create_mesh_app
+from mesh.registry_app import create_mesh_app
 
 
 # ── Drift detection ─────────────────────────────────────────────────────────

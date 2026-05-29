@@ -139,7 +139,7 @@ bespoke setup.
 4. **Boot the mesh registry**, bound so the tailnet can reach it:
    ```bash
    SLANCHA_NODE_TOKEN=$(openssl rand -hex 32) \
-   uvicorn mesh.service:create_mesh_app --factory --host 0.0.0.0 --port 8088
+   uvicorn mesh.registry_app:create_mesh_app --factory --host 0.0.0.0 --port 8088
    ```
 
 5. **Serve specialists on the tailnet interface** at the model ports
