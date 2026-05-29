@@ -4,9 +4,13 @@ A `BaseBackend` knows how to (a) spawn a process that serves a
 specialist over an OpenAI-compatible HTTP endpoint, (b) report
 liveness + basic utilization, and (c) terminate cleanly.
 
-v0.0.2 ships `VLLMBackend` and a `NullBackend` for tests. `LlamaCppBackend`
-is sketched but not wired — the catalog cards mark `required_backend =
-"vllm"` for the only specialist with downloaded weights today.
+Today ships `VLLMBackend`, `OllamaBackend`, and a `NullBackend` for tests.
+The Ollama path is what unlocks every LocalLLaMA-style box (Mac, AMD,
+Windows, small consumer NVIDIA) that the catalog's vLLM-only cards
+silently exclude — `OllamaBackend` adopts the user's running Ollama
+daemon and serves any specialist whose card sets `ollama_tag`.
+`LlamaCppBackend` is sketched but not wired — set `gguf_path` on a card
+and serve directly through Ollama in the meantime.
 
 Why this split? Two reasons:
   1. The mesh router only cares about `node_url` + heartbeat. A clean
@@ -351,6 +355,247 @@ def _find_pid_on_port(port: int) -> int | None:
 
 
 # ---------------------------------------------------------------------------
+# Ollama
+# ---------------------------------------------------------------------------
+
+
+# Ollama's well-known port. Override per-backend via constructor; mesh's
+# CLI per-specialist port (`--base-port` + i) is informational for Ollama
+# because the daemon multiplexes all loaded models on one port.
+DEFAULT_OLLAMA_PORT = 11434
+
+# Models the user has running but the catalog hasn't yet pinned — when a
+# pre-warm `/api/generate` returns inside this many seconds, we treat the
+# model as already-loaded rather than as a cold pull.
+_OLLAMA_WARM_TIMEOUT_S = 5.0
+
+
+@dataclass
+class OllamaBackend:
+    """Adopt the local Ollama daemon and serve `card.ollama_tag` through it.
+
+    Ollama is a single multi-model daemon (one port, models loaded on
+    demand) — the opposite of vLLM's one-process-per-model. So this
+    backend does NOT spawn or kill an Ollama server; it expects one
+    already running on `host:port` (the typical homelab / LocalLLaMA
+    setup — `systemctl --user start ollama` or the desktop install), and
+    its job is to (1) make sure the daemon is reachable, (2) make sure
+    `ollama_tag` is pulled, (3) keep it pre-warmed so the first heartbeat
+    after `wait_ready()` sees it loaded, and (4) on `stop()` release the
+    VRAM via `keep_alive: 0` *without* tearing down the daemon a human
+    user (or another mesh node) might still need.
+
+    Tailnet exposure: the daemon defaults to `127.0.0.1`. For other
+    hosts on the tailnet to reach it, launch Ollama with
+    `OLLAMA_HOST=0.0.0.0:11434 ollama serve` (or set the env var in the
+    service unit). Mesh advertises the configured `host:port` and trusts
+    the caller to have done the binding — same posture as `--tailnet
+    --bind-host 0.0.0.0` on the vLLM path.
+
+    The OpenAI-compat endpoints (`/v1/chat/completions`, `/v1/models`)
+    are served at `base_url` so the rest of the mesh (selectors,
+    routers, dashboards) treats Ollama nodes the same as vLLM ones.
+    """
+
+    card: SpecialistCard
+    host: str = "127.0.0.1"
+    port: int = DEFAULT_OLLAMA_PORT
+    # How long to keep the model loaded after the last request — Ollama's
+    # default is "5m"; "30m" matches the heartbeat cadence headroom so a
+    # node with one Ollama specialist doesn't churn evict/load between
+    # quiet windows.
+    keep_alive: str = "30m"
+    log_path: Path | None = None
+
+    name: str = "ollama"
+    _started: bool = field(default=False, init=False, repr=False)
+
+    @property
+    def base_url(self) -> str:
+        return f"http://{self.host}:{self.port}"
+
+    @property
+    def health_url(self) -> str:
+        # `GET /` on Ollama returns 200 "Ollama is running" when up.
+        return f"{self.base_url}/"
+
+    def start(self) -> None:
+        """Validate daemon + ensure model is pulled. Non-blocking on weights.
+
+        We do NOT spawn `ollama serve` ourselves — the typical homelab
+        already has it running, and starting/stopping it from mesh would
+        race with the user's own sessions. Instead:
+
+        1. Confirm the daemon is reachable on `host:port` (else raise a
+           clear error pointing the operator at `ollama serve`).
+        2. Confirm `ollama_tag` is set on the card (else raise — the
+           catalog needs to map the specialist to an Ollama tag).
+        3. Best-effort pull if the tag isn't in `/api/tags` yet. The
+           pull is fire-and-forget here; `wait_ready()` is where we
+           actually block on it appearing.
+        """
+        if self.card.ollama_tag is None:
+            raise RuntimeError(
+                f"Ollama backend needs `ollama_tag` on specialist card "
+                f"{self.card.specialist_id!r} (e.g. 'qwen2.5-coder:7b'). "
+                f"Set it in the card TOML and re-run."
+            )
+        if not self._daemon_alive():
+            raise RuntimeError(
+                f"Ollama daemon not reachable at {self.base_url}. Start it with "
+                f"`OLLAMA_HOST={self.host}:{self.port} ollama serve` "
+                f"(or the systemd / desktop service) and try again."
+            )
+        if not self._model_pulled():
+            # Kick a pull in the background; wait_ready will poll for it.
+            # We deliberately don't block here so mesh's parallel `start()`
+            # loop (across N specialists) doesn't serialize on one pull.
+            self._kick_pull()
+        self._started = True
+
+    def wait_ready(self, timeout: float = 600.0) -> bool:
+        """Poll until the model is pulled and the daemon answers `/v1/models`.
+
+        First-time pulls of a ~4 GB GGUF on a 100 Mbit link can run several
+        minutes; the default timeout matches `VLLMBackend.wait_ready` so a
+        mixed-engine mesh start has one knob.
+        """
+        if not self._started:
+            return False
+        if self.card.ollama_tag is None:
+            return False
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            if self._daemon_alive() and self._model_pulled():
+                # Pre-warm: a no-op `/api/generate` loads the model into VRAM
+                # so the first routed request doesn't pay the cold-start cost.
+                if self._prewarm():
+                    return True
+            time.sleep(2.0)
+        return False
+
+    def is_alive(self) -> bool:
+        return self._daemon_alive() if self._started else False
+
+    def stop(self, timeout: float = 30.0) -> None:
+        """Release the model from VRAM, leave the daemon running. Idempotent.
+
+        `keep_alive: 0` tells Ollama to unload immediately on the next
+        completion of any in-flight request. We do NOT SIGTERM the
+        daemon — there may be other Ollama clients on this box (the
+        user, other mesh nodes, the desktop app).
+        """
+        if not self._started:
+            return
+        if self.card.ollama_tag is not None:
+            try:
+                httpx.post(
+                    f"{self.base_url}/api/generate",
+                    json={
+                        "model": self.card.ollama_tag,
+                        "prompt": "",
+                        "keep_alive": 0,
+                        "stream": False,
+                    },
+                    timeout=timeout,
+                )
+            except (httpx.HTTPError, OSError):
+                # Daemon already down, or unloading raised — either way,
+                # the VRAM will be released by the daemon's own eviction.
+                pass
+        self._started = False
+
+    def utilization(self) -> dict:
+        """Best-effort util via `/api/ps`. Ollama exposes no queue gauge.
+
+        `/api/ps` returns the currently-loaded models with `size_vram`.
+        We surface `running` = 1 iff `ollama_tag` is among them, and
+        `gpu_cache_pct` as a coarse VRAM-share proxy when it's there;
+        `queue_depth` stays 0 (Ollama doesn't publish one).
+        """
+        out = {"queue_depth": 0, "running": 0, "gpu_cache_pct": 0.0}
+        if self.card.ollama_tag is None:
+            return out
+        try:
+            r = httpx.get(f"{self.base_url}/api/ps", timeout=2.0)
+            if r.status_code != 200:
+                return out
+            data = r.json()
+        except (httpx.HTTPError, OSError, ValueError):
+            return out
+        for entry in data.get("models", []) or []:
+            if entry.get("name") == self.card.ollama_tag or entry.get("model") == self.card.ollama_tag:
+                out["running"] = 1
+                size_vram = entry.get("size_vram")
+                size_total = entry.get("size")
+                if size_vram and size_total:
+                    try:
+                        out["gpu_cache_pct"] = float(size_vram) / float(size_total)
+                    except (TypeError, ValueError, ZeroDivisionError):
+                        pass
+                break
+        return out
+
+    # --- internals ---
+
+    def _daemon_alive(self) -> bool:
+        try:
+            r = httpx.get(self.health_url, timeout=2.0)
+            return r.status_code == 200
+        except (httpx.HTTPError, OSError):
+            return False
+
+    def _model_pulled(self) -> bool:
+        """Is `ollama_tag` already in `/api/tags`? No pull required."""
+        try:
+            r = httpx.get(f"{self.base_url}/api/tags", timeout=2.0)
+            if r.status_code != 200:
+                return False
+            data = r.json()
+        except (httpx.HTTPError, OSError, ValueError):
+            return False
+        tags = {m.get("name") for m in (data.get("models") or [])}
+        tags.update(m.get("model") for m in (data.get("models") or []) if m.get("model"))
+        return self.card.ollama_tag in tags
+
+    def _kick_pull(self) -> None:
+        """Fire-and-forget `/api/pull`. wait_ready polls until it lands."""
+        try:
+            # `stream: false` lets us short-poll the result instead of holding
+            # this connection open across a multi-minute download.
+            httpx.post(
+                f"{self.base_url}/api/pull",
+                json={"name": self.card.ollama_tag, "stream": False},
+                timeout=2.0,
+            )
+        except (httpx.HTTPError, OSError):
+            # The pull is best-effort; wait_ready will retry via `_model_pulled`.
+            pass
+
+    def _prewarm(self) -> bool:
+        """Touch `/api/generate` with an empty prompt so Ollama loads the model.
+
+        Returns True if the daemon accepts the request (model is now hot),
+        False on any transport error. We use `keep_alive` from the
+        backend to set the live window.
+        """
+        try:
+            r = httpx.post(
+                f"{self.base_url}/api/generate",
+                json={
+                    "model": self.card.ollama_tag,
+                    "prompt": "",
+                    "keep_alive": self.keep_alive,
+                    "stream": False,
+                },
+                timeout=_OLLAMA_WARM_TIMEOUT_S,
+            )
+            return r.status_code == 200
+        except (httpx.HTTPError, OSError):
+            return False
+
+
+# ---------------------------------------------------------------------------
 # Null backend (tests + registry-only nodes)
 # ---------------------------------------------------------------------------
 
@@ -382,6 +627,8 @@ class NullBackend:
 
 __all__ = [
     "BaseBackend",
+    "DEFAULT_OLLAMA_PORT",
     "NullBackend",
+    "OllamaBackend",
     "VLLMBackend",
 ]

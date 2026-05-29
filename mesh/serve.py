@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import signal
 import sys
 import threading
@@ -26,7 +27,13 @@ from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 from pathlib import Path
 
-from mesh.backends import BaseBackend, NullBackend, VLLMBackend
+from mesh.backends import (
+    DEFAULT_OLLAMA_PORT,
+    BaseBackend,
+    NullBackend,
+    OllamaBackend,
+    VLLMBackend,
+)
 from mesh.catalog import load_catalog
 from mesh.idle import IdleDetector
 from mesh.models import (
@@ -383,10 +390,27 @@ def build_backend(
             log_path=log_path,
             cuda_capability=cuda_capability,
         )
-    if card.required_backend in ("llamacpp", "ollama", "mlx"):
-        # v0.0.2 ships vLLM only; non-vllm cards return NullBackend so the
-        # daemon doesn't crash on a mixed-backend catalog. Real llamacpp
-        # support is v0.0.3 (see the project history).
+    if card.required_backend == "ollama":
+        # Ollama multiplexes every loaded model on one daemon port (default
+        # 11434), so the per-specialist `port` from the serve loop is
+        # informational here — we advertise the daemon URL. The card needs
+        # an `ollama_tag` (validated inside the backend) and `OLLAMA_PORT`
+        # in the env wins if a non-default port is in use.
+        ollama_port = int(os.environ.get("OLLAMA_PORT", DEFAULT_OLLAMA_PORT))
+        # `card.ollama_tag` missing → NullBackend with a clear log line so
+        # mixed-catalog serve still boots and the operator gets a hint.
+        if card.ollama_tag is None:
+            return NullBackend(card=card)
+        return OllamaBackend(
+            card=card,
+            host=bind_host,
+            port=ollama_port,
+            log_path=log_path,
+        )
+    if card.required_backend in ("llamacpp", "mlx"):
+        # Not yet wired — set the card's `required_backend` to "ollama" +
+        # add `ollama_tag` to serve GGUF/MLX models through the Ollama path
+        # in the meantime.
         return NullBackend(card=card)
     raise ValueError(f"unknown backend {card.required_backend!r}")
 
