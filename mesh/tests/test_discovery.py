@@ -13,6 +13,8 @@ from __future__ import annotations
 
 import json
 
+import pytest
+
 from mesh.discovery import (
     DiscoveryResult,
     discover_specialists,
@@ -188,3 +190,52 @@ def test_discover_merges_same_specialist_on_multiple_nodes():
         "http://gb10-self.taila.ts.net:8003",
         "http://mac-mini.taila.ts.net:8003",
     }
+
+
+# ---------------------------------------------------------------------------
+# Malformed advertised port — must not abort the discovery pass (a node
+# can't DoS discovery through the very seam meant to defend against it).
+# ---------------------------------------------------------------------------
+
+
+def test_pin_host_raises_on_malformed_port():
+    # pin_host is a strict primitive; the aggregator is what swallows this.
+    with pytest.raises(ValueError):
+        pin_host("http://evil.example:notaport/v1", "mac-mini.ts.net")
+
+
+def test_discover_does_not_crash_on_malformed_advertised_port():
+    # One node advertises a malformed port; the pass must still complete and
+    # the other node must still aggregate (regression guard for the crash).
+    def fetch(host, port):
+        if host == "mac-mini.taila.ts.net":
+            return _models_payload("code-bad", port="notaport")  # type: ignore[arg-type]
+        return _models_payload("code-good", port=8003)
+
+    result = discover_specialists(_STATUS, fetch=fetch)
+    assert "code-good" in result.specialists  # healthy node unaffected
+    assert "code-bad" not in result.specialists  # bad-port entry skipped (unroutable)
+    assert "mac-mini.taila.ts.net" in result.reachable  # peer still reached
+
+
+def test_discover_keeps_valid_url_when_another_is_malformed():
+    payload = {
+        "object": "list",
+        "data": [
+            {
+                "id": "code-mix",
+                "object": "model",
+                "routing_meta": {
+                    "domain": "code",
+                    "node_urls": ["http://evil.example:notaport", "http://evil.example:8003"],
+                },
+            }
+        ],
+    }
+
+    result = discover_specialists(_STATUS, fetch=lambda host, port: payload)
+    spec = result.specialists["code-mix"]
+    assert spec.node_urls  # the valid url survived
+    assert all("notaport" not in u for u in spec.node_urls)  # malformed dropped
+    assert all(u.endswith(":8003") for u in spec.node_urls)  # only the good port
+    assert all("evil.example" not in u for u in spec.node_urls)  # still host-pinned

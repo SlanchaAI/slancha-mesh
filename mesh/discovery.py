@@ -148,6 +148,10 @@ def pin_host(node_url: str, peer_host: str) -> str:
     tell us *which host* to route to — that's the address we pulled from.
     Pinning here is what makes claim-hijack structurally impossible: even a
     node lying in its `/models` response can only redirect traffic to itself.
+
+    Raises ValueError if `node_url` carries a malformed port; callers handling
+    node-advertised URLs skip such entries (see `_specialists_from_models`)
+    rather than letting one bad node abort a discovery pass.
     """
     parts = urlsplit(node_url)
     port = parts.port
@@ -198,9 +202,18 @@ def _specialists_from_models(payload: dict, peer_host: str) -> list[DiscoveredSp
         if not isinstance(meta, dict):
             continue
         raw_urls = meta.get("node_urls") or []
-        pinned = tuple(
-            dict.fromkeys(pin_host(u, peer_host) for u in raw_urls if isinstance(u, str) and u)
-        )
+        pinned_urls: list[str] = []
+        for u in raw_urls:
+            if not isinstance(u, str) or not u:
+                continue
+            try:
+                pinned_urls.append(pin_host(u, peer_host))
+            except ValueError:
+                # Malformed port/host in a node-advertised URL: unroutable.
+                # Skip it rather than letting one bad node abort the whole
+                # pass (honors the never-raise discovery contract).
+                continue
+        pinned = tuple(dict.fromkeys(pinned_urls))
         if not pinned:
             continue  # advertised but no reachable binding
         quality = meta.get("quality") or {}
