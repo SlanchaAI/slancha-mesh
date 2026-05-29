@@ -114,6 +114,16 @@ class SpecialistCard(_Frozen):
     supports_lora_finetune: bool = False
     upstream_model_card: str | None = None
 
+    # Per-engine model tags. Catalog cards target HF (`model_id`) by default,
+    # but the alternative engines name models differently — Ollama uses
+    # repo-like tags (`qwen2.5-coder:7b-instruct-q4_K_M`), llama.cpp wants a
+    # local GGUF path, MLX wants a HF mlx-community repo. These are optional;
+    # when unset, the per-engine backend either falls back to a sensible
+    # heuristic or refuses to start with a clear "needs <field>" error.
+    ollama_tag: str | None = None
+    gguf_path: str | None = None
+    mlx_repo: str | None = None
+
     # Slancha-internal: coverage tier used by the tiered allocator.
     # Tier 1 = essentials (math/code/general); Tier 2 = important
     # (multilingual/tool_use/summarization); Tier 3 = specialized.

@@ -442,13 +442,13 @@ def test_daemon_routes_around_queue_full():
 
 
 def test_build_backend_falls_back_to_null_for_unsupported_backend():
-    """v0.0.2 ships vLLM only; non-vllm cards should not crash the daemon."""
+    """`llamacpp` / `mlx` cards aren't yet wired; should not crash the daemon."""
     card = SpecialistCard(
         model_id="test/llama",
         specialist_id="llama-test",
         domain="general",
         difficulty_tiers=["easy"],
-        required_backend="llamacpp",  # not yet implemented
+        required_backend="llamacpp",  # not yet wired — see backends.py
         storage_gb=4.0,
         runtime_gb=6.0,
         min_vram_gb=8.0,
@@ -459,6 +459,74 @@ def test_build_backend_falls_back_to_null_for_unsupported_backend():
     be = build_backend(card, port=9001)
     assert be.name == "null"
     assert be.card.specialist_id == "llama-test"
+
+
+def test_build_backend_ollama_route_with_tag_returns_ollama_backend():
+    """An ollama card with `ollama_tag` set wires to `OllamaBackend` —
+    the per-specialist port is informational (Ollama multiplexes on one port).
+    """
+    card = SpecialistCard(
+        model_id="Qwen/Qwen2.5-Coder-7B-Instruct",
+        specialist_id="qwen2.5-coder-7b",
+        domain="code",
+        difficulty_tiers=["medium"],
+        required_backend="ollama",
+        storage_gb=5.0,
+        runtime_gb=6.0,
+        min_vram_gb=8.0,
+        context_window=32768,
+        n_layers=28,
+        estimated_tps_at={"gb10": 40.0},
+        ollama_tag="qwen2.5-coder:7b",
+    )
+    be = build_backend(card, port=8013)  # 8013 is informational for Ollama
+    assert be.name == "ollama"
+    # Default Ollama daemon port — overridable via OLLAMA_PORT env (covered below).
+    assert be.base_url.endswith(":11434")
+
+
+def test_build_backend_ollama_route_without_tag_falls_back_to_null():
+    """A card declaring ollama but missing `ollama_tag` shouldn't crash the
+    daemon — fall back to NullBackend so a mixed catalog still boots and the
+    operator gets a hint to add the tag.
+    """
+    card = SpecialistCard(
+        model_id="Qwen/Qwen2.5-Coder-7B-Instruct",
+        specialist_id="qwen2.5-coder-7b-untagged",
+        domain="code",
+        difficulty_tiers=["medium"],
+        required_backend="ollama",
+        storage_gb=5.0,
+        runtime_gb=6.0,
+        min_vram_gb=8.0,
+        context_window=32768,
+        n_layers=28,
+        estimated_tps_at={"gb10": 40.0},
+        # ollama_tag intentionally unset
+    )
+    be = build_backend(card, port=8013)
+    assert be.name == "null"
+
+
+def test_build_backend_ollama_respects_OLLAMA_PORT_env(monkeypatch):
+    """Operators with a non-default Ollama bind shouldn't have to hand-edit cards."""
+    monkeypatch.setenv("OLLAMA_PORT", "11500")
+    card = SpecialistCard(
+        model_id="Qwen/Qwen2.5-Coder-7B-Instruct",
+        specialist_id="qwen2.5-coder-7b",
+        domain="code",
+        difficulty_tiers=["medium"],
+        required_backend="ollama",
+        storage_gb=5.0,
+        runtime_gb=6.0,
+        min_vram_gb=8.0,
+        context_window=32768,
+        n_layers=28,
+        estimated_tps_at={"gb10": 40.0},
+        ollama_tag="qwen2.5-coder:7b",
+    )
+    be = build_backend(card, port=8013)
+    assert be.base_url.endswith(":11500")
 
 
 def test_build_daemon_raises_on_unknown_specialist():
