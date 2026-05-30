@@ -41,3 +41,7 @@ htmlcov/
 !.env.example
 *.key
 *.pem
+
+# Merge/patch artifacts
+*.orig
+*.rej
