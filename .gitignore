@@ -41,3 +41,9 @@ htmlcov/
 !.env.example
 *.key
 *.pem
+.gitnexus
+
+# Local agent tooling (per-developer; not shared)
+.claude/
+.mcp.json
+CLAUDE.md
