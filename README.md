@@ -198,6 +198,9 @@ slancha-mesh plan
 # Doctor: diagnose tagged-but-undiscoverable, ACL gaps, etc.
 slancha-mesh doctor
 
+# Run the node boot-persistent (Linux systemd / macOS launchd / Windows task) — see NODE_SETUP.md
+slancha-mesh service install   # defaults to `up --auto`
+
 # Bring up a Spark node end-to-end (probe → vLLM serve → smoke test)
 bash mesh/scripts/bring-up-spark.sh qwen3-coder-30b-a3b-fp8 8001
 ```

@@ -467,6 +467,108 @@ def cmd_router(args: argparse.Namespace) -> int:
 
 
 # ---------------------------------------------------------------------------
+# service — install/uninstall/status as a boot-persistent OS service
+# ---------------------------------------------------------------------------
+
+
+def _resolve_exec_path() -> str:
+    """Best-effort absolute path to the `slancha-mesh` console script.
+
+    Prefer the installed entrypoint (what NODE_SETUP.md's ExecStart used);
+    fall back to `sys.executable -m mesh.cli`-shaped invocation only if the
+    script can't be found on PATH.
+    """
+    import shutil
+
+    found = shutil.which("slancha-mesh")
+    if found:
+        return found
+    # Fallback: the launcher dir next to the running interpreter.
+    candidate = Path(sys.executable).with_name("slancha-mesh")
+    return str(candidate)
+
+
+def cmd_service(args: argparse.Namespace) -> int:
+    """Install / uninstall / status of a boot-persistent node service.
+
+    THIN wrapper: renders the OS-specific unit/plist/task for
+    `slancha-mesh up <pass-through args>` via mesh.service_install (pure
+    rendering), then does the filesystem + launchctl/schtasks/systemctl side
+    effects. `--dry-run` prints the rendered artifact + the commands without
+    touching the system — the same text the tests assert on.
+    """
+    import subprocess
+
+    from mesh.service_install import (
+        UnsupportedOSError,
+        build_service_plan,
+        current_os,
+    )
+
+    os_name = current_os()
+    exec_path = _resolve_exec_path()
+    # Trailing args (after the action) are forwarded to `slancha-mesh up`.
+    up_args = ["up", *args.up_args] if args.up_args else None
+
+    try:
+        plan = build_service_plan(os_name, exec_path, up_args=up_args, role=args.role)
+    except UnsupportedOSError as exc:
+        _print(f"[service] {exc}")
+        return 2
+
+    _print(f"[service] os={plan.os_name} label={plan.label} action={args.action}")
+
+    if args.action == "status":
+        if args.dry_run:
+            for cmd in plan.status_cmds:
+                _print(f"[service] would run: {' '.join(cmd)}")
+            return 0
+        rc = 0
+        for cmd in plan.status_cmds:
+            rc = subprocess.call(cmd) or rc
+        return rc
+
+    if args.action == "uninstall":
+        if args.dry_run:
+            for cmd in plan.uninstall_cmds:
+                _print(f"[service] would run: {' '.join(cmd)}")
+            if plan.path is not None:
+                _print(f"[service] would remove: {plan.path}")
+            return 0
+        for cmd in plan.uninstall_cmds:
+            subprocess.call(cmd)  # tolerate not-installed
+        if plan.path is not None and plan.path.exists():
+            plan.path.unlink()
+            _print(f"[service] removed: {plan.path}")
+        _print("[service] uninstalled.")
+        return 0
+
+    # install (default)
+    if plan.path is not None:
+        _print(f"[service] unit:\n{plan.text}")
+    else:
+        _print(f"[service] task: {plan.text}")
+
+    if args.dry_run:
+        if plan.path is not None:
+            _print(f"[service] would write: {plan.path}")
+        for cmd in plan.install_cmds:
+            _print(f"[service] would run: {' '.join(cmd)}")
+        return 0
+
+    if plan.path is not None:
+        plan.path.parent.mkdir(parents=True, exist_ok=True)
+        plan.path.write_text(plan.text)
+        _print(f"[service] wrote: {plan.path}")
+    for cmd in plan.install_cmds:
+        # launchd's pre-unload (idempotency) is allowed to fail on a fresh
+        # install; the subsequent load is the one that matters.
+        subprocess.call(cmd)
+    _print("[service] installed. The node will start on boot.")
+    return 0
+
+
+# ---------------------------------------------------------------------------
 # Parser
 # ---------------------------------------------------------------------------
 
@@ -613,11 +715,47 @@ def build_parser() -> argparse.ArgumentParser:
                     help="uvicorn log level.")
     rt.set_defaults(func=cmd_router)
 
+    # service — boot-persistent OS service (systemd / launchd / schtasks)
+    svc = sub.add_parser(
+        "service",
+        help=(
+            "Install/uninstall/status of this node as a boot-persistent service. "
+            "OS-aware: systemd --user (Linux), launchd (macOS), Scheduled Task (Windows). "
+            "Wraps `slancha-mesh up`."
+        ),
+    )
+    svc.add_argument("action", choices=["install", "uninstall", "status"],
+                     help="install (default happy path), uninstall, or status.")
+    svc.add_argument("--role", default="node",
+                     help="Service role suffix → label ai.slancha.mesh.<role> (default 'node').")
+    svc.add_argument("--dry-run", action="store_true",
+                     help="Render the unit/plist/task + print the commands; touch nothing.")
+    # Args forwarded to `slancha-mesh up` go after a literal `--` so they
+    # don't collide with `service`'s own flags, e.g.
+    #   slancha-mesh service install --role gb10 -- --specialist code-7b
+    # main() splits argv on the first `--` and stashes the tail in `up_args`
+    # before argparse runs (argparse can't reliably route a flag-bearing
+    # passthrough past a preceding optional). Default empty = `up --auto`.
+    svc.set_defaults(func=cmd_service, up_args=[])
+
     return ap
 
 
 def main(argv: list[str] | None = None) -> int:
+    if argv is None:
+        argv = sys.argv[1:]
+    # `service` forwards everything after a literal `--` to `slancha-mesh up`.
+    # Split it out before argparse so a flag-bearing passthrough (e.g.
+    # `service install -- --specialist x`) can't collide with `service`'s own
+    # flags or get swallowed by a REMAINDER positional.
+    passthrough: list[str] = []
+    if argv and argv[0] == "service" and "--" in argv:
+        cut = argv.index("--")
+        passthrough = argv[cut + 1:]
+        argv = argv[:cut]
     args = build_parser().parse_args(argv)
+    if getattr(args, "command", None) == "service":
+        args.up_args = passthrough
     return args.func(args)
 
 
