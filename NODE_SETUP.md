@@ -89,17 +89,38 @@ curl https://api.slancha.ai/v1/chat/completions \
 
 ## Running it as a service (survives reboots)
 
+`slancha-mesh service` installs the node as a boot-persistent service on
+**Linux, macOS, and Windows** — one command per OS. It auto-detects the OS and
+wraps `slancha-mesh up`. Pass args for `up` after a literal `--`; with none it
+defaults to `up --auto`.
+
+```bash
+slancha-mesh service install                       # up --auto, default 'node' role
+slancha-mesh service install --role gb10 -- --specialist code-7b
+slancha-mesh service install --dry-run             # print the unit/plist/task, touch nothing
+slancha-mesh service status
+slancha-mesh service uninstall
+```
+
+The `--role` suffix names the artifact (`ai.slancha.mesh.<role>`) so one box
+can host several node services.
+
+### Linux — systemd `--user` unit
+
+`install` writes `~/.config/systemd/user/ai.slancha.mesh.<role>.service` and
+runs `systemctl --user enable --now`. Equivalent to the hand-written unit:
+
 ```ini
-# ~/.config/systemd/user/slancha-mesh.service
+# ~/.config/systemd/user/ai.slancha.mesh.node.service
 [Unit]
-Description=slancha-mesh specialist node
+Description=slancha-mesh node (node)
 After=network-online.target tailscaled.service
 Wants=network-online.target
 
 [Service]
 Type=simple
 # --key only needed for the very first join; safe to drop afterward.
-ExecStart=%h/.local/bin/slancha-mesh up --auto
+ExecStart=/home/you/.local/bin/slancha-mesh up --auto
 Restart=on-failure
 RestartSec=15
 
@@ -107,9 +128,41 @@ RestartSec=15
 WantedBy=default.target
 ```
 
+(Headless boxes may need `loginctl enable-linger $USER` for the `--user` unit
+to start before login.)
+
+### macOS — launchd LaunchAgent
+
+`install` writes `~/Library/LaunchAgents/ai.slancha.mesh.<role>.plist` and runs
+`launchctl load`. `RunAtLoad` starts it at login; `KeepAlive` restarts it on
+crash (the launchd analog of `Restart=on-failure`).
+
 ```bash
-systemctl --user enable --now slancha-mesh.service
+slancha-mesh service install
+# verify:
+launchctl list ai.slancha.mesh.node
 ```
+
+### Windows — ONSTART Scheduled Task
+
+`install` registers a Scheduled Task via `schtasks /Create /SC ONSTART`:
+
+```
+schtasks /Create /TN "ai.slancha.mesh.node" /SC ONSTART /RL HIGHEST /F /TR "<slancha-mesh> up --auto"
+```
+
+We use a Scheduled Task rather than a true Windows service because it ships
+with every Windows install — **no extra download** (unlike `nssm`) — and
+`ONSTART` runs at boot without an interactive login. Tradeoff: a Scheduled Task
+isn't SCM-managed, so it has no service-grade automatic crash-restart. If you
+need that, install [`nssm`](https://nssm.cc) and wrap the same command:
+
+```
+nssm install slancha-mesh "C:\path\to\slancha-mesh.exe" up --auto
+```
+
+`slancha-mesh service uninstall` removes the task (`schtasks /Delete`); for the
+nssm path use `nssm remove slancha-mesh`.
 
 ## Don'ts (silent-failure traps `up` already guards against)
 
