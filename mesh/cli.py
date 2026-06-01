@@ -467,6 +467,73 @@ def cmd_router(args: argparse.Namespace) -> int:
 
 
 # ---------------------------------------------------------------------------
+# loop — supervised autonomous loop-runner around the champion gate (#82)
+# ---------------------------------------------------------------------------
+
+
+def _loop_runner_from_args(args: argparse.Namespace):
+    """Build a LoopRunner wired to the real execute leg (train+eval→gate).
+
+    THIN: imports the runner lazily (keeps `--help` fast and the import
+    torch-free), wires the IdleDetector seam so a `train` experiment only
+    fires when the node is idle, and leaves the heavy `execute_fn` to the
+    operator binding (the default raises until wired — the runner never
+    pulls in torch just to construct). The `run` path here drives ticks;
+    `status`/`enqueue` don't need an execute_fn at all.
+    """
+    from mesh.idle import IdleDetector
+    from mesh.loop_runner import ExperimentResult, LoopRunner
+
+    def _unwired(spec: dict, preempt) -> "ExperimentResult":  # noqa: ANN001
+        return ExperimentResult(
+            ok=False,
+            error=(
+                "no execute_fn wired: the train+eval execute leg is the "
+                "operator/deployment binding (TrainingPass(...).run + an eval "
+                "pass). Wire it via the LoopRunner API; the CLI ships the "
+                "queue/idle-gate/gate/circuit-break shell."
+            ),
+        )
+
+    return LoopRunner(
+        run_dir=Path(args.run_dir),
+        execute_fn=_unwired,
+        idle_detector=IdleDetector(),
+    )
+
+
+def cmd_loop(args: argparse.Namespace) -> int:
+    """`slancha-mesh loop {run,status,enqueue}` — thin wrap of mesh.loop_runner."""
+    from mesh.loop_runner import enqueue as loop_enqueue
+    from mesh.loop_runner import read_queue
+
+    run_dir = Path(args.run_dir)
+
+    if args.loop_action == "status":
+        status_path = run_dir / "status.json"
+        if not status_path.exists():
+            _print(f"[loop] no status.json under {run_dir} (runner not started yet)")
+            return 1
+        _print(status_path.read_text())
+        return 0
+
+    if args.loop_action == "enqueue":
+        spec = json.loads(args.spec_json) if args.spec_json else json.loads(sys.stdin.read())
+        added = loop_enqueue(run_dir / "queue.jsonl", spec)
+        _print(f"[loop] {'enqueued' if added else 'skipped (dup id)'}: {spec.get('id')}")
+        _print(f"[loop] queue depth: {len(read_queue(run_dir / 'queue.jsonl'))}")
+        return 0 if added else 1
+
+    # run
+    runner = _loop_runner_from_args(args)
+    _print(f"[loop] starting runner; run_dir={run_dir} "
+           f"max_ticks={args.max_ticks if args.max_ticks else 'unbounded'}")
+    ticks = runner.run_forever(max_ticks=args.max_ticks or None)
+    _print(f"[loop] ran {ticks} tick(s); paused={runner.paused}")
+    return 0
+
+
+# ---------------------------------------------------------------------------
 # service — install/uninstall/status as a boot-persistent OS service
 # ---------------------------------------------------------------------------
 
@@ -714,6 +781,32 @@ def build_parser() -> argparse.ArgumentParser:
                     choices=["critical", "error", "warning", "info", "debug", "trace"],
                     help="uvicorn log level.")
     rt.set_defaults(func=cmd_router)
+
+    # loop — supervised autonomous loop-runner around the champion gate (#82)
+    lp = sub.add_parser(
+        "loop",
+        help=(
+            "Supervised autonomous loop-runner around the champion gate: "
+            "queue → idle-gate → execute → gate → promote/archive, with a "
+            "circuit-breaker + idle-WAIT. Subactions: run / status / enqueue."
+        ),
+    )
+    lp.add_argument("--run-dir", default="loop_run",
+                    help="Dir for queue.jsonl / status.json / decisions.jsonl / runner.log "
+                         "(default: ./loop_run).")
+    loop_sub = lp.add_subparsers(dest="loop_action", required=True)
+
+    lp_run = loop_sub.add_parser("run", help="Drive the loop (long-lived; pair with systemd Restart=always).")
+    lp_run.add_argument("--max-ticks", type=int, default=0,
+                        help="Stop after N ticks (0 = unbounded). For a one-shot drain / smoke test.")
+
+    loop_sub.add_parser("status", help="Print status.json (the runner heartbeat).")
+
+    lp_enq = loop_sub.add_parser("enqueue", help="Append an experiment spec (deduped by id).")
+    lp_enq.add_argument("spec_json", nargs="?", default=None,
+                        help="Experiment spec as a JSON object. Omit to read JSON from stdin.")
+
+    lp.set_defaults(func=cmd_loop)
 
     # service — boot-persistent OS service (systemd / launchd / schtasks)
     svc = sub.add_parser(
