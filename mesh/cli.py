@@ -371,6 +371,24 @@ def cmd_serve(args: argparse.Namespace) -> int:
 
 
 # ---------------------------------------------------------------------------
+# gpu — local + cluster GPU coordination (folds the `mesh-gpu` CLI in)
+# ---------------------------------------------------------------------------
+
+
+def cmd_gpu(args: argparse.Namespace) -> int:
+    """Run the `mesh-gpu` CLI under `slancha-mesh gpu`.
+
+    Passthrough to `mesh.gpu.cli.main` (same parser the standalone `mesh-gpu`
+    entrypoint uses), so `slancha-mesh gpu status` == `mesh-gpu status`. With
+    no args, prints the gpu sub-help instead of erroring on the required
+    subcommand.
+    """
+    from mesh.gpu.cli import main as gpu_main
+
+    return gpu_main(args.rest or ["--help"])
+
+
+# ---------------------------------------------------------------------------
 # router — standalone OpenAI-compat proxy over a discovered mesh
 # ---------------------------------------------------------------------------
 
@@ -453,8 +471,33 @@ def cmd_router(args: argparse.Namespace) -> int:
 # ---------------------------------------------------------------------------
 
 
+# Sibling operator tools installed as their own console scripts (see
+# pyproject `[project.scripts]`). Listed in the `--help` epilog so every
+# user-facing tool is discoverable from `slancha-mesh --help`, even the
+# ones that ship as standalone commands rather than subcommands.
+SIBLING_TOOLS = (
+    ("mesh-gpu", "GPU coordination (also `slancha-mesh gpu ...`)"),
+    ("mesh-doctor", "Push/central-registry deployment diagnostics (also `slancha-mesh doctor` for tailnet nodes)"),
+    ("slancha-mesh-validate", "Lint SpecialistCard TOMLs (`mesh.validate_card`)"),
+    ("slancha-mesh-gate", "Promotion gate: ACCEPT/REJECT a challenger router_version (`mesh.eval.gate`)"),
+)
+
+
+def _sibling_tools_epilog() -> str:
+    lines = ["related operator commands (installed as their own scripts):"]
+    width = max(len(name) for name, _ in SIBLING_TOOLS)
+    for name, desc in SIBLING_TOOLS:
+        lines.append(f"  {name:<{width}}  {desc}")
+    return "\n".join(lines)
+
+
 def build_parser() -> argparse.ArgumentParser:
-    ap = argparse.ArgumentParser(prog="slancha-mesh", description=__doc__)
+    ap = argparse.ArgumentParser(
+        prog="slancha-mesh",
+        description=__doc__,
+        epilog=_sibling_tools_epilog(),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
     sub = ap.add_subparsers(dest="command", required=True)
 
     # up
@@ -526,6 +569,16 @@ def build_parser() -> argparse.ArgumentParser:
     sv = sub.add_parser("serve", help="Daemon-only serve (dev/non-tailnet); passthrough to `python -m mesh.serve`.")
     sv.add_argument("rest", nargs=argparse.REMAINDER, help="Args forwarded to mesh.serve.")
     sv.set_defaults(func=cmd_serve)
+
+    # gpu (folds the `mesh-gpu` CLI in; also installed as the `mesh-gpu` script)
+    gpu = sub.add_parser(
+        "gpu",
+        help="Local + cluster GPU coordination (status/reserve/release/wait/cluster-*). "
+             "Same as the `mesh-gpu` command.",
+    )
+    gpu.add_argument("rest", nargs=argparse.REMAINDER,
+                     help="Args forwarded to `mesh-gpu` (e.g. `status`, `reserve --gb 8 --duration 1h`).")
+    gpu.set_defaults(func=cmd_gpu)
 
     # router — standalone OpenAI-compat proxy over a discovered mesh
     rt = sub.add_parser(
