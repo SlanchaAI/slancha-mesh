@@ -414,13 +414,13 @@ def select_mesh_route_with_pref(
             signals, registry_snapshot, max_queue_ms, cloud_fallback_model
         )
 
-    # Reject pref fields we cannot honor with the data routes carry (#56),
-    # before any routing work — so a caller never believes a ceiling applied
-    # when it silently didn't.
-    _reject_unsupported_pref(pref)
-
     if admin_ceiling:
         pref = _clamp_pref_with_ceiling(pref, admin_ceiling)
+
+    # Reject pref fields we cannot honor with the data routes carry (#56),
+    # after admin ceilings are applied so operator-injected unsupported
+    # constraints cannot be silently dropped either.
+    _reject_unsupported_pref(pref)
 
     # allow_fallbacks=False suppresses the trailing cloud entry (the mesh
     # must serve the request or it fails); default/True keeps it.

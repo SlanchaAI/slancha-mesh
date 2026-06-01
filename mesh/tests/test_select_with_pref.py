@@ -424,6 +424,21 @@ def test_max_ttft_ms_is_rejected_as_unsupported():
         select_mesh_route_with_pref(_signals(), snap, pref=PrefVector(max_ttft_ms=200))
 
 
+def test_admin_ceiling_injected_max_ttft_ms_is_rejected_as_unsupported():
+    """Admin ceilings cannot smuggle in unsupported TTFT constraints."""
+    snap = _make_snapshot(
+        {"general|medium": [_route("a")]},
+        {"a": _card("a")},
+    )
+    with pytest.raises(ValueError, match="max_ttft_ms"):
+        select_mesh_route_with_pref(
+            _signals(),
+            snap,
+            pref=PrefVector(),
+            admin_ceiling={"max_ttft_ms": 200},
+        )
+
+
 def test_min_throughput_tps_is_rejected_as_unsupported():
     """No per-route throughput is measured → setting min_throughput_tps must raise."""
     snap = _make_snapshot(
