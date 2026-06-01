@@ -384,3 +384,89 @@ def test_cmd_router_uses_explicit_peers_when_set(monkeypatch):
         "--refresh-s", "30",
     ])
     assert rc == 0
+
+
+# ---------------------------------------------------------------------------
+# operator-tool discoverability (issue #58)
+#
+# Every user-facing operator tool must be reachable after `pip install -e .`:
+# either as a `slancha-mesh` subcommand or as its own console script that is
+# surfaced in `slancha-mesh --help`. These lock that contract so a tool can't
+# silently regress into being module-path-only again.
+# ---------------------------------------------------------------------------
+
+# (script name, "module:attr") — must match pyproject `[project.scripts]`.
+EXPECTED_CONSOLE_SCRIPTS = {
+    "slancha-mesh": ("mesh.cli", "main"),
+    "slancha-mesh-validate": ("mesh.validate_card", "main"),
+    "slancha-mesh-gate": ("mesh.eval.gate", "main"),
+    "mesh-gpu": ("mesh.gpu.cli", "main"),
+    "mesh-doctor": ("mesh.scripts.mesh_doctor", "main"),
+}
+
+
+def _pyproject_scripts() -> dict[str, str]:
+    import tomllib
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parents[2]  # mesh/tests/ -> repo root
+    with (root / "pyproject.toml").open("rb") as f:
+        data = tomllib.load(f)
+    return data["project"]["scripts"]
+
+
+def test_pyproject_declares_every_operator_console_script():
+    """pyproject `[project.scripts]` must declare every operator entrypoint
+    so `pip install -e .` makes each tool a real, on-PATH command."""
+    declared = _pyproject_scripts()
+    for name, (module, attr) in EXPECTED_CONSOLE_SCRIPTS.items():
+        assert declared.get(name) == f"{module}:{attr}", (
+            f"{name} missing/wrong in pyproject [project.scripts]"
+        )
+
+
+def test_every_console_script_target_imports_and_is_callable():
+    """Each declared entrypoint must resolve to a callable `main` — guards
+    against a script that points at a module path that no longer has main()."""
+    import importlib
+
+    for name, (module, attr) in EXPECTED_CONSOLE_SCRIPTS.items():
+        mod = importlib.import_module(module)
+        fn = getattr(mod, attr, None)
+        assert callable(fn), f"{name} -> {module}:{attr} is not callable"
+
+
+def test_gpu_is_a_slancha_mesh_subcommand():
+    """`slancha-mesh gpu ...` must fold in the `mesh-gpu` CLI (passthrough)."""
+    args = _parse(["gpu", "status"])
+    assert args.rest == ["status"]
+    assert args.func.__name__ == "cmd_gpu"
+
+
+def test_cmd_gpu_delegates_to_gpu_cli_main(monkeypatch):
+    """cmd_gpu forwards its remainder args to mesh.gpu.cli.main verbatim."""
+    seen: dict = {}
+
+    def fake_gpu_main(argv):
+        seen["argv"] = argv
+        return 0
+
+    monkeypatch.setattr("mesh.gpu.cli.main", fake_gpu_main)
+    rc = main(["gpu", "status"])
+    assert rc == 0
+    assert seen["argv"] == ["status"]
+
+
+def test_slancha_mesh_help_lists_every_operator_tool(capsys):
+    """`slancha-mesh --help` must mention every user-facing tool — the
+    subcommands plus the sibling console scripts (issue #58 acceptance)."""
+    with pytest.raises(SystemExit):
+        _parse(["--help"])
+    help_text = capsys.readouterr().out
+    # Subcommands covering install/diagnostics/routing/serve.
+    for sub in ("up", "discover", "status", "doctor", "serve", "router", "gpu", "plan"):
+        assert sub in help_text, f"subcommand {sub!r} missing from --help"
+    # Sibling console scripts (validation, eval gate, gpu, doctor) surfaced in
+    # the epilog so module-path-only tools are discoverable.
+    for tool in ("mesh-gpu", "mesh-doctor", "slancha-mesh-validate", "slancha-mesh-gate"):
+        assert tool in help_text, f"sibling tool {tool!r} missing from --help epilog"

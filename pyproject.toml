@@ -40,6 +40,8 @@ Repository = "https://github.com/SlanchaAi/slancha-mesh"
 slancha-mesh = "mesh.cli:main"
 slancha-mesh-validate = "mesh.validate_card:main"
 slancha-mesh-gate = "mesh.eval.gate:main"
+mesh-gpu = "mesh.gpu.cli:main"
+mesh-doctor = "mesh.scripts.mesh_doctor:main"
 
 [project.optional-dependencies]
 serve = [
