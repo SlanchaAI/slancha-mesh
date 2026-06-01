@@ -82,6 +82,24 @@ class PromotionVerdict:
     decided_at: str = ""
     thresholds: dict[str, Any] = field(default_factory=dict)
 
+    # ── provenance (issue #57) ───────────────────────────────────────────
+    # Additive + optional so existing callers/tests keep working. Sourced
+    # from the eval rows decide() consumes (the runner now stamps these),
+    # so a verdict can reconstruct the exact artifacts + holdout/corpus
+    # identities on both sides without re-reading the eval log. Per-side
+    # because champion and challenger are different artifacts.
+    artifact_sha256_champion: str | None = None
+    artifact_sha256_challenger: str | None = None
+    holdout_manifest_sha256: str | None = None
+    training_corpus_hash_champion: str | None = None
+    training_corpus_hash_challenger: str | None = None
+    base_model_fingerprint_champion: str | None = None
+    base_model_fingerprint_challenger: str | None = None
+    router_config_hash_champion: str | None = None
+    router_config_hash_challenger: str | None = None
+    code_sha_champion: str | None = None
+    code_sha_challenger: str | None = None
+
     def to_row(self) -> dict[str, Any]:
         return {
             **asdict(self),
@@ -98,12 +116,21 @@ def decide(
     champion: dict[str, Any],
     challenger: dict[str, Any],
     thresholds: GateThresholds = GateThresholds(),
+    champion_is_stub: bool | None = None,
+    challenger_is_stub: bool | None = None,
 ) -> PromotionVerdict:
     """Return a PromotionVerdict for (champion, challenger).
 
     Inputs are EvalRecord rows as written by mesh.eval.runner. Domains
     not present in *both* rows are skipped from the per-domain check —
     we cannot say a domain regressed if the champion never saw it.
+
+    Stub artifacts can never be promoted (issue #55): if either side was
+    produced by the contract-only TrainingPass stub (no real PEFT, only
+    placeholder weights), the verdict is reject regardless of scores. A
+    side is treated as a stub when its eval row carries `meta_stub == True`
+    (stamped from the checkpoint's CheckpointMeta.stub), or when the
+    explicit `champion_is_stub` / `challenger_is_stub` overrides say so.
     """
     champion_mean = float(_row_field(champion, "mean_score", 0.0))
     challenger_mean = float(_row_field(challenger, "mean_score", 0.0))
@@ -122,8 +149,23 @@ def decide(
     n_a = int(_row_field(champion, "n_eval", 0))
     n_b = int(_row_field(challenger, "n_eval", 0))
 
+    champ_stub = (
+        bool(_row_field(champion, "meta_stub", False))
+        if champion_is_stub is None
+        else champion_is_stub
+    )
+    chall_stub = (
+        bool(_row_field(challenger, "meta_stub", False))
+        if challenger_is_stub is None
+        else challenger_is_stub
+    )
+
     reasons: list[str] = []
 
+    if champ_stub:
+        reasons.append("champion stub artifact cannot be promoted")
+    if chall_stub:
+        reasons.append("challenger stub artifact cannot be promoted")
     if thresholds.require_judge_match and judge_a != judge_b:
         reasons.append(
             f"judge_model mismatch: champion={judge_a!r} challenger={judge_b!r}"
@@ -162,6 +204,22 @@ def decide(
         judge_model_challenger=judge_b,
         decided_at=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
         thresholds=asdict(thresholds),
+        # Provenance carried straight off the eval rows (issue #57). The
+        # runner stamps these; older rows simply have them absent → None.
+        artifact_sha256_champion=champion.get("artifact_sha256"),
+        artifact_sha256_challenger=challenger.get("artifact_sha256"),
+        holdout_manifest_sha256=(
+            challenger.get("holdout_manifest_sha256")
+            or champion.get("holdout_manifest_sha256")
+        ),
+        training_corpus_hash_champion=champion.get("training_corpus_hash"),
+        training_corpus_hash_challenger=challenger.get("training_corpus_hash"),
+        base_model_fingerprint_champion=champion.get("base_model_fingerprint"),
+        base_model_fingerprint_challenger=challenger.get("base_model_fingerprint"),
+        router_config_hash_champion=champion.get("router_config_hash"),
+        router_config_hash_challenger=challenger.get("router_config_hash"),
+        code_sha_champion=champion.get("code_sha"),
+        code_sha_challenger=challenger.get("code_sha"),
     )
 
 

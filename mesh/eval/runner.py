@@ -38,8 +38,10 @@ Design constraints honoured:
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import statistics
+import subprocess
 import sys
 import time
 from collections import defaultdict
@@ -166,6 +168,21 @@ class EvalPass:
     n_dispatch_failures: int
     n_scorer_failures: int
 
+    # ── provenance (issue #57) ───────────────────────────────────────────
+    # All additive + optional (default None) so dashboard/eval.py and any
+    # existing row reader keep parsing old-shape rows. These let a verdict
+    # reconstruct the exact evaluated artifacts + holdout/corpus identities
+    # without reading logs. Computed-locally fields (holdout_manifest_sha256,
+    # code_sha) are filled by run_eval_pass; caller-supplied fields
+    # (artifact_sha256, base_model_fingerprint, training_corpus_hash,
+    # router_config_hash) are threaded through as parameters.
+    artifact_sha256: str | None = None
+    holdout_manifest_sha256: str | None = None
+    training_corpus_hash: str | None = None
+    base_model_fingerprint: str | None = None
+    router_config_hash: str | None = None
+    code_sha: str | None = None
+
     def to_row(self) -> dict[str, Any]:
         """JSON-serializable row for eval_results.jsonl."""
         return {
@@ -185,6 +202,12 @@ class EvalPass:
             "elapsed_seconds":    round(self.elapsed_seconds, 3),
             "n_dispatch_failures": self.n_dispatch_failures,
             "n_scorer_failures":  self.n_scorer_failures,
+            "artifact_sha256":         self.artifact_sha256,
+            "holdout_manifest_sha256": self.holdout_manifest_sha256,
+            "training_corpus_hash":    self.training_corpus_hash,
+            "base_model_fingerprint":  self.base_model_fingerprint,
+            "router_config_hash":      self.router_config_hash,
+            "code_sha":                self.code_sha,
         }
 
 
@@ -195,6 +218,33 @@ def _domain_of(record: dict[str, Any]) -> str:
         if isinstance(d, str):
             return d
     return "unknown"
+
+
+def _sha256_file(path: Path) -> str | None:
+    """sha256 of a file's bytes; None if it can't be read (missing/IO)."""
+    try:
+        h = hashlib.sha256()
+        with path.open("rb") as f:
+            for chunk in iter(lambda: f.read(1 << 16), b""):
+                h.update(chunk)
+        return h.hexdigest()
+    except OSError:
+        return None
+
+
+def _git_code_sha() -> str | None:
+    """`git rev-parse HEAD` for the working tree; None outside a git repo."""
+    try:
+        out = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            capture_output=True, text=True, timeout=5,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if out.returncode != 0:
+        return None
+    sha = out.stdout.strip()
+    return sha or None
 
 
 def _record_text(record: dict[str, Any]) -> str:
@@ -216,10 +266,24 @@ def run_eval_pass(
     router_version: str,
     fast_head_version: int | None = None,
     overrides_version: int | None = None,
+    artifact_sha256: str | None = None,
+    training_corpus_hash: str | None = None,
+    base_model_fingerprint: str | None = None,
+    router_config_hash: str | None = None,
+    code_sha: str | None = None,
     now: Callable[[], float] = time.time,
 ) -> EvalPass:
     """Route every seed record through `dispatcher`, score each with
     `scorer`, return an aggregated EvalPass.
+
+    Provenance (issue #57): the holdout manifest sha256 is computed here
+    from `seed.manifest_path`; the code SHA defaults to `git rev-parse
+    HEAD` (None outside a git checkout) unless `code_sha` is passed. The
+    candidate artifact hash, training-corpus hash, base-model fingerprint,
+    and router-config hash must come from the caller (populate from
+    `CheckpointMeta`: corpus_hash → training_corpus_hash, base_model_id →
+    base_model_fingerprint) — they cannot be derived from the eval pass
+    itself. All are optional; a row written without them stays old-shape.
 
     Failure model:
       - dispatcher raises EndpointError → record gets score 0, counted in
@@ -296,6 +360,12 @@ def run_eval_pass(
         elapsed_seconds=now() - started,
         n_dispatch_failures=n_dispatch_failures,
         n_scorer_failures=n_scorer_failures,
+        artifact_sha256=artifact_sha256,
+        holdout_manifest_sha256=_sha256_file(seed.manifest_path),
+        training_corpus_hash=training_corpus_hash,
+        base_model_fingerprint=base_model_fingerprint,
+        router_config_hash=router_config_hash,
+        code_sha=code_sha if code_sha is not None else _git_code_sha(),
     )
 
 
@@ -337,6 +407,17 @@ def main(argv: list[str] | None = None) -> int:
                          "(e.g., 'fast_head_v3+overrides_v17')")
     ap.add_argument("--fast-head-version", type=int, default=None)
     ap.add_argument("--overrides-version", type=int, default=None)
+    ap.add_argument("--artifact-sha256", default=None,
+                    help="Hash of the candidate artifact being evaluated "
+                         "(provenance, issue #57)")
+    ap.add_argument("--training-corpus-hash", default=None,
+                    help="Training corpus hash of the artifact "
+                         "(CheckpointMeta.corpus_hash)")
+    ap.add_argument("--base-model-fingerprint", default=None,
+                    help="Base-model fingerprint the artifact fine-tuned from "
+                         "(CheckpointMeta.base_model_id)")
+    ap.add_argument("--router-config-hash", default=None,
+                    help="Hash of the router config used for this pass")
     ap.add_argument("--output", type=Path,
                     default=Path("dashboard/eval_results.jsonl"),
                     help="Append target (default: dashboard/eval_results.jsonl)")
@@ -385,6 +466,10 @@ def main(argv: list[str] | None = None) -> int:
         router_version=args.router_version,
         fast_head_version=args.fast_head_version,
         overrides_version=args.overrides_version,
+        artifact_sha256=args.artifact_sha256,
+        training_corpus_hash=args.training_corpus_hash,
+        base_model_fingerprint=args.base_model_fingerprint,
+        router_config_hash=args.router_config_hash,
     )
     append_pass(args.output, ep)
     print(

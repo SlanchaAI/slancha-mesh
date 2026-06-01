@@ -210,6 +210,93 @@ def test_eval_pass_row_omits_no_required_fields(tmp_path: Path):
         assert required in row, f"missing {required!r}"
 
 
+# ─── provenance (issue #57) ──────────────────────────────────────────────────
+
+
+def test_eval_pass_computes_local_provenance(tmp_path: Path):
+    """holdout_manifest_sha256 + code_sha are computed by the runner."""
+    seed = _build_verified_seed(tmp_path, {"code": 1})
+    ep = run_eval_pass(
+        seed=seed, dispatcher=FakeDispatcher(), scorer=FakeScorer(scores=[5.0]),
+        router_version="v",
+    )
+    # Manifest hash = sha256 of the manifest file the seed was loaded from.
+    import hashlib
+    expected = hashlib.sha256(seed.manifest_path.read_bytes()).hexdigest()
+    assert ep.holdout_manifest_sha256 == expected
+    # Running inside this git checkout → a 40-char hex SHA.
+    assert ep.code_sha is not None
+    assert len(ep.code_sha) == 40
+
+
+def test_eval_pass_threads_caller_provenance(tmp_path: Path):
+    """Caller-supplied provenance (artifact/corpus/base-model/router/code)
+    lands on both the dataclass and the row."""
+    seed = _build_verified_seed(tmp_path, {"code": 1})
+    ep = run_eval_pass(
+        seed=seed, dispatcher=FakeDispatcher(), scorer=FakeScorer(scores=[5.0]),
+        router_version="v",
+        artifact_sha256="sha256:artifact",
+        training_corpus_hash="sha256:corpus",
+        base_model_fingerprint="qwen3-8b@abc",
+        router_config_hash="sha256:routercfg",
+        code_sha="deadbeef",
+    )
+    assert ep.artifact_sha256 == "sha256:artifact"
+    assert ep.training_corpus_hash == "sha256:corpus"
+    assert ep.base_model_fingerprint == "qwen3-8b@abc"
+    assert ep.router_config_hash == "sha256:routercfg"
+    assert ep.code_sha == "deadbeef"  # explicit override, not git
+    row = ep.to_row()
+    assert row["artifact_sha256"] == "sha256:artifact"
+    assert row["training_corpus_hash"] == "sha256:corpus"
+    assert row["base_model_fingerprint"] == "qwen3-8b@abc"
+    assert row["router_config_hash"] == "sha256:routercfg"
+    assert row["code_sha"] == "deadbeef"
+    assert row["holdout_manifest_sha256"] is not None
+
+
+def test_eval_pass_provenance_defaults_none_when_not_supplied(tmp_path: Path):
+    """Caller-sourced provenance defaults to None — old-shape callers stay
+    intact; only locally-computable fields auto-populate."""
+    seed = _build_verified_seed(tmp_path, {"code": 1})
+    ep = run_eval_pass(
+        seed=seed, dispatcher=FakeDispatcher(), scorer=FakeScorer(scores=[5.0]),
+        router_version="v",
+    )
+    row = ep.to_row()
+    assert row["artifact_sha256"] is None
+    assert row["training_corpus_hash"] is None
+    assert row["base_model_fingerprint"] is None
+    assert row["router_config_hash"] is None
+
+
+def test_provenance_row_parses_through_dashboard_reader(tmp_path: Path):
+    """A row carrying provenance must still be parseable by the existing
+    dashboard consumer; an old-shape row (no provenance keys) must too."""
+    from mesh.dashboard.eval import load_eval_results, mean_score_over_time
+
+    seed = _build_verified_seed(tmp_path, {"code": 2})
+    ep = run_eval_pass(
+        seed=seed, dispatcher=FakeDispatcher(), scorer=FakeScorer(scores=[5.0, 4.0]),
+        router_version="v", artifact_sha256="sha256:art",
+    )
+    out = tmp_path / "eval_results.jsonl"
+    append_pass(out, ep)
+    # An old-shape row with none of the new keys present at all.
+    old_row = {
+        "ts": "2026-05-01T00:00:00Z", "router_version": "old",
+        "n_eval": 2, "judge_model": "j", "mean_score": 3.0,
+        "median_score": 3.0, "pct_acceptable": 0.5, "pct_failure": 0.0,
+        "per_domain_mean": {"code": 3.0}, "per_model_mean": {"fake-model": 3.0},
+    }
+    with out.open("a", encoding="utf-8") as f:
+        f.write(json.dumps(old_row) + "\n")
+    rows = load_eval_results(out)
+    assert len(rows) == 2
+    assert mean_score_over_time(rows)  # consumer unaffected by extra/missing keys
+
+
 # ─── HttpxEndpointDispatcher — real HTTP dispatch error isolation ────────────
 # The runner's failure-isolation model (a raised EndpointError → one failed
 # prompt, not an aborted pass) depends on dispatch() raising EndpointError on

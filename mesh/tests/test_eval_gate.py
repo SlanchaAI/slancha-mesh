@@ -110,6 +110,100 @@ def test_verdict_carries_audit_metadata():
     assert v.decided_at.endswith("Z")
 
 
+def test_verdict_carries_provenance_from_rows():
+    """decide() lifts per-side provenance straight off the eval rows so a
+    verdict can reconstruct the exact artifacts + holdout/corpus identities
+    (issue #57)."""
+    champ = _row("v1", 3.50, {"code": 3.5}, judge_model="j")
+    chall = _row("v2", 3.80, {"code": 3.8}, judge_model="j")
+    champ.update({
+        "artifact_sha256": "sha256:champ-art",
+        "holdout_manifest_sha256": "sha256:holdout",
+        "training_corpus_hash": "sha256:champ-corpus",
+        "base_model_fingerprint": "qwen3-8b@aaa",
+        "router_config_hash": "sha256:champ-cfg",
+        "code_sha": "champsha",
+    })
+    chall.update({
+        "artifact_sha256": "sha256:chall-art",
+        "holdout_manifest_sha256": "sha256:holdout",
+        "training_corpus_hash": "sha256:chall-corpus",
+        "base_model_fingerprint": "qwen3-8b@bbb",
+        "router_config_hash": "sha256:chall-cfg",
+        "code_sha": "challsha",
+    })
+    v = decide(champ, chall)
+    assert v.artifact_sha256_champion == "sha256:champ-art"
+    assert v.artifact_sha256_challenger == "sha256:chall-art"
+    assert v.holdout_manifest_sha256 == "sha256:holdout"
+    assert v.training_corpus_hash_champion == "sha256:champ-corpus"
+    assert v.training_corpus_hash_challenger == "sha256:chall-corpus"
+    assert v.base_model_fingerprint_champion == "qwen3-8b@aaa"
+    assert v.base_model_fingerprint_challenger == "qwen3-8b@bbb"
+    assert v.router_config_hash_champion == "sha256:champ-cfg"
+    assert v.router_config_hash_challenger == "sha256:chall-cfg"
+    assert v.code_sha_champion == "champsha"
+    assert v.code_sha_challenger == "challsha"
+    # And it survives the JSONL round-trip.
+    assert v.to_row()["artifact_sha256_challenger"] == "sha256:chall-art"
+
+
+def test_verdict_provenance_defaults_none_on_old_rows():
+    """Old-shape eval rows (no provenance keys) → verdict provenance None,
+    not a KeyError. Back-compat with pre-#57 rows."""
+    champ = _row("v1", 3.50, {"code": 3.5}, judge_model="j")
+    chall = _row("v2", 3.80, {"code": 3.8}, judge_model="j")
+    v = decide(champ, chall)
+    assert v.artifact_sha256_champion is None
+    assert v.artifact_sha256_challenger is None
+    assert v.holdout_manifest_sha256 is None
+    assert v.base_model_fingerprint_challenger is None
+    assert v.code_sha_champion is None
+    # Verdict still serializes cleanly.
+    row = v.to_row()
+    assert "artifact_sha256_challenger" in row
+    assert row["artifact_sha256_challenger"] is None
+
+
+def test_rejects_stub_challenger_even_when_scores_pass():
+    """A stub-produced challenger artifact can never be promoted, even with
+    a clean mean lift and no per-domain regression (issue #55)."""
+    champ = _row("v1", 3.50, {"code": 3.5, "general": 3.5})
+    chall = _row("v2", 3.90, {"code": 3.9, "general": 3.9})  # would otherwise pass
+    chall["meta_stub"] = True
+    v = decide(champ, chall)
+    assert v.accept is False
+    assert any("stub artifact cannot be promoted" in r for r in v.reject_reasons)
+
+
+def test_rejects_stub_champion():
+    """A stub champion is just as poisonous a baseline — reject."""
+    champ = _row("v1", 3.50, {"code": 3.5})
+    champ["meta_stub"] = True
+    chall = _row("v2", 3.90, {"code": 3.9})
+    v = decide(champ, chall)
+    assert v.accept is False
+    assert any("stub artifact cannot be promoted" in r for r in v.reject_reasons)
+
+
+def test_rejects_stub_via_explicit_param():
+    """Stub can also be flagged out-of-band via decide()'s optional params."""
+    champ = _row("v1", 3.50, {"code": 3.5})
+    chall = _row("v2", 3.90, {"code": 3.9})
+    v = decide(champ, chall, challenger_is_stub=True)
+    assert v.accept is False
+    assert any("stub artifact cannot be promoted" in r for r in v.reject_reasons)
+
+
+def test_non_stub_artifacts_still_promote_normally():
+    """Absence of any stub marker → gate behaves exactly as before."""
+    champ = _row("v1", 3.50, {"code": 3.5, "general": 3.5})
+    chall = _row("v2", 3.80, {"code": 3.8, "general": 3.8})
+    v = decide(champ, chall)
+    assert v.accept is True
+    assert not any("stub" in r for r in v.reject_reasons)
+
+
 def test_append_verdict_writes_jsonl(tmp_path: Path):
     out = tmp_path / "promotions.jsonl"
     v = PromotionVerdict(
