@@ -82,6 +82,24 @@ class PromotionVerdict:
     decided_at: str = ""
     thresholds: dict[str, Any] = field(default_factory=dict)
 
+    # ── provenance (issue #57) ───────────────────────────────────────────
+    # Additive + optional so existing callers/tests keep working. Sourced
+    # from the eval rows decide() consumes (the runner now stamps these),
+    # so a verdict can reconstruct the exact artifacts + holdout/corpus
+    # identities on both sides without re-reading the eval log. Per-side
+    # because champion and challenger are different artifacts.
+    artifact_sha256_champion: str | None = None
+    artifact_sha256_challenger: str | None = None
+    holdout_manifest_sha256: str | None = None
+    training_corpus_hash_champion: str | None = None
+    training_corpus_hash_challenger: str | None = None
+    base_model_fingerprint_champion: str | None = None
+    base_model_fingerprint_challenger: str | None = None
+    router_config_hash_champion: str | None = None
+    router_config_hash_challenger: str | None = None
+    code_sha_champion: str | None = None
+    code_sha_challenger: str | None = None
+
     def to_row(self) -> dict[str, Any]:
         return {
             **asdict(self),
@@ -162,6 +180,22 @@ def decide(
         judge_model_challenger=judge_b,
         decided_at=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
         thresholds=asdict(thresholds),
+        # Provenance carried straight off the eval rows (issue #57). The
+        # runner stamps these; older rows simply have them absent → None.
+        artifact_sha256_champion=champion.get("artifact_sha256"),
+        artifact_sha256_challenger=challenger.get("artifact_sha256"),
+        holdout_manifest_sha256=(
+            challenger.get("holdout_manifest_sha256")
+            or champion.get("holdout_manifest_sha256")
+        ),
+        training_corpus_hash_champion=champion.get("training_corpus_hash"),
+        training_corpus_hash_challenger=challenger.get("training_corpus_hash"),
+        base_model_fingerprint_champion=champion.get("base_model_fingerprint"),
+        base_model_fingerprint_challenger=challenger.get("base_model_fingerprint"),
+        router_config_hash_champion=champion.get("router_config_hash"),
+        router_config_hash_challenger=challenger.get("router_config_hash"),
+        code_sha_champion=champion.get("code_sha"),
+        code_sha_challenger=challenger.get("code_sha"),
     )
 
 
