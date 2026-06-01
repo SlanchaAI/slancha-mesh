@@ -165,7 +165,8 @@ class TrainingPass:
         """
         # Refuse to run silently: this is a contract-only stub (issue #55).
         # It performs no real PEFT — real training is tracked in issue #65.
-        # A caller must explicitly pass allow_stub=True to acknowledge that
+        # A caller must explicitly construct with allow_stub=True to
+        # acknowledge that
         # the resulting checkpoint holds placeholder weights, not a trained
         # adapter, and must not be promoted as a real quality improvement.
         if not self.allow_stub:
@@ -173,8 +174,8 @@ class TrainingPass:
                 "TrainingPass is a contract-only STUB: it performs no real "
                 "PEFT and the checkpoint it would write contains placeholder "
                 "weights (meta.stub=True), not a trained adapter. Refusing to "
-                "run. Pass allow_stub=True to run it knowingly as a stub. Real "
-                "PEFT is tracked in issue #65."
+                "run. Construct TrainingPass(..., allow_stub=True) to run it "
+                "knowingly as a stub. Real PEFT is tracked in issue #65."
             )
 
         if preempt_event is None:

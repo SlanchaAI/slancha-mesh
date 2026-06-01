@@ -292,8 +292,10 @@ def test_run_without_allow_stub_raises(tmp_path: Path):
     )
     with pytest.raises(StubTrainingError) as exc:
         tp.run()
-    assert "stub" in str(exc.value).lower()
-    assert "#65" in str(exc.value)
+    msg = str(exc.value)
+    assert "stub" in msg.lower()
+    assert "TrainingPass(..., allow_stub=True)" in msg
+    assert "#65" in msg
     assert tp.meta is None
     assert not any(tmp_path.iterdir())
 
