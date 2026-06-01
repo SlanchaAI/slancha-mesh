@@ -115,7 +115,7 @@ runs on the other loop's runner unmodified, because both speak this line.
   "source": "traffic_cluster",      // provenance of ignition: "traffic_cluster" | "operator"
   "generator": {                    // ignition payload; runner ignores fields it doesn't need
     "cluster_id": "c_0427",
-    "centroid_ref": "frozen://...", // the cluster centroid — see "centroid is the judge" below
+    "centroid_ref": "frozen://sha256:5ab9456e…", // content-hash of the cluster centroid — see "frozen refs are content-hashes" + "centroid is the judge"
     "n_traces": 1840,               // rolling-window volume (drives priority + the ignition gate)
     "drift": 0.11,                  // centroid cosine drift across recent windows
     "exemplar_trace_ids": [ ... ]   // for corpus assembly
@@ -126,12 +126,12 @@ runs on the other loop's runner unmodified, because both speak this line.
     "primary": "mean_holdout_score",
     "axes": ["per_domain_score", "coherence"],   // per-axis non-regression set
     "floor": 1.0,                   // stub-reject below this
-    "min_gain": 0.0,
+    "min_gain": 0.0,                // separate floor a gain must clear at all
     "min_n": 20,                    // a.k.a. min_n_eval in slancha-mesh GateThresholds
-    "judge_model": "qwen3-8b@v1",   // stamped id@version; cross-judge ⇒ REJECT_JUDGE_MISMATCH
+    "judge_model": "qwen3-8b@5ab9456e",  // "<grader-id>@<holdout content-hash short>" — keys judge-match on the FROZEN BYTES, not just a model name (closes the silent-swap gap)
     "min_champion_lifetime_s": 3600,// hysteresis: fresh champion can't be dethroned on a marginal gain
-    "decisive_gain": 2.0,           // gain ≥ this bypasses hysteresis
-    "holdout_ref": "frozen://holdout_v3"
+    "decisive_gain": 2.0,           // ABSOLUTE primary-metric delta; gain ≥ this bypasses hysteresis (not a multiple of min_gain)
+    "holdout_ref": "frozen://sha256:<centroid-hash>+<stats-hash>"  // centroid bytes AND its {mean,std} normalization stats
   },
   "env": { "PYTORCH_CUDA_ALLOC_CONF": "expandable_segments:True" },  // single-token form only (torch 2.11)
   "status": "pending"
@@ -140,6 +140,18 @@ runs on the other loop's runner unmodified, because both speak this line.
 
 **Field-name note (portability):** `min_n` (forge) ≡ `min_n_eval` (slancha-mesh
 `GateThresholds`). A runner accepts either; emit `min_n` for cross-loop portability.
+
+**Frozen refs are content-hashes, not paths.** `centroid_ref` / `holdout_ref` use
+`frozen://sha256:<64hex>`; the runner resolves the hash against a content-addressed store
+and **verifies the bytes on load**. This is not cosmetic — it makes "frozen" *provable*.
+A bare path can be silently swapped: the judge drifts but `judge_model`'s id is unchanged,
+so judge-match (#6) can't catch it. With a content-hash ref, any change to the frozen
+judge = a new ref = a new `judge_model` short-hash = judge-match **fires by construction**.
+So the spec stamps `judge_model = "<grader-id>@<holdout-content-hash-short>"`, keying #6 on
+the actual frozen bytes rather than a mutable name. A runner MAY accept a bare path in dev,
+but MUST emit `frozen://sha256` for portability + audit. `decisive_gain` is an **absolute**
+primary-metric delta (`gain = candidate[primary] − champion[primary]`), distinct from
+`min_gain` (the floor a gain must clear at all). *(Both pinned with forge, 2026-06-01.)*
 
 ### Contract rules for the seam
 
