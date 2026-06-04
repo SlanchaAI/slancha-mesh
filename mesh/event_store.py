@@ -65,6 +65,15 @@ class EventStore(Protocol):
         """Yield every persisted envelope in append order. Called once at boot."""
         ...
 
+    # OPTIONAL — `compact(envelopes)`:
+    #   Atomically REPLACE the durable log with `envelopes` (the registry's
+    #   current compacted state). The registry calls this when it compacts its
+    #   in-memory model (dropping superseded heartbeats), to bound the durable
+    #   log too — otherwise an append-only store grows forever and boot replay
+    #   slows without limit. A store that omits `compact` is simply never
+    #   compacted (safe; the registry hasattr-checks). Must be atomic: a crash
+    #   mid-compact must leave either the old log or the new set, never a partial.
+
 
 class NullEventStore:
     """Default store: NO durability. `append` is a no-op; `replay` is empty — so
@@ -75,6 +84,9 @@ class NullEventStore:
 
     def replay(self) -> Iterable[EventEnvelope]:  # noqa: D102 - nothing persisted
         return ()
+
+    def compact(self, envelopes: Iterable[EventEnvelope]) -> None:  # noqa: D102 - no-op
+        return None
 
 
 __all__ = ["EventEnvelope", "EventStore", "NullEventStore"]

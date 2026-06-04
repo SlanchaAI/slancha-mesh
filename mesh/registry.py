@@ -320,6 +320,13 @@ class MeshRegistry:
             for i, ev in enumerate(self._events)
             if not isinstance(ev, HeartbeatEvent) or i in keep
         ]
+        # Bound the DURABLE log too: replace it with the compacted set so an
+        # append-only store doesn't grow forever (slow boot replay). Optional —
+        # a store without `compact` is simply left to grow (safe). Re-encoding is
+        # fine: compact replaces the log wholesale.
+        compact = getattr(self._store, "compact", None)
+        if compact is not None:
+            compact([_encode(ev) for ev in self._events])
 
     def register_catalog(self, cards: list[SpecialistCard]) -> None:
         with self._lock:
