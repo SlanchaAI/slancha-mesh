@@ -33,6 +33,37 @@ def test_ssrf_and_bad_scheme_rejected(url):
         validate_node_url(url)
 
 
+@pytest.mark.parametrize("url", [
+    "http://2852039166/",                  # decimal int form of 169.254.169.254 (IMDS)
+    "http://0xA9.0xFE.0xA9.0xFE/",          # hex-octet form of 169.254.169.254
+    "http://0xA9FEA9FE/",                    # single hex form of 169.254.169.254
+    "http://[::ffff:169.254.169.254]/",     # IPv4-mapped IPv6 → link-local
+])
+def test_obfuscated_imds_evasions_rejected(url):
+    """Decimal/hex/octal/mapped encodings of the cloud metadata IP that an HTTP
+    client still dials must be canonicalized + blocked (SSRF evasion)."""
+    with pytest.raises(NodeUrlError):
+        validate_node_url(url)
+
+
+def test_ipv6_loopback_symmetric_with_ipv4(monkeypatch):
+    """::1 is loopback like 127.0.0.1 — allowed by default (was wrongly rejected as
+    'reserved'), and blocked by the SAME flag."""
+    assert validate_node_url("http://[::1]:8003/") == "http://[::1]:8003/"
+    monkeypatch.setenv("SLANCHA_NODE_URL_BLOCK_LOOPBACK", "1")
+    with pytest.raises(NodeUrlError):
+        validate_node_url("http://[::1]:8003/")
+
+
+def test_short_form_loopback_canonicalized(monkeypatch):
+    """127.1 → 127.0.0.1: a short-form loopback follows the loopback policy, not
+    silently treated as an opaque hostname."""
+    assert validate_node_url("http://127.1:8003/") == "http://127.1:8003/"
+    monkeypatch.setenv("SLANCHA_NODE_URL_BLOCK_LOOPBACK", "1")
+    with pytest.raises(NodeUrlError):
+        validate_node_url("http://127.1:8003/")
+
+
 def test_block_loopback_when_flag_set(monkeypatch):
     assert validate_node_url("http://127.0.0.1:8003")  # default: allowed
     monkeypatch.setenv("SLANCHA_NODE_URL_BLOCK_LOOPBACK", "1")
