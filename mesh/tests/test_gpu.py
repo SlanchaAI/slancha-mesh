@@ -342,3 +342,24 @@ def test_build_cluster_view_from_heartbeats_skips_no_gpu_field():
     assert set(view.nodes.keys()) == {"n2"}
     assert view.nodes["n2"].hardware_tags == ["blackwell"]
     assert view.nodes["n2"].total_gb == 128.0
+
+
+def test_gpu_cluster_serialization_omits_cmdline():
+    """#106: process cmdline (carries secrets/paths) must NOT be exposed in the
+    cluster view — only pid/name/mem/user/runtime."""
+    from datetime import datetime, timezone
+
+    from mesh.gpu.probe import GpuProcess, GpuSnapshot
+    from mesh.registry_app import _serialize_snapshot
+
+    snap = GpuSnapshot(
+        probed_at=datetime(2026, 6, 3, tzinfo=timezone.utc),
+        util_pct=10.0, mem_used_mib=1024, mem_free_mib=2048, mem_total_mib=3072,
+        processes=[GpuProcess(pid=42, process_name="python", used_memory_mib=512,
+                              user="trainer", cmdline="python train.py --hf-token SECRET",
+                              runtime_s=99)],
+    )
+    out = _serialize_snapshot(snap)
+    proc = out["processes"][0]
+    assert "cmdline" not in proc                 # the secret-bearing field is gone
+    assert proc["pid"] == 42 and proc["process_name"] == "python"  # scheduling fields kept

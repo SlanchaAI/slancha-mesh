@@ -541,13 +541,18 @@ def _serialize_snapshot(snap) -> dict:
         "mem_free_mib": snap.mem_free_mib,
         "mem_total_mib": snap.mem_total_mib,
         "nvidia_smi_available": snap.nvidia_smi_available,
+        # SECURITY (#106): `cmdline` is deliberately NOT exposed in the cluster
+        # view. A process command line routinely carries secrets (API keys/tokens
+        # passed as args), dataset/checkpoint paths, and model topology — none of
+        # which the scheduler needs, and all of which would leak to any holder of
+        # the shared node bearer. The scheduler only needs pid/name/mem/runtime.
+        # (mesh.gpu.cluster._deserialize_snapshot tolerates a missing cmdline.)
         "processes": [
             {
                 "pid": p.pid,
                 "process_name": p.process_name,
                 "used_memory_mib": p.used_memory_mib,
                 "user": p.user,
-                "cmdline": p.cmdline,
                 "runtime_s": p.runtime_s,
             }
             for p in snap.processes
