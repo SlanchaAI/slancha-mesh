@@ -14,12 +14,14 @@ import pytest
 from mesh.event_store import EventEnvelope, NullEventStore
 from mesh.registry import (
     AllocationEvent,
+    HeartbeatPostRequest,
     MeshRegistry,
     NodeLeftEvent,
     QualityObservationEvent,
     _decode,
     _encode,
 )
+from mesh.tests.conftest import make_heartbeat
 
 
 class FakeStore:
@@ -121,3 +123,47 @@ def test_failed_durable_append_does_not_mutate_read_model():
     with pytest.raises(RuntimeError, match="store down"):
         reg.record_node_left("node-1", "a")
     assert reg._events == []
+
+
+# ─────────────────── durable-log compaction (bounds boot replay) ─────────────
+
+
+class CompactingFakeStore(FakeStore):
+    """FakeStore that also supports the optional compact() seam."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.compactions = 0
+
+    def compact(self, envelopes) -> None:
+        self.events = list(envelopes)
+        self.compactions += 1
+
+
+def test_durable_log_compacts_with_in_memory(spark_node, fresh_now, catalog):
+    """When the registry compacts superseded heartbeats in-memory, it also
+    compacts the durable log — so an append-only store stays bounded."""
+    store = CompactingFakeStore()
+    reg = MeshRegistry(catalog, max_events=2, store=store)
+    for qd in range(5):  # 5 heartbeats from ONE node → all but latest superseded
+        hb = make_heartbeat(spark_node, fresh_now, ["qwen3-math-7b-q4"], catalog, queue_depth=qd)
+        reg.record_heartbeat(HeartbeatPostRequest(heartbeat=hb, node_url="http://spark-1:8000/v1"))
+
+    assert store.compactions >= 1                 # the durable log was compacted
+    assert len(store.events) <= 2                 # bounded (latest heartbeat kept)
+
+    # A fresh registry over the compacted durable log rebuilds the live node.
+    reg2 = MeshRegistry(catalog, store=store)
+    snap = reg2.snapshot(now=fresh_now)
+    assert len(snap.nodes) == 1
+
+
+def test_store_without_compact_still_works(spark_node, fresh_now, catalog):
+    """A durable store that omits compact() is simply left to grow (no crash)."""
+    store = FakeStore()  # no compact attribute
+    reg = MeshRegistry(catalog, max_events=2, store=store)
+    for qd in range(4):
+        hb = make_heartbeat(spark_node, fresh_now, ["qwen3-math-7b-q4"], catalog, queue_depth=qd)
+        reg.record_heartbeat(HeartbeatPostRequest(heartbeat=hb, node_url="http://spark-1:8000/v1"))
+    # in-memory compacted (bounded); durable store untouched by compaction → grew.
+    assert len(reg._events) <= 2 and len(store.events) >= 4
