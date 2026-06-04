@@ -86,3 +86,97 @@ def test_certless_default_path_unaffected(spark_node, catalog, fresh_now):
     reg = MeshRegistry(catalog=catalog)
     resp = reg.record_heartbeat(_req(spark_node, fresh_now, catalog, cert=None))
     assert resp.ack is True
+
+
+# ── #108 peer challenge (sign/verify) ────────────────────────────────────────
+def test_challenge_sign_verify():
+    from mesh.identity import sign_challenge, verify_challenge
+
+    sk, pk = generate_node_keypair()
+    cr = sign_challenge("peer-1", sk, "nonce123", "2026-01-01T00:00:00Z")
+    assert verify_challenge(cr, expected_nonce="nonce123") == ("peer-1", pk)
+    assert verify_challenge(cr, expected_nonce="OTHER") is None          # replay/wrong nonce
+    assert verify_challenge(dict(cr, signature_b64="AAAA"), expected_nonce="nonce123") is None
+    assert verify_challenge(dict(cr, node_id="evil"), expected_nonce="nonce123") is None  # id swap breaks sig
+    assert verify_challenge({}, expected_nonce="nonce123") is None
+
+
+# ── #108 discovery client verification + TOFU pin ────────────────────────────
+class _Resp:
+    status_code = 200
+
+    def __init__(self, payload):
+        self._p = payload
+
+    def json(self):
+        return self._p
+
+
+def test_discovery_verifies_and_pins_peer(monkeypatch):
+    import httpx
+
+    from mesh.discovery import make_http_fetch
+    from mesh.identity import sign_challenge
+
+    sk, _ = generate_node_keypair()
+
+    def fake_get(url, params=None, headers=None, timeout=None):
+        cr = sign_challenge("peer-1", sk, headers["X-Mesh-Challenge"], headers["X-Mesh-Challenge-Ts"])
+        return _Resp({"object": "list", "data": [], "challenge_response": cr})
+
+    monkeypatch.setattr(httpx, "get", fake_get)
+    fetch = make_http_fetch(verify_peers=True)
+    assert fetch("10.0.0.5", 8003) is not None   # verified
+    assert fetch("10.0.0.5", 8003) is not None   # same key, still trusted (pinned)
+
+
+def test_discovery_drops_unverifiable_peer(monkeypatch):
+    import httpx
+
+    from mesh.discovery import make_http_fetch
+
+    # peer returns no challenge_response at all
+    monkeypatch.setattr(httpx, "get",
+                        lambda *a, **k: _Resp({"object": "list", "data": []}))
+    assert make_http_fetch(verify_peers=True)("10.0.0.5", 8003) is None
+    # but with verification OFF, the same response is accepted (back-compat)
+    assert make_http_fetch(verify_peers=False)("10.0.0.5", 8003) is not None
+
+
+def test_discovery_drops_peer_whose_key_changes(monkeypatch):
+    import httpx
+
+    from mesh.discovery import make_http_fetch
+    from mesh.identity import sign_challenge
+
+    sk1, _ = generate_node_keypair()
+    sk2, _ = generate_node_keypair()
+    keys = [sk1, sk2]
+
+    def fake_get(url, params=None, headers=None, timeout=None):
+        cr = sign_challenge("peer-1", keys.pop(0), headers["X-Mesh-Challenge"],
+                            headers["X-Mesh-Challenge-Ts"])
+        return _Resp({"object": "list", "data": [], "challenge_response": cr})
+
+    monkeypatch.setattr(httpx, "get", fake_get)
+    fetch = make_http_fetch(verify_peers=True)
+    assert fetch("10.0.0.5", 8003) is not None   # first call pins key1
+    assert fetch("10.0.0.5", 8003) is None       # key changed → MITM/impersonation → dropped
+
+
+def test_models_endpoint_signs_challenge_when_peer_key_set(monkeypatch):
+    from fastapi.testclient import TestClient
+
+    from mesh.identity import generate_node_keypair as _gk, verify_challenge
+    from mesh.registry_app import create_mesh_app
+
+    sk, pk = _gk()
+    monkeypatch.setenv("SLANCHA_PEER_KEY_B64", sk)
+    monkeypatch.setenv("SLANCHA_PEER_NODE_ID", "peer-1")
+    monkeypatch.delenv("SLANCHA_NODE_TOKEN", raising=False)
+    client = TestClient(create_mesh_app())
+    r = client.get("/models", headers={"X-Mesh-Challenge": "abc", "X-Mesh-Challenge-Ts": "t0"})
+    cr = r.json()["challenge_response"]
+    assert verify_challenge(cr, expected_nonce="abc") == ("peer-1", pk)
+    # no challenge header → no challenge_response (opt-in)
+    assert "challenge_response" not in client.get("/models").json()
