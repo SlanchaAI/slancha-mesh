@@ -26,6 +26,7 @@ import hashlib
 from typing import Any
 
 _CERT_CONTEXT = "slancha-node-cert/v1"
+_CHALLENGE_CONTEXT = "slancha-peer-challenge/v1"
 
 
 class NodeIdentityError(Exception):
@@ -103,10 +104,51 @@ def verify_node_cert(cert: dict[str, Any], expected_node_id: str) -> bool:
     return True
 
 
+def _challenge_message(nonce: str, node_id: str, ts: str) -> bytes:
+    return f"{_CHALLENGE_CONTEXT}|{nonce}|{node_id}|{ts}".encode("utf-8")
+
+
+def sign_challenge(node_id: str, secret_key_b64: str, nonce: str, ts: str) -> dict[str, str]:
+    """Sign a discovery challenge (#108): proves the responder holds `node_id`'s
+    key for THIS nonce. Returned in a peer's `/models` response as
+    `challenge_response`; the asker verifies it before trusting the peer."""
+    signing, _ = _require_nacl()
+    sk = signing.SigningKey(_b64d(secret_key_b64))
+    pub_b64 = _b64e(bytes(sk.verify_key))
+    sig = sk.sign(_challenge_message(nonce, node_id, ts)).signature
+    return {"node_id": node_id, "public_key_b64": pub_b64, "nonce": nonce, "ts": ts,
+            "signature_b64": _b64e(sig)}
+
+
+def verify_challenge(resp: Any, *, expected_nonce: str) -> tuple[str, str] | None:
+    """Return (node_id, public_key_b64) iff `resp` is a valid challenge_response
+    whose signature verifies over (nonce|node_id|ts) AND nonce==expected_nonce.
+    Else None (caller drops/distrusts the peer). Never raises on garbage."""
+    if not isinstance(resp, dict):
+        return None
+    node_id = resp.get("node_id")
+    pub_b64 = resp.get("public_key_b64")
+    nonce = resp.get("nonce")
+    ts = resp.get("ts")
+    sig_b64 = resp.get("signature_b64")
+    if not all(isinstance(x, str) for x in (node_id, pub_b64, nonce, ts, sig_b64)):
+        return None
+    if nonce != expected_nonce:  # replay / wrong-challenge
+        return None
+    signing, BadSignatureError = _require_nacl()
+    try:
+        signing.VerifyKey(_b64d(pub_b64)).verify(_challenge_message(nonce, node_id, ts), _b64d(sig_b64))
+    except (BadSignatureError, ValueError, Exception):  # noqa: BLE001 - any failure = invalid
+        return None
+    return node_id, pub_b64
+
+
 __all__ = [
     "NodeIdentityError",
     "generate_node_keypair",
     "did_for",
     "build_node_cert",
     "verify_node_cert",
+    "sign_challenge",
+    "verify_challenge",
 ]

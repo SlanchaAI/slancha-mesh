@@ -25,7 +25,10 @@ logic is unit-testable without a live tailnet.
 from __future__ import annotations
 
 import json
+import os
+import secrets
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from typing import Callable
 from urllib.parse import urlsplit, urlunsplit
 
@@ -273,6 +276,7 @@ def make_http_fetch(
     path: str = "/models",
     token: str | None = None,
     timeout: float = 4.0,
+    verify_peers: bool | None = None,
 ) -> FetchFn:
     """A live `fetch(host, port)` that GETs `/models?include=routing_meta`.
 
@@ -280,16 +284,34 @@ def make_http_fetch(
     the tailnet ACL is the only gate — the high-trust default). Never raises:
     timeout/refused/non-200/unparseable all return None so one dead peer
     can't abort a discovery pass (mirrors the FetchFn contract).
+
+    Peer verification (#108): when `verify_peers` (or SLANCHA_VERIFY_PEERS=1), each
+    fetch sends a fresh nonce and requires the peer to return a valid signed
+    `challenge_response`. The peer's key is TOFU-pinned per host for the life of
+    this fetcher; a peer that can't prove its identity, or whose key CHANGES
+    (MITM / impersonation), is dropped (returns None) — its routing data is never
+    trusted. Requires the `signing` extra on both sides.
     """
     import httpx
 
+    if verify_peers is None:
+        verify_peers = os.environ.get("SLANCHA_VERIFY_PEERS", "").strip().lower() in (
+            "1", "true", "yes", "on")
     headers = {"Authorization": f"Bearer {token}"} if token else {}
+    pins: dict[str, str] = {}  # host -> pinned public_key_b64 (TOFU, per fetcher)
 
     def fetch(host: str, port: int) -> dict | None:
         url = f"{scheme}://{host}:{port}{path}"
+        req_headers = dict(headers)
+        nonce = None
+        if verify_peers:
+            nonce = secrets.token_hex(16)
+            req_headers["X-Mesh-Challenge"] = nonce
+            req_headers["X-Mesh-Challenge-Ts"] = datetime.now(timezone.utc).strftime(
+                "%Y-%m-%dT%H:%M:%S.%fZ")
         try:
             resp = httpx.get(
-                url, params={"include": "routing_meta"}, headers=headers, timeout=timeout
+                url, params={"include": "routing_meta"}, headers=req_headers, timeout=timeout
             )
         except Exception:  # noqa: BLE001 — never-raise discovery contract
             return None
@@ -299,9 +321,32 @@ def make_http_fetch(
             data = resp.json()
         except Exception:  # noqa: BLE001
             return None
-        return data if isinstance(data, dict) else None
+        if not isinstance(data, dict):
+            return None
+        if verify_peers and not _peer_verified(host, data, nonce, pins):
+            return None  # peer failed identity proof / key changed → distrust
+        return data
 
     return fetch
+
+
+def _peer_verified(host: str, data: dict, nonce: str | None, pins: dict[str, str]) -> bool:
+    """Verify a peer's signed challenge_response + TOFU-pin its key (#108).
+    Never raises (honors the discovery never-raise contract)."""
+    try:
+        from mesh.identity import verify_challenge
+
+        verified = verify_challenge(data.get("challenge_response"), expected_nonce=nonce or "")
+        if verified is None:
+            return False
+        _node_id, pub = verified
+        pinned = pins.get(host)
+        if pinned is not None and pinned != pub:
+            return False  # key changed under us — MITM / impersonation
+        pins[host] = pub
+        return True
+    except Exception:  # noqa: BLE001 — missing PyNaCl etc. → unverifiable → distrust
+        return False
 
 
 # ---------------------------------------------------------------------------

@@ -46,6 +46,25 @@ from mesh.registry import (
 
 NODE_TOKEN_ENV = "SLANCHA_NODE_TOKEN"
 PROBE_TOKEN_ENV = "SLANCHA_PROBE_TOKEN"
+# Peer identity for federation discovery (#108): when both are set, /models signs
+# an asker's challenge so the asker can verify this peer's identity before trusting
+# its routing data.
+PEER_KEY_ENV = "SLANCHA_PEER_KEY_B64"
+PEER_NODE_ID_ENV = "SLANCHA_PEER_NODE_ID"
+
+
+def _peer_challenge_response(nonce: str | None, ts: str | None) -> dict | None:
+    """Sign a discovery challenge if a peer identity key is configured (#108).
+    Returns None when no challenge was sent or no peer key is set (opt-in)."""
+    if not nonce:
+        return None
+    key = os.environ.get(PEER_KEY_ENV, "").strip()
+    node_id = os.environ.get(PEER_NODE_ID_ENV, "").strip()
+    if not (key and node_id):
+        return None
+    from mesh.identity import sign_challenge
+
+    return sign_challenge(node_id, key, nonce, ts or "")
 
 
 # ---------------------------------------------------------------------------
@@ -264,6 +283,8 @@ def create_mesh_app(registry: MeshRegistry | None = None) -> FastAPI:
         _: Annotated[None, Depends(verify_node_token)],
         include: str = "",
         domain: str | None = None,
+        x_mesh_challenge: Annotated[str | None, Header()] = None,
+        x_mesh_challenge_ts: Annotated[str | None, Header()] = None,
     ) -> dict:
         """OpenAI-compat-ish models list. Per Phase 5 H19 task #69.
 
@@ -316,7 +337,11 @@ def create_mesh_app(registry: MeshRegistry | None = None) -> FastAPI:
                 }
             out.append(entry)
 
-        return {"object": "list", "data": out}
+        result: dict = {"object": "list", "data": out}
+        cr = _peer_challenge_response(x_mesh_challenge, x_mesh_challenge_ts)
+        if cr is not None:
+            result["challenge_response"] = cr  # #108: lets the asker verify this peer
+        return result
 
     @app.post(
         "/probe-network",
