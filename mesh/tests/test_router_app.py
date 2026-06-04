@@ -872,3 +872,29 @@ def test_health_is_unauthenticated_and_reports_auth_required(monkeypatch):
     assert payload["status"] == "ok"
     assert payload["auth_required"] is True
     assert payload["specialists_reachable"] == 1
+
+
+def test_upstream_content_type_is_allowlisted(monkeypatch):
+    """#109: a malicious node's content-type (e.g. text/html) is not relayed —
+    only known-safe OpenAI media types pass; else a safe default."""
+    from mesh.router_app import _safe_media_type
+
+    assert _safe_media_type("text/html", "application/json") == "application/json"  # XSS type dropped
+    assert _safe_media_type("application/json; charset=utf-8", "x") == "application/json; charset=utf-8"
+    assert _safe_media_type("text/event-stream", "x") == "text/event-stream"
+    assert _safe_media_type(None, "application/json") == "application/json"
+
+    # end-to-end: an upstream claiming text/html is served as the safe default
+    snap = _snapshot(
+        cards=[_card(specialist_id="qwen2.5-coder-7b-q4-ollama")],
+        bindings={"qwen2.5-coder-7b-q4-ollama": [_binding(specialist_id="qwen2.5-coder-7b-q4-ollama")]},
+    )
+
+    def handler(request: httpx.Request):
+        return (200, {"id": "ok"}, {"content-type": "text/html"})
+
+    client = _client(snap, handler)
+    r = client.post("/v1/chat/completions",
+                    json={"model": "qwen2.5-coder-7b-q4-ollama", "messages": []})
+    assert r.status_code == 200
+    assert "text/html" not in r.headers.get("content-type", "")
