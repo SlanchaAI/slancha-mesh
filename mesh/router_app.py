@@ -196,6 +196,20 @@ def _upstream_headers() -> dict[str, str]:
     return h
 
 
+# Media types the router will relay from an upstream node to the client. A
+# malicious/compromised node could otherwise set content-type: text/html (XSS in
+# a browser client) or a sniffable type; we only pass known OpenAI-shaped types
+# and fall back to a safe default otherwise (#109).
+_ALLOWED_MEDIA_TYPES = ("application/json", "text/event-stream", "text/plain")
+
+
+def _safe_media_type(raw: str | None, default: str) -> str:
+    if not raw:
+        return default
+    base = raw.split(";", 1)[0].strip().lower()  # drop any ;charset=...
+    return raw if base in _ALLOWED_MEDIA_TYPES else default
+
+
 # ---------------------------------------------------------------------------
 # Discovery → snapshot translation — lets the router run without a registry
 # ---------------------------------------------------------------------------
@@ -419,7 +433,7 @@ async def _proxy_stream_with_fallback(
 
         # This binding wins — set up the generator that holds the
         # stream context open until the upstream closes.
-        media_type = response.headers.get("content-type", "text/event-stream")
+        media_type = _safe_media_type(response.headers.get("content-type"), "text/event-stream")
         upstream_status = response.status_code
         slancha_headers = {
             "X-Slancha-Specialist": specialist_id,
@@ -618,7 +632,7 @@ def create_router_app(
                     f"p95={binding.p95_latency_ms_60s}"
                 ),
             }
-            media_type = upstream.headers.get("content-type", "application/json")
+            media_type = _safe_media_type(upstream.headers.get("content-type"), "application/json")
             return Response(
                 content=upstream.content,
                 status_code=upstream.status_code,
