@@ -247,6 +247,11 @@ class TrainingPass:
     domain: str
     replay_store: TrafficReplayStore
     checkpoint_dir: Path
+    # Supply-chain provenance (#142): HF commit SHA/tag for `base_model_id`,
+    # threaded through to `from_pretrained(revision=...)` in the real PEFT
+    # leg below. None (default) preserves today's behaviour — resolves
+    # whatever the mutable default-branch ref currently points at.
+    base_model_revision: str | None = None
     seed: int = 0
     n_examples: int = 64
     n_steps_planned: int = FAST_FAKE_STEPS
@@ -380,10 +385,19 @@ class TrainingPass:
 
         torch.manual_seed(self.seed)
 
-        tokenizer = transformers.AutoTokenizer.from_pretrained(self.base_model_id)
+        # Supply-chain provenance (#142): pin the HF ref when the card set
+        # one, rather than always resolving the mutable default branch.
+        revision_kwargs = (
+            {"revision": self.base_model_revision} if self.base_model_revision else {}
+        )
+        tokenizer = transformers.AutoTokenizer.from_pretrained(
+            self.base_model_id, **revision_kwargs
+        )
         if tokenizer.pad_token is None:
             tokenizer.pad_token = tokenizer.eos_token
-        model = transformers.AutoModelForCausalLM.from_pretrained(self.base_model_id)
+        model = transformers.AutoModelForCausalLM.from_pretrained(
+            self.base_model_id, **revision_kwargs
+        )
         model.train()
 
         fingerprint = _base_model_fingerprint(

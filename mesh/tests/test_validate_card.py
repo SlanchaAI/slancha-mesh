@@ -32,6 +32,7 @@ min_vram_gb = 8.0
 context_window = 8192
 n_layers = 32
 capabilities = ["streaming"]
+revision = "abc123def456"
 """
 
 
@@ -123,6 +124,36 @@ def test_active_params_ge_runtime_warns(tmp_path):
     report = validate_paths([f])
     assert any(x.code == "ACTIVE_PARAMS_NOT_LESS_THAN_TOTAL" for x in report.findings)
     assert not report.has_errors  # warning, not error
+
+
+def test_vllm_card_without_revision_advises(tmp_path):
+    """A vllm card lacking `revision` gets a soft advisory (#142) — never an error."""
+    bad = _GOOD_TOML.format(stem="norev").replace('revision = "abc123def456"\n', "")
+    f = _write(tmp_path / "norev.toml", bad)
+    report = validate_paths([f])
+    assert any(x.code == "REVISION_UNPINNED" for x in report.findings)
+    assert not report.has_errors
+    assert not report.has_warnings  # advisory is its own severity, not "warning"
+
+
+def test_vllm_card_without_revision_still_strict_clean(tmp_path):
+    """REVISION_UNPINNED must never be promoted by --strict (fleet-wide migration in flight)."""
+    bad = _GOOD_TOML.format(stem="norev-strict").replace('revision = "abc123def456"\n', "")
+    f = _write(tmp_path / "norev-strict.toml", bad)
+    assert main([str(f)]) == 0
+    assert main([str(f), "--strict"]) == 0
+
+
+def test_ollama_card_without_revision_no_advisory(tmp_path):
+    """The revision-pin nudge is vllm-specific; other backends don't need HF `--revision`."""
+    bad = (
+        _GOOD_TOML.format(stem="norev-ollama")
+        .replace('revision = "abc123def456"\n', "")
+        .replace('required_backend = "vllm"', 'required_backend = "ollama"')
+    )
+    f = _write(tmp_path / "norev-ollama.toml", bad)
+    report = validate_paths([f])
+    assert not any(x.code == "REVISION_UNPINNED" for x in report.findings)
 
 
 def test_pydantic_validation_error_surfaces(tmp_path):

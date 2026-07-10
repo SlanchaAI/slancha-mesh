@@ -16,9 +16,9 @@ from mesh.backends import (
 from mesh.models import SpecialistCard
 
 
-def _card() -> SpecialistCard:
+def _card(**overrides) -> SpecialistCard:
     """Minimal card; we don't actually serve it."""
-    return SpecialistCard(
+    fields = dict(
         model_id="test/model",
         specialist_id="test-spec",
         domain="code",
@@ -31,6 +31,23 @@ def _card() -> SpecialistCard:
         n_layers=2,
         estimated_tps_at={"gb10": 10.0},
     )
+    fields.update(overrides)
+    return SpecialistCard(**fields)
+
+
+class _FakePopen:
+    """Stand-in for subprocess.Popen — captures the cmd, spawns nothing."""
+
+    def __init__(self, cmd, **kwargs):
+        self.args = cmd
+        self.kwargs = kwargs
+
+    def poll(self):
+        return None
+
+    @property
+    def pid(self):
+        return 999999
 
 
 def test_parse_vllm_metrics_basic():
@@ -118,6 +135,44 @@ def test_vllm_backend_carries_cuda_capability_field():
     assert be.cuda_capability is None
     be2 = VLLMBackend(card=_card(), port=8124, cuda_capability="12.1")
     assert be2.cuda_capability == "12.1"
+
+
+def _start_and_capture_cmd(monkeypatch, card, port: int) -> list[str]:
+    """Run VLLMBackend.start() with subprocess.Popen faked out; return the cmd."""
+    captured = {}
+
+    def fake_popen(cmd, **kwargs):
+        captured["cmd"] = cmd
+        return _FakePopen(cmd, **kwargs)
+
+    monkeypatch.setattr("mesh.backends.subprocess.Popen", fake_popen)
+    monkeypatch.setattr(VLLMBackend, "_port_in_use", lambda self: False)
+
+    be = VLLMBackend(card=card, port=port)
+    be.start()
+    return captured["cmd"]
+
+
+def test_vllm_start_omits_trust_remote_code_by_default(monkeypatch):
+    """Was unconditional pre-#142; now only emitted on a card's explicit opt-in."""
+    cmd = _start_and_capture_cmd(monkeypatch, _card(), port=18321)
+    assert "--trust-remote-code" not in cmd
+
+
+def test_vllm_start_includes_trust_remote_code_on_card_opt_in(monkeypatch):
+    cmd = _start_and_capture_cmd(monkeypatch, _card(trust_remote_code=True), port=18322)
+    assert "--trust-remote-code" in cmd
+
+
+def test_vllm_start_omits_revision_when_unset(monkeypatch):
+    cmd = _start_and_capture_cmd(monkeypatch, _card(), port=18323)
+    assert "--revision" not in cmd
+
+
+def test_vllm_start_includes_revision_when_set(monkeypatch):
+    cmd = _start_and_capture_cmd(monkeypatch, _card(revision="abc123def456"), port=18324)
+    assert "--revision" in cmd
+    assert cmd[cmd.index("--revision") + 1] == "abc123def456"
 
 
 def test_null_backend_lifecycle():

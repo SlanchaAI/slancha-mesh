@@ -176,8 +176,16 @@ class VLLMBackend:
             str(self.gpu_memory_utilization),
             "--dtype",
             "auto",
-            "--trust-remote-code",
         ]
+        # Supply-chain provenance (#142): pin the HF ref instead of trusting
+        # whatever the mutable `org/repo` default branch currently serves.
+        if self.card.revision:
+            cmd.extend(["--revision", self.card.revision])
+        # Was unconditional; `--trust-remote-code` executes the repo's own
+        # `modeling_*.py` on load, so it's now a per-card opt-in rather than
+        # forced on every launch (#142).
+        if self.card.trust_remote_code:
+            cmd.append("--trust-remote-code")
         if self.enforce_eager:
             cmd.append("--enforce-eager")
         cmd.extend(self.extra_args)

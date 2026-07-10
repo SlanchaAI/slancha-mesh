@@ -94,6 +94,17 @@ class _Report:
     def warning(self, path: Path, code: str, message: str) -> None:
         self.findings.append(Finding(path=path, severity="warning", code=code, message=message))
 
+    def advise(self, path: Path, code: str, message: str) -> None:
+        """A soft, never-hard-fail finding — not promoted by `--strict`.
+
+        For checks that are correct-in-principle but not yet enforceable
+        because the fleet hasn't caught up (e.g. #142 revision pins: every
+        card in today's catalog lacks one). `warning()` is for authoring
+        bugs CI should eventually gate on; `advise()` is for a migration
+        that's still in flight.
+        """
+        self.findings.append(Finding(path=path, severity="advisory", code=code, message=message))
+
     @property
     def has_errors(self) -> bool:
         return any(f.severity == "error" for f in self.findings)
@@ -209,6 +220,24 @@ def _check_kv_geometry(card: SpecialistCard, path: Path, report: _Report) -> Non
         )
 
 
+def _check_revision_pin(card: SpecialistCard, path: Path, report: _Report) -> None:
+    """A vllm-engine card without a `revision` resolves a mutable HF ref (#142).
+
+    Soft advisory, not a hard fail: today's whole catalog predates the
+    field, so promoting this would break every card at once. Nudges new/
+    edited cards toward pinning without gating CI on a fleet-wide migration.
+    """
+    if card.required_backend == "vllm" and not card.revision:
+        report.advise(
+            path,
+            "REVISION_UNPINNED",
+            "required_backend=vllm but no `revision` set; vllm serve resolves "
+            "the mutable default-branch ref, which can change (or point at a "
+            "renamed/squatted repo) between node restarts. Pin an HF commit "
+            "SHA or tag when you have one.",
+        )
+
+
 def _check_one(path: Path) -> tuple[SpecialistCard | None, _Report]:
     """Validate a single TOML. Returns (card_or_None, findings)."""
     report = _Report()
@@ -246,6 +275,7 @@ def _check_one(path: Path) -> tuple[SpecialistCard | None, _Report]:
     _check_specialist_id_matches_filename(card, path, report)
     _check_quality_consistency(card, path, report)
     _check_kv_geometry(card, path, report)
+    _check_revision_pin(card, path, report)
 
     return card, report
 
@@ -317,8 +347,10 @@ def main(argv: list[str] | None = None) -> int:
 
     err_count = by_severity["error"]
     warn_count = by_severity["warning"]
+    advise_count = by_severity["advisory"]
     print(
-        f"\nSummary: {err_count} error(s), {warn_count} warning(s) across {len(paths)} file(s)",
+        f"\nSummary: {err_count} error(s), {warn_count} warning(s), "
+        f"{advise_count} advisory(ies) across {len(paths)} file(s)",
         file=sys.stderr,
     )
 

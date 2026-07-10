@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import tomllib
+
 from mesh.catalog import load_catalog
 from mesh.models import SpecialistCard
 
@@ -101,3 +103,43 @@ def test_ollama_cards_have_no_duplicate_specialist_ids():
     cards = load_catalog()
     ids = [c.specialist_id for c in cards]
     assert len(ids) == len(set(ids)), "duplicate specialist_id in catalog"
+
+
+# ── Supply-chain provenance fields (#142) ───────────────────────────────────
+
+_BASE_TOML = """
+model_id = "vendor/model"
+specialist_id = "prov-test"
+domain = "code"
+difficulty_tiers = ["medium"]
+required_backend = "vllm"
+storage_gb = 1.0
+runtime_gb = 2.0
+min_vram_gb = 4.0
+context_window = 2048
+n_layers = 2
+estimated_tps_at = {{ gb10 = 10.0 }}
+{extra}
+"""
+
+
+def test_revision_license_trust_remote_code_parse_from_toml_dict():
+    """New #142 fields parse from a TOML dict the same way load_card() builds one."""
+    data = tomllib.loads(
+        _BASE_TOML.format(
+            extra='revision = "abc123def456"\nlicense = "Apache-2.0"\ntrust_remote_code = true\n'
+        )
+    )
+    card = SpecialistCard(**data)
+    assert card.revision == "abc123def456"
+    assert card.license == "Apache-2.0"
+    assert card.trust_remote_code is True
+
+
+def test_revision_license_trust_remote_code_default_when_absent():
+    """Omitted from the TOML — a pre-#142 card parses unchanged."""
+    data = tomllib.loads(_BASE_TOML.format(extra=""))
+    card = SpecialistCard(**data)
+    assert card.revision is None
+    assert card.license is None
+    assert card.trust_remote_code is False
