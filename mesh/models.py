@@ -152,6 +152,37 @@ class SpecialistCard(_Frozen):
     supports_lora_finetune: bool = False
     upstream_model_card: str | None = None
 
+    # Supply-chain provenance (#142). HF repos are mutable refs — without a
+    # pinned commit, a repo rename/repoint (or a squatted name) serves
+    # different weights on the next node restart. `revision` is the HF
+    # commit SHA or tag passed to `--revision` (vLLM serve) / `revision=`
+    # (transformers `from_pretrained`, mesh/training.py). `license` is the
+    # SPDX id, tracked for the kanpai-side allowlist gate (kanpai#77).
+    # `trust_remote_code` is now a per-card opt-in — vLLM's
+    # `--trust-remote-code` executes the repo's own `modeling_*.py`, so it
+    # defaults OFF instead of being forced on every launch (was
+    # unconditional prior to #142). All optional/default-safe so existing
+    # catalog TOMLs parse unchanged.
+    revision: str | None = None
+    license: str | None = None
+    trust_remote_code: bool = False
+
+    @field_validator("revision")
+    @classmethod
+    def _safe_revision(cls, v: str | None) -> str | None:
+        """Reject a leading '-' — argument-confusion guard (mirrors #98's node_url SSRF guard).
+
+        `revision` is interpolated into the `vllm serve` argv; a value like
+        "--allowed-origins=*" would be parsed as a flag, not a ref. HF
+        commit SHAs and tags never start with '-'.
+        """
+        if v is not None and v.startswith("-"):
+            raise ValueError(
+                f"revision must not start with '-' (got {v!r}); it is passed "
+                f"as a CLI argument and a leading dash would be parsed as a flag"
+            )
+        return v
+
     # Per-engine model tags. Catalog cards target HF (`model_id`) by default,
     # but the alternative engines name models differently — Ollama uses
     # repo-like tags (`qwen2.5-coder:7b-instruct-q4_K_M`), llama.cpp wants a

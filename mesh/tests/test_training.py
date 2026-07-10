@@ -251,6 +251,30 @@ def test_training_pass_default_steps_match_fast_fake():
     assert tp.n_steps_planned == FAST_FAKE_STEPS
 
 
+def test_training_pass_base_model_revision_defaults_none():
+    """Unset by default — preserves today's from_pretrained() behaviour (#142)."""
+    tp = TrainingPass(
+        specialist_id="x",
+        base_model_id="y",
+        domain="general",
+        replay_store=TrafficReplayStore(),
+        checkpoint_dir=Path("/tmp"),
+    )
+    assert tp.base_model_revision is None
+
+
+def test_training_pass_base_model_revision_carries_explicit_value():
+    tp = TrainingPass(
+        specialist_id="x",
+        base_model_id="y",
+        domain="general",
+        replay_store=TrafficReplayStore(),
+        checkpoint_dir=Path("/tmp"),
+        base_model_revision="deadbeef123",
+    )
+    assert tp.base_model_revision == "deadbeef123"
+
+
 # ---------------------------------------------------------------------------
 # Preempt cooperation
 # ---------------------------------------------------------------------------

@@ -312,6 +312,7 @@ class ServeDaemon:
         pass_ = TrainingPass(
             specialist_id=primary_card.specialist_id,
             base_model_id=primary_card.model_id,
+            base_model_revision=primary_card.revision,
             domain=primary_card.domain,
             replay_store=self.training_replay_store,
             checkpoint_dir=self.training_checkpoint_dir,
