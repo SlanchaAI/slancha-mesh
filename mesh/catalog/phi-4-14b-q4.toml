@@ -8,6 +8,13 @@ domain = "reasoning"
 difficulty_tiers = ["medium", "hard"]
 languages = ["en"]
 required_backend = "vllm"
+# Supply-chain provenance (#142/#148): HF commit pinned so a repo rename/squat
+# can't swap weights on restart; SHA = main-branch HEAD 2026-07-10
+# (huggingface.co/api/models/microsoft/phi-4 .sha). trust_remote_code OFF —
+# Phi3ForCausalLM is native in transformers (no repo modeling_*.py exec).
+revision = "932b33c0ec9ca189badeb22480721a8de9d0e006"
+license = "MIT"
+trust_remote_code = false
 requires_fp4 = false
 storage_gb = 8.4
 runtime_gb = 12.0

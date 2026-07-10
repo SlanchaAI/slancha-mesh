@@ -4,8 +4,11 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
 
 from mesh.validate_card import (
+    _ADVISORY_CODES,
+    _Report,
     KNOWN_CAPABILITIES,
     KNOWN_DOMAINS,
     main,
@@ -126,22 +129,79 @@ def test_active_params_ge_runtime_warns(tmp_path):
     assert not report.has_errors  # warning, not error
 
 
-def test_vllm_card_without_revision_advises(tmp_path):
-    """A vllm card lacking `revision` gets a soft advisory (#142) — never an error."""
-    bad = _GOOD_TOML.format(stem="norev").replace('revision = "abc123def456"\n', "")
-    f = _write(tmp_path / "norev.toml", bad)
+def test_tier1_vllm_card_without_revision_warns_and_strict_fails(tmp_path):
+    """Tier-1 vllm card lacking `revision` is a WARNING (#148) that `--strict` fails.
+
+    _GOOD_TOML sets no coverage_tier, so it defaults to tier-1. Tier-1
+    essentials are what a default deploy runs; an unpinned HF ref is a live
+    repo-squat/rename RCE surface (#142), so it must gate CI.
+    """
+    bad = _GOOD_TOML.format(stem="norev-t1").replace('revision = "abc123def456"\n', "")
+    f = _write(tmp_path / "norev-t1.toml", bad)
     report = validate_paths([f])
     assert any(x.code == "REVISION_UNPINNED" for x in report.findings)
+    assert report.has_warnings
+    assert not report.has_errors            # warning, not a hard error…
+    assert main([str(f)]) == 0              # …normal mode still passes
+    assert main([str(f), "--strict"]) == 1  # …but --strict gates it
+
+
+def test_tier2_vllm_card_without_revision_advises_and_strict_clean(tmp_path):
+    """Tier-2+ vllm card without `revision` stays a soft advisory (migration in flight).
+
+    Advisory is its own severity, never promoted by --strict — the nudge
+    without the fleet-wide break for the not-yet-migrated cards.
+    """
+    bad = (
+        _GOOD_TOML.format(stem="norev-t2").replace('revision = "abc123def456"\n', "")
+        + "coverage_tier = 2\n"
+    )
+    f = _write(tmp_path / "norev-t2.toml", bad)
+    report = validate_paths([f])
+    assert any(x.code == "REVISION_UNPINNED" for x in report.findings)
+    assert not report.has_warnings  # advisory, not warning
     assert not report.has_errors
-    assert not report.has_warnings  # advisory is its own severity, not "warning"
-
-
-def test_vllm_card_without_revision_still_strict_clean(tmp_path):
-    """REVISION_UNPINNED must never be promoted by --strict (fleet-wide migration in flight)."""
-    bad = _GOOD_TOML.format(stem="norev-strict").replace('revision = "abc123def456"\n', "")
-    f = _write(tmp_path / "norev-strict.toml", bad)
     assert main([str(f)]) == 0
     assert main([str(f), "--strict"]) == 0
+
+
+def test_trust_remote_code_without_revision_errors_at_any_tier(tmp_path):
+    """trust_remote_code=true + no revision is the #142 RCE precondition (#148 review).
+
+    It's a hard ERROR regardless of coverage_tier — fails even without
+    `--strict` — because executing repo modeling code from a mutable ref is
+    never safe, tier notwithstanding.
+    """
+    bad = (
+        _GOOD_TOML.format(stem="trc").replace('revision = "abc123def456"\n', "")
+        + "coverage_tier = 2\ntrust_remote_code = true\n"
+    )
+    f = _write(tmp_path / "trc.toml", bad)
+    report = validate_paths([f])
+    assert any(x.code == "TRUST_REMOTE_CODE_UNPINNED" for x in report.findings)
+    assert report.has_errors            # hard error, tier-2 notwithstanding…
+    assert main([str(f)]) == 1          # …fails even in non-strict mode
+    # Pinning a revision clears it — remote code is fine once the ref is immutable.
+    good = _GOOD_TOML.format(stem="trc-ok") + "coverage_tier = 2\ntrust_remote_code = true\n"
+    g = _write(tmp_path / "trc-ok.toml", good)
+    rep2 = validate_paths([g])
+    assert not any(x.code == "TRUST_REMOTE_CODE_UNPINNED" for x in rep2.findings)
+
+
+def test_advise_rejects_non_allowlisted_code():
+    """advise() refuses a code outside _ADVISORY_CODES (#148 design note).
+
+    Soft advisories dodge --strict, so the allowlist is the membrane a
+    security/correctness finding cannot cross silently: routing one through
+    advise() raises at author time instead of never failing CI.
+    """
+    rep = _Report()
+    with pytest.raises(ValueError, match="non-allowlisted"):
+        rep.advise(Path("x.toml"), "NEW_SECURITY_CODE", "should raise")
+    # A known migration-nudge code is accepted.
+    assert "REVISION_UNPINNED" in _ADVISORY_CODES
+    rep.advise(Path("x.toml"), "REVISION_UNPINNED", "ok")
+    assert any(f.code == "REVISION_UNPINNED" for f in rep.findings)
 
 
 def test_ollama_card_without_revision_no_advisory(tmp_path):
@@ -222,9 +282,11 @@ def test_main_strict_promotes_warnings_to_errors(tmp_path):
 def test_real_catalog_passes_strict():
     """The real on-disk catalog must exit 0 under `--strict` — CI's exact gate.
 
-    Locks the invariant that the #142 REVISION_UNPINNED advisory (which
-    fires on every unmigrated vllm card today) is never promoted to a
-    failure by --strict. Previously only verified manually.
+    Post-#148 every tier-1 vllm card carries a revision pin, so the tier-1
+    REVISION_UNPINNED *warning* never fires on the real catalog; any tier-2+
+    card still unpinned emits only a strict-immune advisory. If this ever
+    fails, a tier-1 vllm card shipped without a pin (or a new strict warning
+    landed) — fix the card, don't relax the gate.
     """
     assert main(["--all"]) == 0
     assert main(["--all", "--strict"]) == 0

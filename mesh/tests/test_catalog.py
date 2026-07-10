@@ -44,6 +44,49 @@ def test_each_card_is_specialist_card():
         assert c.coverage_tier in (1, 2, 3)
 
 
+def test_tier1_vllm_cards_pin_immutable_revision_and_license():
+    """#142/#148: every tier-1 vllm card pins an immutable HF commit + license.
+
+    The catalog-side lock that makes `validate_card --strict` real. An
+    unpinned tier-1 vllm card is a repo-squat/rename RCE surface, a movable
+    tag can be repointed after the fact (so we require a full 40-hex commit
+    SHA, not a tag), and a missing license blocks the kanpai allowlist gate
+    (kanpai#77). trust_remote_code stays an explicit opt-in — none of the
+    current tier-1 architectures need repo-shipped modeling code.
+    """
+    for c in load_catalog():
+        if c.required_backend == "vllm" and c.coverage_tier == 1:
+            assert c.revision, f"{c.specialist_id}: tier-1 vllm card missing revision pin"
+            assert len(c.revision) == 40 and all(
+                ch in "0123456789abcdef" for ch in c.revision
+            ), (
+                f"{c.specialist_id}: revision {c.revision!r} is not a 40-hex HF "
+                f"commit SHA — a tier-1 pin must be an immutable commit, not a "
+                f"movable tag"
+            )
+            assert c.license, f"{c.specialist_id}: tier-1 vllm card missing license"
+            assert c.trust_remote_code is False, (
+                f"{c.specialist_id}: trust_remote_code must be an explicit, "
+                f"justified opt-in; no current tier-1 arch needs it"
+            )
+
+
+def test_any_pinned_vllm_card_uses_immutable_sha():
+    """#148 review: any vllm card that pins a revision must use an immutable
+    40-hex commit SHA, at every tier — a movable tag can be repointed after
+    the pin, defeating the point. (Tier-1 is separately *required* to pin;
+    this covers tier-2+ cards that pin voluntarily, e.g. qwen3-8b-q4.)
+    """
+    for c in load_catalog():
+        if c.required_backend == "vllm" and c.revision:
+            assert len(c.revision) == 40 and all(
+                ch in "0123456789abcdef" for ch in c.revision
+            ), (
+                f"{c.specialist_id}: revision {c.revision!r} is not a 40-hex "
+                f"immutable commit SHA — a movable tag can be repointed after pin"
+            )
+
+
 def test_tier_1_specialists_cover_math_code_general():
     """Spec §4 Strategy C invariant: tier-1 covers essentials."""
     cards = load_catalog()

@@ -8,6 +8,13 @@ domain = "code"
 difficulty_tiers = ["easy", "medium", "hard"]
 languages = ["en"]
 required_backend = "vllm"
+# Supply-chain provenance (#142/#148): HF commit pinned so a repo rename/squat
+# can't swap weights on restart; SHA = main-branch HEAD 2026-07-10
+# (huggingface.co/api/models/Qwen/Qwen3-Coder-30B-A3B-Instruct-FP8 .sha).
+# trust_remote_code OFF — Qwen3MoeForCausalLM is native in transformers.
+revision = "dcaee4d4dfc5ee71ad501f01f530e5652438fde0"
+license = "Apache-2.0"
+trust_remote_code = false
 requires_fp4 = false
 # Total weight footprint on disk (FP8 safetensors)
 storage_gb = 30.0

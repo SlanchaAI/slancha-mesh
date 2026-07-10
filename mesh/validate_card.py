@@ -75,6 +75,14 @@ KNOWN_LANGUAGE_TAGS = {
     "sv", "no", "da", "fi", "el", "he", "fa",
 }
 
+# Codes allowed to be emitted as soft advisories. `advise()` findings are
+# never promoted by `--strict`, so this set is the explicit membrane a
+# security-severity finding cannot cross: advise() raises on any code not
+# listed here (#148 design note). Add a code only when the finding is a
+# genuine migration-in-flight nudge — NOT a correctness/security failure,
+# which must use error()/warning() so CI's `--strict` gate fails on it.
+_ADVISORY_CODES = frozenset({"REVISION_UNPINNED"})
+
 
 @dataclass(frozen=True)
 class Finding:
@@ -98,11 +106,24 @@ class _Report:
         """A soft, never-hard-fail finding — not promoted by `--strict`.
 
         For checks that are correct-in-principle but not yet enforceable
-        because the fleet hasn't caught up (e.g. #142 revision pins: every
-        card in today's catalog lacks one). `warning()` is for authoring
-        bugs CI should eventually gate on; `advise()` is for a migration
-        that's still in flight.
+        because the fleet hasn't caught up (e.g. #142 revision pins on the
+        remaining tier-2+ vllm cards). `warning()` is for authoring bugs CI
+        should gate on; `advise()` is for a migration that's still in flight.
+
+        The `code` MUST be in `_ADVISORY_CODES`. This is a structural guard,
+        not a formality: soft advisories dodge `--strict`, so without it a
+        future security/correctness check could be silently routed through
+        advise() and never fail CI (#148). A non-allowlisted code is a
+        programming error — fail loud at author time, not silently in prod.
         """
+        if code not in _ADVISORY_CODES:
+            raise ValueError(
+                f"advise() called with non-allowlisted code {code!r}; soft "
+                f"advisories are reserved for migration nudges (see "
+                f"_ADVISORY_CODES in mesh/validate_card.py). A correctness or "
+                f"security finding must use error() or warning() so `--strict` "
+                f"gates on it."
+            )
         self.findings.append(Finding(path=path, severity="advisory", code=code, message=message))
 
     @property
@@ -223,11 +244,43 @@ def _check_kv_geometry(card: SpecialistCard, path: Path, report: _Report) -> Non
 def _check_revision_pin(card: SpecialistCard, path: Path, report: _Report) -> None:
     """A vllm-engine card without a `revision` resolves a mutable HF ref (#142).
 
-    Soft advisory, not a hard fail: today's whole catalog predates the
-    field, so promoting this would break every card at once. Nudges new/
-    edited cards toward pinning without gating CI on a fleet-wide migration.
+    Severity tracks the ACTUAL risk of the unpinned ref, not just the tier:
+
+    * `trust_remote_code=true` + no pin → hard ERROR at ANY tier. This is the
+      direct #142 RCE precondition: vllm serve executes the repo's own
+      `modeling_*.py` from a MUTABLE ref, so a rename/squat repoints it to
+      attacker code on the next restart. Enabling remote code without a pin is
+      never acceptable — the tier heuristic (below) is a proxy for "does a
+      default deploy run this", but remote-code execution is the real trigger
+      and must gate independently of coverage_tier (#148 security review).
+    * tier-1 (the essentials a default deploy runs) + no pin → WARNING, so
+      CI's `--strict` gate fails it.
+    * tier-2+ + no pin → soft advisory while the remaining migration finishes:
+      the nudge without the fleet-wide break.
     """
-    if card.required_backend == "vllm" and not card.revision:
+    if card.required_backend != "vllm" or card.revision:
+        return
+    if card.trust_remote_code:
+        report.error(
+            path,
+            "TRUST_REMOTE_CODE_UNPINNED",
+            "trust_remote_code=true with no `revision` pin: vllm serve would "
+            "execute the repo's modeling_*.py from a mutable HF ref, which a "
+            "rename/squat can repoint to attacker code between node restarts "
+            "(#142). Enabling remote code REQUIRES pinning an HF commit SHA — "
+            "this gates at every tier, not just tier-1.",
+        )
+    elif card.coverage_tier == 1:
+        report.warning(
+            path,
+            "REVISION_UNPINNED",
+            "tier-1 required_backend=vllm card without a `revision` pin: "
+            "vllm serve resolves the mutable default-branch ref, which a "
+            "repo rename/squat can repoint to attacker weights between node "
+            "restarts. Tier-1 essentials MUST pin an HF commit SHA "
+            "(#142/#148) — set `revision` from the model's HF commit.",
+        )
+    else:
         report.advise(
             path,
             "REVISION_UNPINNED",
