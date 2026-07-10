@@ -1,5 +1,8 @@
 [build-system]
-requires = ["hatchling"]
+# Pinned (#144 supply-chain parity): the build backend produces the shipped
+# wheel, so an unpinned `hatchling` would let a republished release tamper with
+# the build. Bump deliberately alongside the Docker image.
+requires = ["hatchling==1.25.0"]
 build-backend = "hatchling.build"
 
 [project]
