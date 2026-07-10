@@ -1,0 +1,51 @@
+# DRAFT — unvalidated. Targets `ollama pull gemma4:12b-it-q4_K_M`.
+# Card schema-checked + loadable; no live serve + heartbeat + route call yet.
+#
+# Tier-2 multilingual specialist: Gemma-4-12B-it edition for non-English
+# routing.
+#
+# Repointed 2026-07 SOTA audit (#141): `gemma-2-9b-q4-ollama` superseded by
+# Gemma 4 (2026-03) — the first Apache-2.0 Gemma release (license flip
+# verified on opensource.googleblog.com; gemma-2 was gemma-terms-of-use, not
+# OSI-approved). Google states 140+ language coverage for Gemma 4, broader
+# than gemma-2's blend, keeping this the sensible non-English fallback when
+# a specialized multilingual specialist (`qwen3-8b-q4`) isn't loaded.
+# specialist_id renamed to match.
+model_id = "google/gemma-4-12B-it"
+specialist_id = "gemma-4-12b-q4-ollama"
+domain = "multilingual"
+difficulty_tiers = ["easy", "medium"]
+# Google states 140+ languages for Gemma 4; listing the subset carried over
+# from the gemma-2 card (vendor evals showed MMLU-multilingual > 60 here).
+languages = ["en", "es", "fr", "de", "it", "pt", "zh", "ja", "ko"]
+required_backend = "ollama"
+ollama_tag = "gemma4:12b-it-q4_K_M"
+storage_gb = 7.2
+runtime_gb = 9.5
+min_vram_gb = 10.0
+context_window = 262144
+n_layers = 48
+hidden_size = 3840
+# KV note: gemma-4 interleaves a sliding-window (1024) on most layers same
+# as gemma-2; modelled here as full GQA, which OVER-counts KV -> conservative
+# tps underestimate (same caveat the gemma-2 card carried).
+n_kv_heads = 8
+head_dim = 256
+kv_arch = "gqa"
+supports_lora_finetune = false
+upstream_model_card = "google/gemma-4-12B-it"
+coverage_tier = 2
+
+# estimated_tps_at DERIVED (not measured) via the §3.2 roofline in
+# docs/SIZING_BANDWIDTH_BRIEF.md: tps = MBU 0.8 × datasheet BW ÷ runtime_gb
+# (batch-1, short-ctx upper bound; MBU 0.8 per the measured 0.82 on the
+# RTX PRO 6000, see the brief's hardware-verification table). Datasheet BW
+# (GB/s): gb10 273, m4_pro 273, m3_ultra 819, rtx_4090 1008, rtx_3090 936.
+# Allocator uses them only for tie-breaking when no live bandwidth probe
+# exists.
+[estimated_tps_at]
+gb10 = 23.0
+m4_pro = 23.0
+m3_ultra = 69.0
+rtx_4090 = 85.0
+rtx_3090 = 79.0

@@ -27,7 +27,7 @@ def _new_client(monkeypatch, token: str | None = None, registry: MeshRegistry | 
 
 
 def _hb_payload(node, ts: datetime, catalog) -> dict:
-    hb = make_heartbeat(node, ts, ["qwen3-math-7b-q4"], catalog)
+    hb = make_heartbeat(node, ts, ["nemotron-math-7b-q4"], catalog)
     req = HeartbeatPostRequest(heartbeat=hb, node_url=f"http://{node.node_id}:8001/v1")
     return req.model_dump(mode="json")
 
@@ -137,7 +137,7 @@ def test_registry_sees_posted_heartbeat(monkeypatch, spark_node, catalog, fresh_
     snap = resp.json()["snapshot"]
     assert spark_node.node_id in snap["nodes"]
     assert snap["nodes"][spark_node.node_id]["node_url"] == f"http://{spark_node.node_id}:8001/v1"
-    assert "qwen3-math-7b-q4" in snap["specialists"]
+    assert "nemotron-math-7b-q4" in snap["specialists"]
 
 
 # ---------------------------------------------------------------------------
@@ -158,7 +158,7 @@ def test_probe_network_returns_views_from_heartbeats(
     monkeypatch, spark_node, mac_mini_node, catalog, fresh_now
 ):
     reg = MeshRegistry(catalog=catalog)
-    hb_spark = make_heartbeat(spark_node, fresh_now, ["qwen3-math-7b-q4"], catalog)
+    hb_spark = make_heartbeat(spark_node, fresh_now, ["nemotron-math-7b-q4"], catalog)
     hb_spark_with_view = NodeHeartbeat(
         node_id=hb_spark.node_id,
         ts=hb_spark.ts,

@@ -1,0 +1,40 @@
+# Tier-1 specialist: math reasoning (hard difficulty).
+# Card schema: SpecialistCard in mesh/models.py.
+#
+# Repointed 2026-07 SOTA audit (#139): the previous `qwen3-math-7b-q4` card
+# pointed at `Qwen/Qwen3-Math-7B-Instruct`, which never shipped (config.json
+# returns 401 — nonexistent, not gated). `nvidia/OpenReasoning-Nemotron-7B`
+# (CC-BY-4.0, Qwen2.5-7B lineage) is the verified replacement: it beats both
+# `nvidia/OpenMath-Nemotron-7B` and `Qwen/Qwen2.5-Math-7B-Instruct` on every
+# reported math benchmark (AIME24 84.7 / AIME25 78.2). specialist_id renamed
+# to match — see docs/CATALOG_STATUS.md for the retired/repointed table.
+model_id = "nvidia/OpenReasoning-Nemotron-7B"
+specialist_id = "nemotron-math-7b-q4"
+domain = "math"
+difficulty_tiers = ["medium", "hard"]
+languages = ["en"]
+required_backend = "vllm"
+requires_fp4 = false
+storage_gb = 4.6
+runtime_gb = 6.8
+min_vram_gb = 7.0
+context_window = 131072
+n_layers = 28
+hidden_size = 3584
+supports_lora_finetune = true
+upstream_model_card = "nvidia/OpenReasoning-Nemotron-7B"
+coverage_tier = 1
+
+# estimated_tps_at DERIVED (not measured) via the §3.2 roofline in
+# docs/SIZING_BANDWIDTH_BRIEF.md: tps = MBU 0.8 × datasheet BW ÷ runtime_gb
+# (batch-1, short-ctx upper bound; MBU 0.8 per the measured 0.82 on the
+# RTX PRO 6000, see the brief's hardware-verification table). Datasheet BW
+# (GB/s): gb10 273, m4_pro 273, m3_ultra 819, l40 864. The retired card's
+# table was NOT carried over (it was written for a model that never
+# existed); these values replace it. Allocator uses them only for
+# tie-breaking when no live bandwidth probe exists.
+[estimated_tps_at]
+gb10 = 32.0
+m4_pro = 32.0
+m3_ultra = 96.0
+l40 = 102.0

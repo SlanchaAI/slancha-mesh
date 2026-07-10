@@ -66,17 +66,17 @@ def test_heterogeneous_fleet_visible_in_snapshot(
     # Pick a specialist each node can actually serve. spark_node has vllm,
     # mac_mini has llamacpp/mlx, tiny has llamacpp.
     _post_hb(client, spark_node, fresh_now, catalog, ["qwen3-coder-30b-a3b-fp8"])
-    _post_hb(client, mac_mini_node, fresh_now, catalog, ["qwen3-math-7b-q4"])
-    _post_hb(client, tiny_node, fresh_now, catalog, ["qwen3-math-7b-q4"])
+    _post_hb(client, mac_mini_node, fresh_now, catalog, ["nemotron-math-7b-q4"])
+    _post_hb(client, tiny_node, fresh_now, catalog, ["nemotron-math-7b-q4"])
 
     snap = client.get("/registry").json()["snapshot"]
     node_ids = set(snap["nodes"].keys())
     assert node_ids == {spark_node.node_id, mac_mini_node.node_id, tiny_node.node_id}
     # Each node's reported specialist is in the snapshot specialists map
     assert "qwen3-coder-30b-a3b-fp8" in snap["specialists"]
-    assert "qwen3-math-7b-q4" in snap["specialists"]
+    assert "nemotron-math-7b-q4" in snap["specialists"]
     # qwen3-math is on both mac-mini and tiny
-    math_bindings = snap["specialists"]["qwen3-math-7b-q4"]
+    math_bindings = snap["specialists"]["nemotron-math-7b-q4"]
     binding_node_ids = {b["node_id"] for b in math_bindings}
     assert binding_node_ids == {mac_mini_node.node_id, tiny_node.node_id}
 
@@ -99,7 +99,7 @@ def test_stale_node_flips_unreachable_in_snapshot(spark_node, mac_mini_node, cat
 
     _post_hb(client, spark_node, clock["t"], catalog, ["qwen3-coder-30b-a3b-fp8"])  # stamped 10m ago
     clock["t"] = datetime.now(timezone.utc)                                          # advance server clock
-    _post_hb(client, mac_mini_node, clock["t"], catalog, ["qwen3-math-7b-q4"])       # stamped now
+    _post_hb(client, mac_mini_node, clock["t"], catalog, ["nemotron-math-7b-q4"])       # stamped now
 
     snap = client.get("/registry").json()["snapshot"]
     assert snap["nodes"][spark_node.node_id]["health"] == "unreachable"
@@ -247,8 +247,8 @@ def test_concurrent_heartbeats_all_recorded(app_client, spark_node, mac_mini_nod
     nodes = [spark_node, mac_mini_node, tiny_node]
     loaded_per_node = [
         ["qwen3-coder-30b-a3b-fp8"],
-        ["qwen3-math-7b-q4"],
-        ["qwen3-math-7b-q4"],
+        ["nemotron-math-7b-q4"],
+        ["nemotron-math-7b-q4"],
     ]
 
     def post(node, loaded):

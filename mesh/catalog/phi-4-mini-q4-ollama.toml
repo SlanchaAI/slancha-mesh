@@ -1,0 +1,53 @@
+# DRAFT — unvalidated. Targets `ollama pull phi4-mini:3.8b-q4_K_M`.
+# Card schema-checked + loadable; no live serve + heartbeat + route call yet.
+#
+# Easy-tier specialist: low-latency fast path for tiny boxes.
+#
+# Repointed 2026-07 SOTA audit (#141): `phi-3.5-mini-q5-ollama` superseded by
+# `microsoft/Phi-4-mini-instruct` (3.8B, MIT) — the direct family successor,
+# same size class. Quant note: same as the ministral-3-8b-ollama repoint —
+# Ollama's `phi4-mini` library only ships Q4_K_M/Q8_0/FP16 tags (no Q5_K_M),
+# so this card moved from Q5_K_M to Q4_K_M with the model swap. Still fits a
+# Mac mini (M-series 8 GB), a Raspberry Pi 5 with eGPU, or a laptop iGPU. Not
+# a long-context model in practice — capped at the upstream 128k window
+# claim, but anything past ~32k degrades sharply at this size.
+model_id = "microsoft/Phi-4-mini-instruct"
+specialist_id = "phi-4-mini-q4-ollama"
+domain = "general"
+difficulty_tiers = ["easy"]
+languages = ["en"]
+required_backend = "ollama"
+ollama_tag = "phi4-mini:3.8b-q4_K_M"
+storage_gb = 2.8
+runtime_gb = 3.5
+min_vram_gb = 4.0
+context_window = 131072
+n_layers = 32
+hidden_size = 3072
+# Phi-4-mini is GQA (8 KV heads / 24 query heads), unlike phi-3.5-mini's MHA
+# (32 KV heads == query heads) — a real architecture change, not a rename.
+n_kv_heads = 8
+head_dim = 128
+kv_arch = "gqa"
+supports_lora_finetune = false
+upstream_model_card = "microsoft/Phi-4-mini-instruct"
+coverage_tier = 1
+
+# estimated_tps_at DERIVED (not measured) via the §3.2 roofline in
+# docs/SIZING_BANDWIDTH_BRIEF.md: tps = MBU 0.8 × datasheet BW ÷ runtime_gb
+# (batch-1, short-ctx upper bound; MBU 0.8 per the measured 0.82 on the
+# RTX PRO 6000, see the brief's hardware-verification table). Datasheet BW
+# (GB/s): gb10 273, m4_pro 273, m3_ultra 819, rtx_4090 1008, rtx_3090 936,
+# rpi5 17 (LPDDR4X-4267, 32-bit). Replaces the values carried from the
+# retired phi-3.5-mini card, which were never derived for this
+# architecture. Allocator uses them only for tie-breaking when no live
+# bandwidth probe exists. Roofline caveat from the brief §3.2 applies
+# hardest here: below some model size the bound stops being bandwidth and
+# hits kernel-launch floors, so the big-GPU numbers are optimistic.
+[estimated_tps_at]
+gb10 = 62.0
+m4_pro = 62.0
+m3_ultra = 187.0
+rtx_4090 = 230.0
+rtx_3090 = 214.0
+rpi5 = 4.0

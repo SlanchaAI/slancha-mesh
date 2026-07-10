@@ -146,7 +146,7 @@ def test_durable_log_compacts_with_in_memory(spark_node, fresh_now, catalog):
     store = CompactingFakeStore()
     reg = MeshRegistry(catalog, max_events=2, store=store)
     for qd in range(5):  # 5 heartbeats from ONE node → all but latest superseded
-        hb = make_heartbeat(spark_node, fresh_now, ["qwen3-math-7b-q4"], catalog, queue_depth=qd)
+        hb = make_heartbeat(spark_node, fresh_now, ["nemotron-math-7b-q4"], catalog, queue_depth=qd)
         reg.record_heartbeat(HeartbeatPostRequest(heartbeat=hb, node_url="http://spark-1:8000/v1"))
 
     assert store.compactions >= 1                 # the durable log was compacted
@@ -163,7 +163,7 @@ def test_store_without_compact_still_works(spark_node, fresh_now, catalog):
     store = FakeStore()  # no compact attribute
     reg = MeshRegistry(catalog, max_events=2, store=store)
     for qd in range(4):
-        hb = make_heartbeat(spark_node, fresh_now, ["qwen3-math-7b-q4"], catalog, queue_depth=qd)
+        hb = make_heartbeat(spark_node, fresh_now, ["nemotron-math-7b-q4"], catalog, queue_depth=qd)
         reg.record_heartbeat(HeartbeatPostRequest(heartbeat=hb, node_url="http://spark-1:8000/v1"))
     # in-memory compacted (bounded); durable store untouched by compaction → grew.
     assert len(reg._events) <= 2 and len(store.events) >= 4

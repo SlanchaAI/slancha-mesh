@@ -79,6 +79,11 @@ Total time: ~5 minutes once the model is loaded.
 Say this is your first node. You have a beefy local machine, you want to
 join the mesh, and contribute a specialist. The substrate steps:
 
+> **Self-hosted by default.** Everything below stands up your own tailnet
+> node + your own `MeshRegistry` — no Slancha account, no cloud auth
+> required. Exactly two steps are marked **hosted-gateway operators
+> only**; skip both if you're self-hosting.
+
 > **Transport (2026-05-25):** nodes are reached **privately over a
 > Tailscale/Headscale tailnet**, not per-host Cloudflare tunnels. A cloud
 > gateway (`tag:gateway`) is the single CloudFront origin and dials home
@@ -130,9 +135,10 @@ bespoke setup.
      (tagged `tag:specialist`, ephemeral).
    - **Headscale:** `headscale preauthkeys create --user <user> --ephemeral`
      (with `tag:specialist` in the node's ACL tag owners).
-   - **Via the dashboard:** an onboarding admin calls
-     `POST /api/v1/mesh/hosts` on slancha-api, which mints a tagged key and
-     returns the exact `join_command` + `model_ports` — no shell needed.
+   - **Via the dashboard (hosted-gateway operators only — skip if
+     self-hosting):** an onboarding admin calls `POST /api/v1/mesh/hosts`
+     on slancha-api, which mints a tagged key and returns the exact
+     `join_command` + `model_ports` — no shell needed.
 
 3. **Confirm your MagicDNS name** (this is what the gateway dials):
    ```bash
@@ -157,7 +163,11 @@ bespoke setup.
    Each loaded specialist now heartbeats a `node_url` of
    `http://<your-magicdns>:<port>` — reachable by the gateway over WireGuard.
 
-### SaaS-side setup (gateway operator does this)
+### Gateway-side setup (gateway operator does this — self-hosted or hosted)
+
+This is a generic tailnet ACL grant, not a SaaS-only step: `tag:gateway`
+is a role, and whoever holds it — your own aggregator box or Slancha's
+hosted gateway — needs the same grant to reach your node.
 
 6. **Grant the gateway reach** in the tailnet ACL (deny-by-default
    otherwise): `{"src": ["tag:gateway"], "dst": ["tag:specialist"],
@@ -181,25 +191,31 @@ bespoke setup.
 ### Validation
 
 8. **Reachability from the gateway** (run on the gateway, or any
-   `tag:gateway`/admin device):
+   `tag:gateway`/admin device) — this is the validation for a self-hosted
+   setup, and where the walkthrough ends if you're self-hosting:
    ```bash
    curl -s http://<your-magicdns>:8003/v1/models | jq .   # backend up over tailnet
    ```
-   Then end-to-end from a SaaS-shape client:
-   ```bash
-   curl https://api.slancha.ai/v1/chat/completions \
-     -H "Authorization: Bearer slancha_<your-bearer>" \
-     -H "Content-Type: application/json" \
-     -d '{"model": "your-id", "messages": [{"role":"user","content":"hi"}]}'
-   ```
-   Expect SSE chunks streaming back via the gateway.
+
+   > **Hosted-gateway operators only (skip if self-hosting).** If this
+   > node registers against Slancha's hosted `api.slancha.ai` gateway
+   > instead of your own `MeshRegistry`, validate end-to-end through the
+   > SaaS-shape client instead:
+   > ```bash
+   > curl https://api.slancha.ai/v1/chat/completions \
+   >   -H "Authorization: Bearer slancha_<your-bearer>" \
+   >   -H "Content-Type: application/json" \
+   >   -d '{"model": "your-id", "messages": [{"role":"user","content":"hi"}]}'
+   > ```
+   > Expect SSE chunks streaming back via the gateway.
 
 ## Anti-patterns this onboarding prevents
 
 - **DON'T bind the model server to `127.0.0.1`** when joining the mesh.
-  The gateway is off-box now (cloud), reaching you over the tailnet —
-  loopback is unreachable. Bind `0.0.0.0` (or the tailnet IP) and let the
-  daemon advertise your MagicDNS name.
+  The gateway is off-box now (a separate machine, self-hosted or
+  Slancha's hosted gateway), reaching you over the tailnet — loopback is
+  unreachable. Bind `0.0.0.0` (or the tailnet IP) and let the daemon
+  advertise your MagicDNS name.
 - **DON'T expose the model port publicly.** The tailnet ACL is the access
   control; there is no public tunnel. Don't add Funnel/port-forward —
   `tag:gateway -> tag:specialist:<ports>` is the only path in.

@@ -292,7 +292,7 @@ def test_daemon_serves_multiple_backends_on_distinct_ports():
     across backends. Stopping the daemon stops both backends.
     """
     code_card = _card(spec_id="qwen3-coder-30b-a3b-fp8", domain="code")
-    math_card = _card(spec_id="qwen3-math-7b-q4", domain="math")
+    math_card = _card(spec_id="nemotron-math-7b-q4", domain="math")
     be_code = NullBackend(card=code_card, base_url="http://127.0.0.1:8001")
     be_math = NullBackend(card=math_card, base_url="http://127.0.0.1:8002")
 
@@ -301,7 +301,7 @@ def test_daemon_serves_multiple_backends_on_distinct_ports():
 
     hb = daemon.heartbeat()
     loaded_ids = {lm.specialist_id for lm in hb.loaded_models}
-    assert loaded_ids == {"qwen3-coder-30b-a3b-fp8", "qwen3-math-7b-q4"}
+    assert loaded_ids == {"qwen3-coder-30b-a3b-fp8", "nemotron-math-7b-q4"}
     assert hb.health == "healthy"
 
     # Both backends still alive
@@ -321,7 +321,7 @@ def test_daemon_partial_failure_keeps_surviving_backend():
     node when ONE backend dies — heartbeat reflects reduced capacity.
     """
     code_card = _card(spec_id="qwen3-coder-30b-a3b-fp8", domain="code")
-    math_card = _card(spec_id="qwen3-math-7b-q4", domain="math")
+    math_card = _card(spec_id="nemotron-math-7b-q4", domain="math")
     be_code = NullBackend(card=code_card, base_url="http://127.0.0.1:8001")
     be_math = NullBackend(card=math_card, base_url="http://127.0.0.1:8002")
 
@@ -332,7 +332,7 @@ def test_daemon_partial_failure_keeps_surviving_backend():
 
     hb = daemon.heartbeat()
     loaded_ids = {lm.specialist_id for lm in hb.loaded_models}
-    assert loaded_ids == {"qwen3-math-7b-q4"}, (
+    assert loaded_ids == {"nemotron-math-7b-q4"}, (
         f"expected only math after code died; got {loaded_ids}"
     )
     assert hb.health == "healthy", "daemon should NOT mark whole node degraded on partial death"

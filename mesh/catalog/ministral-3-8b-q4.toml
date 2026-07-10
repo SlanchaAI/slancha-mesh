@@ -1,0 +1,40 @@
+# Tier-1 specialist: general-purpose fallback.
+#
+# Repointed 2026-07 SOTA audit (#141): the Llama open line is frozen/EOL
+# (no open successor shipped) and outclassed at size by newer 8-14B models.
+# `mistralai/Ministral-3-8B-Instruct-2512` (Apache-2.0, native vision) is
+# the verified replacement — chosen over the other named option
+# (`Qwen/Qwen3.5-9B`) to keep the general/fallback tier non-Chinese-origin
+# (catalog hedge: keep at least one non-Chinese card per lane). specialist_id
+# renamed to match; see the Ollama-backed sibling card
+# `ministral-3-8b-q4-ollama` for the same model on a different engine.
+model_id = "mistralai/Ministral-3-8B-Instruct-2512"
+specialist_id = "ministral-3-8b-q4"
+domain = "general"
+difficulty_tiers = ["easy", "medium"]
+languages = ["en"]
+required_backend = "vllm"
+requires_fp4 = false
+storage_gb = 5.2
+runtime_gb = 8.0
+min_vram_gb = 8.5
+context_window = 262144
+n_layers = 34
+hidden_size = 4096
+supports_lora_finetune = true
+upstream_model_card = "mistralai/Ministral-3-8B-Instruct-2512"
+coverage_tier = 1
+
+# estimated_tps_at DERIVED (not measured) via the §3.2 roofline in
+# docs/SIZING_BANDWIDTH_BRIEF.md: tps = MBU 0.8 × datasheet BW ÷ runtime_gb
+# (batch-1, short-ctx upper bound; MBU 0.8 per the measured 0.82 on the
+# RTX PRO 6000, see the brief's hardware-verification table). Datasheet BW
+# (GB/s): gb10 273, m4_pro 273, m3_ultra 819, l40 864. Replaces the values
+# carried from the retired llama-3.1 card, which were never derived for
+# this architecture. Allocator uses them only for tie-breaking when no
+# live bandwidth probe exists.
+[estimated_tps_at]
+gb10 = 27.0
+m4_pro = 27.0
+m3_ultra = 82.0
+l40 = 86.0

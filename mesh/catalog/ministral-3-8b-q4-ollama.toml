@@ -1,0 +1,49 @@
+# DRAFT — unvalidated. The card targets `ollama pull ministral-3:8b-instruct-2512-q4_K_M`
+# and has been schema-checked + loaded into the registry, but no live serve +
+# heartbeat + route call has been demonstrated against this exact tag yet.
+#
+# Tier-1 specialist: general-purpose fallback, Ollama (GGUF Q4_K_M) edition.
+#
+# Repointed 2026-07 SOTA audit (#141): the previous `llama-3.1-8b-instruct-q5-ollama`
+# card pointed at the frozen/EOL Llama open line. `mistralai/Ministral-3-8B-Instruct-2512`
+# (Apache-2.0, native vision) is the verified replacement — same model as the
+# vLLM sibling `ministral-3-8b-q4`, different engine. Quant note: the prior
+# card chose Q5_K_M over Q4_K_M for the fallback tier specifically to protect
+# quality (Q5 keeps near-FP16 parity where Q4 regresses more). Ollama's
+# `ministral-3` library only ships Q4_K_M/Q8_0/FP16 tags today (no Q5_K_M),
+# so this card is Q4_K_M until/unless a Q5 tag appears — flagged so nobody
+# assumes the quality-tier reasoning still applies unchanged.
+model_id = "mistralai/Ministral-3-8B-Instruct-2512"
+specialist_id = "ministral-3-8b-q4-ollama"
+domain = "general"
+difficulty_tiers = ["easy", "medium"]
+languages = ["en"]
+required_backend = "ollama"
+ollama_tag = "ministral-3:8b-instruct-2512-q4_K_M"
+storage_gb = 5.4
+runtime_gb = 7.4
+min_vram_gb = 8.0
+context_window = 262144
+n_layers = 34
+hidden_size = 4096
+n_kv_heads = 8
+head_dim = 128
+kv_arch = "gqa"
+supports_lora_finetune = false
+upstream_model_card = "mistralai/Ministral-3-8B-Instruct-2512"
+coverage_tier = 1
+
+# estimated_tps_at DERIVED (not measured) via the §3.2 roofline in
+# docs/SIZING_BANDWIDTH_BRIEF.md: tps = MBU 0.8 × datasheet BW ÷ runtime_gb
+# (batch-1, short-ctx upper bound; MBU 0.8 per the measured 0.82 on the
+# RTX PRO 6000, see the brief's hardware-verification table). Datasheet BW
+# (GB/s): gb10 273, m4_pro 273, m3_ultra 819, rtx_4090 1008, rtx_3090 936.
+# Replaces the values carried from the retired llama-3.1 card, which were
+# never derived for this architecture. Allocator uses them only for
+# tie-breaking when no live bandwidth probe exists.
+[estimated_tps_at]
+gb10 = 30.0
+m4_pro = 30.0
+m3_ultra = 89.0
+rtx_4090 = 109.0
+rtx_3090 = 101.0

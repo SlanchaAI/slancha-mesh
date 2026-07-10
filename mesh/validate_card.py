@@ -161,7 +161,7 @@ def _check_languages(card: SpecialistCard, path: Path, report: _Report) -> None:
 def _check_specialist_id_matches_filename(
     card: SpecialistCard, path: Path, report: _Report
 ) -> None:
-    """File `qwen3-math-7b-q4.toml` should declare specialist_id `qwen3-math-7b-q4`.
+    """File `nemotron-math-7b-q4.toml` should declare specialist_id `nemotron-math-7b-q4`.
 
     Loose check — file stem vs specialist_id, case-sensitive. Catches
     accidental copy-paste where someone duplicates a TOML and forgets to
