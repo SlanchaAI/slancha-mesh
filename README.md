@@ -202,6 +202,8 @@ slancha-mesh doctor
 slancha-mesh service install   # defaults to `up --auto`
 
 # Bring up a Spark node end-to-end (probe → vLLM serve → smoke test)
+# `--trust-remote-code` + HF-revision pinning are opt-in (supply-chain safe by default):
+#   MESH_TRUST_REMOTE_CODE=1 MESH_MODEL_REVISION=<sha> bash mesh/scripts/bring-up-spark.sh ...
 bash mesh/scripts/bring-up-spark.sh qwen3-coder-30b-a3b-fp8 8001
 ```
 
