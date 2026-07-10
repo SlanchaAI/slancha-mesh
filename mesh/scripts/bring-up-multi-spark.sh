@@ -27,6 +27,13 @@
 # under unified-memory pressure (combined ≤ 80% of effective RAM). Adjust
 # upward if you're on a 256GB+ node or downward if other workloads share
 # the GPU.
+#
+# Supply-chain provenance (#142/#147): `--trust-remote-code` executes
+# whatever `modeling_*.py` the HF repo ships, and a bare model_id tracks the
+# repo's mutable default branch. Both are opt-in here (applies to both
+# primary and secondary), same as bring-up-spark.sh / mesh/backends.py:
+#   MESH_TRUST_REMOTE_CODE=1   pass --trust-remote-code (default: off)
+#   MESH_MODEL_REVISION=<ref>  pin the HF ref via --revision (default: unset)
 
 set -euo pipefail
 
@@ -57,6 +64,15 @@ launch_vllm() {
   echo "  model:  ${model}"
   echo "  port:   ${port}"
   echo "  log:    ${log}"
+  # Supply-chain provenance (#142/#147): opt-in only, see header comment.
+  # Applies to both primary and secondary (this fn serves both).
+  local extra_args=()
+  if [[ "${MESH_TRUST_REMOTE_CODE:-}" =~ ^(1|true)$ ]]; then
+    extra_args+=(--trust-remote-code)
+  fi
+  if [ -n "${MESH_MODEL_REVISION:-}" ]; then
+    extra_args+=(--revision "${MESH_MODEL_REVISION}")
+  fi
   # GB10 sm_121 needs Marlin fallback for FP8 GEMM; BF16 dense paths
   # don't need it but the env-var is no-op for non-FP8 weights.
   VLLM_TEST_FORCE_FP8_MARLIN=1 \
@@ -67,7 +83,7 @@ launch_vllm() {
       --gpu-memory-utilization 0.4 \
       --dtype auto \
       --enforce-eager \
-      --trust-remote-code \
+      "${extra_args[@]}" \
       > "${log}" 2>&1 &
   echo "  pid:    $!"
 }

@@ -16,6 +16,13 @@
 #   SPECIALIST_ID = qwen3-coder-30b-a3b-fp8
 #   PORT          = 8001
 #
+# Supply-chain provenance (#142/#147): `--trust-remote-code` executes
+# whatever `modeling_*.py` the HF repo ships, and a bare model_id tracks the
+# repo's mutable default branch. Both are opt-in here, same as the
+# catalog-driven launch path (mesh/backends.py):
+#   MESH_TRUST_REMOTE_CODE=1   pass --trust-remote-code (default: off)
+#   MESH_MODEL_REVISION=<ref>  pin the HF ref via --revision (default: unset)
+#
 # This is the v0.0.2 manual replacement for the `bring-up-mesh-node.sh`
 # in spec §12 day-5. v0.0.3 will replace it with `python -m mesh.serve`
 # directly, once we trust the daemon's wait-ready logic on cold-boot.
@@ -92,6 +99,14 @@ if ss -ltn 2>/dev/null | awk '{print $4}' | grep -q ":${PORT}\$"; then
 else
   echo "  launching vllm serve ${MODEL_ID} on ${HOST}:${PORT}"
   echo "  log: ${LOG}"
+  # Supply-chain provenance (#142/#147): opt-in only, see header comment.
+  VLLM_EXTRA_ARGS=()
+  if [[ "${MESH_TRUST_REMOTE_CODE:-}" =~ ^(1|true)$ ]]; then
+    VLLM_EXTRA_ARGS+=(--trust-remote-code)
+  fi
+  if [ -n "${MESH_MODEL_REVISION:-}" ]; then
+    VLLM_EXTRA_ARGS+=(--revision "${MESH_MODEL_REVISION}")
+  fi
   TORCH_CUDA_ARCH_LIST=12.0 \
   nohup vllm serve "${MODEL_ID}" \
     --host "${HOST}" \
@@ -100,7 +115,7 @@ else
     --max-model-len 8192 \
     --gpu-memory-utilization 0.55 \
     --dtype auto \
-    --trust-remote-code \
+    "${VLLM_EXTRA_ARGS[@]}" \
     --enforce-eager \
     > "${LOG}" 2>&1 &
   echo "  pid: $!"
