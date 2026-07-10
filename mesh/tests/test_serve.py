@@ -7,6 +7,8 @@ test the daemon's contract against `NullBackend` only.
 from __future__ import annotations
 
 import time
+from dataclasses import dataclass
+from pathlib import Path
 
 import pytest
 
@@ -14,7 +16,7 @@ from mesh.backends import NullBackend
 from mesh.models import NodeProbe, SpecialistCard
 from mesh.registry import MeshRegistry
 from mesh.select import ClassifierSignals, select_mesh_route
-from mesh.serve import ServeDaemon, build_backend, build_daemon
+from mesh.serve import ServeDaemon, _tail_file, build_backend, build_daemon
 
 
 def _probe() -> NodeProbe:
@@ -669,3 +671,90 @@ def test_resolve_node_key_env_and_file(tmp_path, monkeypatch):
     f.write_text("file-key\n")
     monkeypatch.setenv("SLANCHA_NODE_KEY_FILE", str(f))
     assert resolve_node_key() == "file-key"  # trimmed
+
+
+# ---------------------------------------------------------------------------
+# Backend-startup visibility (#151)
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class _NeverReadyBackend:
+    """Launches but never passes its health probe.
+
+    Mirrors a real vLLM/MLX that starts then dies on a trust_remote_code / OOM /
+    bad --revision error — the process is gone but the cause is only in its own
+    log file, which is exactly the split-diagnosis #151 is about.
+    """
+
+    card: SpecialistCard
+    log_path: Path | None = None
+    base_url: str = "http://127.0.0.1:8001"
+    name: str = "vllm"
+
+    def start(self) -> None:
+        pass
+
+    def wait_ready(self, timeout: float = 600.0) -> bool:
+        return False
+
+    def is_alive(self) -> bool:
+        return False
+
+    def stop(self, timeout: float = 30.0) -> None:
+        pass
+
+    def utilization(self) -> dict:
+        return {}
+
+
+def test_tail_file_degrades_to_empty(tmp_path):
+    """No path / missing / empty file → "" so it's safe to append unconditionally."""
+    assert _tail_file(None) == ""
+    assert _tail_file(tmp_path / "nope.log") == ""
+    empty = tmp_path / "empty.log"
+    empty.write_text("")
+    assert _tail_file(empty) == ""
+
+
+def test_tail_file_returns_last_lines(tmp_path):
+    log = tmp_path / "vllm.log"
+    log.write_text("\n".join(f"line{i}" for i in range(50)) + "\n")
+    out = _tail_file(log, max_lines=5)
+    assert "line49" in out and "line45" in out
+    assert "line44" not in out  # only the last 5 lines
+    assert str(log) in out  # names the file so the operator can open the full log
+
+
+def test_start_splices_backend_log_tail_on_failure(tmp_path):
+    """A never-ready backend's own log tail is spliced into the daemon log (#151),
+    so the operator sees the cause without opening a second file."""
+    blog = tmp_path / "vllm-8001.log"
+    blog.write_text(
+        "loading weights...\nValueError: trust_remote_code required for FooArch\n"
+    )
+    daemon = ServeDaemon(
+        backends=[_NeverReadyBackend(card=_card(), log_path=blog)],
+        probe=_probe(),
+        log_path=tmp_path / "daemon.log",
+    )
+    ok = daemon.start(wait_ready=True, ready_timeout=0.1)
+    assert ok is False
+    text = (tmp_path / "daemon.log").read_text()
+    assert "did not become ready" in text
+    assert "ValueError: trust_remote_code required for FooArch" in text  # tail spliced in
+    assert str(blog) in text
+
+
+def test_main_fail_fast_returns_nonzero_when_backend_fails(monkeypatch, tmp_path):
+    """--fail-fast turns a degraded start into a non-zero exit for the supervisor (#151)."""
+    from mesh import serve as serve_mod
+
+    daemon = ServeDaemon(
+        backends=[_NeverReadyBackend(card=_card())],
+        probe=_probe(),
+        log_path=tmp_path / "d.log",
+    )
+    monkeypatch.setattr(serve_mod, "build_daemon", lambda **kw: daemon)
+    rc = serve_mod.main(["--specialist", "x", "--fail-fast", "--ready-timeout", "0.1"])
+    assert rc == 1

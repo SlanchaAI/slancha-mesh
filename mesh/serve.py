@@ -63,6 +63,30 @@ _logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 
+def _tail_file(path: Path | None, max_lines: int = 20) -> str:
+    """Best-effort tail of a backend log, formatted to append to a daemon error.
+
+    A backend that fails to come up writes the real cause (e.g. a vLLM
+    trust_remote_code ValueError, an OOM, a bad --revision 404) to its OWN log
+    file, while the daemon only logged a generic "did not become ready" — so an
+    operator had to find and open a second file to diagnose (#151). Splicing the
+    tail into the daemon message puts the cause where the operator is already
+    looking. Degrades to "" on any problem (no path, missing/empty file, read
+    error) so it can be appended unconditionally without masking the failure.
+    """
+    if path is None:
+        return ""
+    try:
+        text = Path(path).read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return ""
+    lines = text.splitlines()[-max_lines:]
+    if not lines:
+        return ""
+    body = "\n".join(f"    {ln}" for ln in lines)
+    return f"\n  --- last {len(lines)} line(s) of {path} ---\n{body}"
+
+
 @dataclass
 class ServeDaemon:
     """Owns the backends + heartbeat loop for one mesh node.
@@ -126,12 +150,19 @@ class ServeDaemon:
             try:
                 be.start()
             except Exception as exc:  # noqa: BLE001 — record any backend-launch error
-                self._log(f"[start] backend {be.card.specialist_id} failed: {exc}")
+                tail = _tail_file(getattr(be, "log_path", None))
+                self._log(f"[start] backend {be.card.specialist_id} failed: {exc}{tail}")
                 ok = False
                 continue
             if wait_ready:
                 if not be.wait_ready(timeout=ready_timeout):
-                    self._log(f"[start] backend {be.card.specialist_id} did not become ready")
+                    # Splice the backend's own log tail (#151) so the operator sees
+                    # the real cause here instead of hunting a second file.
+                    tail = _tail_file(getattr(be, "log_path", None))
+                    self._log(
+                        f"[start] backend {be.card.specialist_id} did not become "
+                        f"ready within {ready_timeout:.0f}s{tail}"
+                    )
                     ok = False
         return ok
 
@@ -571,6 +602,13 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--log-dir", type=Path, default=RUNTIME_DIR)
     ap.add_argument("--print-heartbeat", action="store_true", help="Print first heartbeat as JSON to stdout.")
     ap.add_argument(
+        "--fail-fast",
+        action="store_true",
+        help="Exit non-zero if any backend fails to come up, instead of running "
+        "in degraded mode. Lets a supervisor (systemd Restart=, k8s) restart or "
+        "alert rather than leaving a healthy-looking process with 0 models loaded.",
+    )
+    ap.add_argument(
         "--tailnet",
         action="store_true",
         help="Advertise over a Tailscale/Headscale tailnet (bind 0.0.0.0, "
@@ -614,6 +652,14 @@ def main(argv: list[str] | None = None) -> int:
 
     ok = daemon.start(wait_ready=True, ready_timeout=args.ready_timeout)
     if not ok:
+        if args.fail_fast:
+            daemon._log(
+                "[main] --fail-fast: a backend failed to come up; exiting non-zero "
+                "for the supervisor to restart/alert (cause is in the backend log "
+                "tail above, not a separate file)"
+            )
+            daemon.stop()
+            return 1
         daemon._log("[main] one or more backends failed to come up; continuing in degraded mode")
 
     if args.print_heartbeat:
