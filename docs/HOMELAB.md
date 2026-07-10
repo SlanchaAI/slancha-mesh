@@ -15,7 +15,7 @@ gaming rigs).
 +---------------------+        LAN        +---------------------+
 |  Mac mini M2        |  <----------->    |  Linux + RTX 3090   |
 |  Ollama :11434      |                   |  Ollama :11434      |
-|  phi-3.5-mini-q5    |                   |  qwen2.5-coder-7b   |
+|  phi-4-mini-q4      |                   |  qwen2.5-coder-7b   |
 |  slancha-mesh up    |                   |  slancha-mesh up    |
 |  node-info :8088    |                   |  node-info :8088    |
 +---------------------+                   +---------------------+
@@ -63,13 +63,13 @@ uv pip install -e ".[dev]"
 > posture on a shared / coworking / café network. If unsure, keep
 > Ollama on `127.0.0.1` and use Tailscale (see the main README).
 
-## Box A: Mac mini, runs phi-3.5-mini (low-latency easy path)
+## Box A: Mac mini, runs phi-4-mini (low-latency easy path)
 
 ```bash
-ollama pull phi3.5:3.8b-mini-instruct-q5_K_M
+ollama pull phi4-mini:3.8b-q4_K_M
 
 slancha-mesh up \
-  --specialist phi-3.5-mini-q5-ollama \
+  --specialist phi-4-mini-q4-ollama \
   --node-info-host 0.0.0.0 \
   --base-port 8013
 ```
@@ -107,7 +107,7 @@ reachable specialist nodes: 2  unreachable: 0
 
 specialist                   domain       nodes  node_urls
 --------------------------------------------------------------------------------
-phi-3.5-mini-q5-ollama       general      1      http://192.168.1.10:11434
+phi-4-mini-q4-ollama         general      1      http://192.168.1.10:11434
 qwen2.5-coder-7b-q4-ollama   code         1      http://192.168.1.20:11434
 ```
 

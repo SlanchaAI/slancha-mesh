@@ -11,12 +11,15 @@ and route a prompt to the right one. No central server required (one is
 optional). No data leaves your hardware. Apache-2.0.
 
 > **Status, honestly:** the routing + discovery + heartbeat substrate is
-> hardened (650+ unit tests, ruff-clean, 3 live demos on real GB10
+> hardened (980+ unit tests, ruff-clean, 3 live demos on real GB10
 > hardware). The catalog has 1 bring-up-validated specialist
-> (`qwen3-coder-30b-a3b-fp8`) and 11 DRAFT cards spanning Ollama
-> (Llama-3.1-8B, Qwen2.5-Coder-7B, DeepSeek-Coder-V2-Lite-16B,
-> Phi-3.5-mini, Gemma-2-9B, Mistral-Nemo-12B) and vLLM (Qwen3-Coder/Math,
-> Llama-3.1-8B, Aya-Expanse-8B, Phi-4-14B). See
+> (`qwen3-coder-30b-a3b-fp8`) — **and even that one comes with a caveat:
+> the 30B-FP8 weights themselves OOM on consumer GB10 (sm_121) today, so
+> the validated run above actually served a Qwen2.5-7B stand-in under the
+> same `qwen3-coder-30b-a3b-fp8` served-model-name**, not the real 30B
+> weights — and 9 DRAFT cards spanning Ollama (Ministral-3-8B,
+> Qwen2.5-Coder-7B, Phi-4-mini, Gemma-4-12B, Ministral-3-14B) and vLLM
+> (Ministral-3-8B, Nemotron-Math-7B, Qwen3-8B, Phi-4-14B). See
 > [`docs/CATALOG_STATUS.md`](docs/CATALOG_STATUS.md) for the per-card truth.
 
 ## 60-second quickstart (one box, Ollama already installed)
@@ -103,8 +106,8 @@ On **box A** (say a Mac mini, IP `192.168.1.10`):
 
 ```bash
 OLLAMA_HOST=0.0.0.0:11434 ollama serve              # one-time: bind Ollama on the LAN
-ollama pull phi3.5:3.8b-mini-instruct-q5_K_M
-slancha-mesh up --specialist phi-3.5-mini-q5-ollama --node-info-host 0.0.0.0
+ollama pull phi4-mini:3.8b-q4_K_M
+slancha-mesh up --specialist phi-4-mini-q4-ollama --node-info-host 0.0.0.0
 ```
 
 On **box B** (say a 3090 box, IP `192.168.1.20`):
@@ -136,6 +139,8 @@ See [`docs/HOMELAB.md`](docs/HOMELAB.md) for the longer walkthrough
 | **exo / petals** | Splits *one* model's layers/tensors across nodes for memory-bound inference. | Opposite topology: route *different models* (specialists) to *different nodes*. Complementary, not competing — if you want to run a single 70B model split across 4 Macs, use exo; if you want each box to be the right size for a specialist and a router to pick which specialist answers, use Slancha-Mesh. |
 | **vLLM / llama.cpp directly** | Best-in-class single-engine throughput. | The mesh treats them as backends. The router still sees `/v1/chat/completions`; the engine choice happens behind that seam. |
 | **Litellm / OpenRouter** | Unified API across N hosted providers. | Same OpenAI-compat surface, but every node is *yours* on *your* hardware — no third-party inference billing, no data egress. |
+| **llama-swap** | OpenAI-compatible proxy that hot-swaps which local model process is running (llama.cpp and other backends) on one box — good for VRAM-constrained single-GPU model-juggling. | Single-box, no cross-node discovery or federation. Slancha-Mesh's router picks *which node* answers a prompt, not just which model is currently loaded on the one box you're on — the two are complementary if you're already running llama-swap on an individual node. |
+| **SGLang** | High-performance serving engine — RadixAttention prefix caching, structured-output/JSON decoding, strong agentic/tool-call throughput. A real third leg alongside vLLM/Ollama. | It's an engine, not an orchestrator — no cross-node discovery or specialist catalog. Backends are a pluggable seam here (vLLM/Ollama/llama.cpp/MLX today); SGLang is a natural fit for the same seam and is on the roadmap, not wired yet. |
 
 ## What ships (today)
 
@@ -150,8 +155,8 @@ See [`docs/HOMELAB.md`](docs/HOMELAB.md) for the longer walkthrough
 | `mesh/select.py` | v0.0.7 | `select_mesh_route` — classifier verdict + snapshot → ranked routes + cloud fallback |
 | `mesh/allocator.py` | v0.0.1 | `model_fit_score` + 3 cluster strategies |
 | `mesh/probe.py` | v0.0.1 | NodeProbe with GB10 unified-mem detection |
-| `mesh/catalog/*.toml` | 12 cards | 1 bring-up-validated + 11 DRAFT — [`docs/CATALOG_STATUS.md`](docs/CATALOG_STATUS.md) |
-| `mesh/tests/` | 650+ tests | hermetic unit suite + live-vLLM integration tests (gated by `VLLM_LIVE_URL`) |
+| `mesh/catalog/*.toml` | 10 cards | 1 bring-up-validated + 9 DRAFT — [`docs/CATALOG_STATUS.md`](docs/CATALOG_STATUS.md) |
+| `mesh/tests/` | 980+ tests | hermetic unit suite + live-vLLM integration tests (gated by `VLLM_LIVE_URL`) |
 
 ## Backend support
 
@@ -284,6 +289,15 @@ binds where an ACL gates reachability.
 
 ## Design decisions worth remembering
 
+- **Bandwidth, not just VRAM, decides where the interactive hot path
+  goes.** Measured (zero-install ctypes bench, MBU 0.82): an RTX PRO 6000
+  Blackwell does ~1467 GB/s against GB10's 273 GB/s *datasheet* figure
+  (GB10's own live bench is blocked — the box is never idle enough to run
+  it). What *is* measured live on GB10: a small resident model decodes at
+  46 tok/s while a large one on the same box drops to 8 tok/s — a 30
+  tok/s interactive floor discriminates correctly between the two. Full
+  derivation + methodology:
+  [`docs/SIZING_BANDWIDTH_BRIEF.md`](docs/SIZING_BANDWIDTH_BRIEF.md).
 - **Unified-mem nodes get `RAM - 8GB OS reserve`** as their effective
   model-fit budget. GB10 reports `[N/A]` for VRAM via nvidia-smi; the
   probe detects this and falls back to RAM with a warning.
