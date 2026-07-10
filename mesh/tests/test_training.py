@@ -99,7 +99,7 @@ def test_stub_state_dict_shape():
 def test_training_pass_runs_to_completion(tmp_path: Path):
     store = _store_with(20)
     tp = TrainingPass(
-        specialist_id="qwen3-math-7b-q4",
+        specialist_id="nemotron-math-7b-q4",
         base_model_id="Qwen/Qwen3-Math-7B",
         domain="math",
         replay_store=store,
@@ -138,8 +138,8 @@ def test_run_emits_stub_warning(tmp_path: Path):
 def test_training_pass_writes_state_and_meta(tmp_path: Path):
     store = _store_with(5)
     tp = TrainingPass(
-        specialist_id="qwen3-coder-7b-q4",
-        base_model_id="Qwen/Qwen3-Coder-7B",
+        specialist_id="qwen3-coder-30b-a3b-fp8",
+        base_model_id="Qwen/Qwen3-Coder-30B-A3B-Instruct-FP8",
         domain="code",
         replay_store=store,
         checkpoint_dir=tmp_path,
@@ -154,7 +154,7 @@ def test_training_pass_writes_state_and_meta(tmp_path: Path):
     state = json.loads(state_path.read_text())
     meta_dict = json.loads(meta_path.read_text())
     assert "lora_A" in state
-    assert meta_dict["specialist_id"] == "qwen3-coder-7b-q4"
+    assert meta_dict["specialist_id"] == "qwen3-coder-30b-a3b-fp8"
     assert meta_dict["domain"] == "code"
     assert meta_dict["stub"] is True
 
@@ -190,8 +190,8 @@ def test_checkpoint_meta_rationale_roundtrips(tmp_path: Path):
 
     now = datetime.now(timezone.utc)
     meta = CheckpointMeta(
-        specialist_id="qwen3-coder-7b-q4",
-        base_model_id="Qwen/Qwen3-Coder-7B",
+        specialist_id="qwen3-coder-30b-a3b-fp8",
+        base_model_id="Qwen/Qwen3-Coder-30B-A3B-Instruct-FP8",
         domain="code",
         seed=0,
         n_examples=1840,
@@ -261,7 +261,7 @@ def test_training_pass_preempt_yields_clean(tmp_path: Path):
     with preempted=True and n_steps_completed=0."""
     store = _store_with(5)
     tp = TrainingPass(
-        specialist_id="qwen3-math-7b-q4",
+        specialist_id="nemotron-math-7b-q4",
         base_model_id="Qwen/Qwen3-Math-7B",
         domain="math",
         replay_store=store,
@@ -285,7 +285,7 @@ def test_training_pass_preempt_mid_loop(tmp_path: Path):
     it stops early with preempted=True."""
     store = _store_with(10)
     tp = TrainingPass(
-        specialist_id="qwen3-math-7b-q4",
+        specialist_id="nemotron-math-7b-q4",
         base_model_id="Qwen/Qwen3-Math-7B",
         domain="math",
         replay_store=store,
@@ -340,7 +340,7 @@ def test_run_without_allow_stub_raises(tmp_path: Path):
     """Default refuses to run: a stub pass must not execute silently and
     write a checkpoint a caller could mistake for a real adapter."""
     tp = TrainingPass(
-        specialist_id="qwen3-math-7b-q4",
+        specialist_id="nemotron-math-7b-q4",
         base_model_id="Qwen/Qwen3-Math-7B",
         domain="math",
         replay_store=_store_with(5),
@@ -361,7 +361,7 @@ def test_run_without_allow_stub_raises(tmp_path: Path):
 def test_run_with_allow_stub_runs_and_warns(tmp_path: Path):
     """allow_stub=True runs exactly as before AND still emits the warning."""
     tp = TrainingPass(
-        specialist_id="qwen3-math-7b-q4",
+        specialist_id="nemotron-math-7b-q4",
         base_model_id="Qwen/Qwen3-Math-7B",
         domain="math",
         replay_store=_store_with(5),

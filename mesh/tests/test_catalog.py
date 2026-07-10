@@ -7,19 +7,23 @@ from mesh.models import SpecialistCard
 
 
 def test_catalog_loads_expected_set():
-    """Catalog covers the v0.0.2 set: 5 tier-1/2 + 1 real-weights card.
+    """Catalog covers the v0.0.2 set: 4 tier-1/2 + 1 real-weights card.
 
     `qwen3-coder-30b-a3b-fp8` was added in v0.0.2 — it's the first card
     backed by actually-cached weights served by vLLM on the local Spark.
+
+    `qwen3-coder-7b-q4` was retired in the 2026-07 SOTA audit (#139) — the
+    HF repo it pointed at never existed; `qwen2.5-coder-7b-q4-ollama` is
+    the still-current 7B code leader and `qwen3-coder-30b-a3b-fp8` already
+    covers tier-1 code, so no direct replacement card was added.
     """
     cards = load_catalog()
     ids = {c.specialist_id for c in cards}
     required = {
-        "aya-expanse-8b-q4",
-        "llama-3.1-8b-instruct-q4",
+        "qwen3-8b-q4",
+        "ministral-3-8b-q4",
         "phi-4-14b-q4",
-        "qwen3-coder-7b-q4",
-        "qwen3-math-7b-q4",
+        "nemotron-math-7b-q4",
         "qwen3-coder-30b-a3b-fp8",
     }
     assert required.issubset(ids), f"missing: {required - ids}"
@@ -53,12 +57,11 @@ def test_tier_1_specialists_cover_math_code_general():
 # tests here only assert schema invariants — bring-up validation lives in
 # the status doc.
 _OLLAMA_CARD_IDS = {
-    "llama-3.1-8b-instruct-q5-ollama",
+    "ministral-3-8b-q4-ollama",
     "qwen2.5-coder-7b-q4-ollama",
-    "deepseek-coder-v2-16b-lite-q4-ollama",
-    "phi-3.5-mini-q5-ollama",
-    "gemma-2-9b-q4-ollama",
-    "mistral-nemo-12b-q4-ollama",
+    "phi-4-mini-q4-ollama",
+    "gemma-4-12b-q4-ollama",
+    "ministral-3-14b-q4-ollama",
 }
 
 
@@ -75,7 +78,7 @@ def test_ollama_cards_load_with_required_fields():
         # name so a future operator doesn't ship a llama-3-named card
         # pointing at qwen weights. Cheap structural check, not semantic.
         family = sid.split("-q")[0].split("-ollama")[0]
-        # gemma-2 / phi-3.5 etc. have dots in their Ollama tag; normalize.
+        # phi-4-mini etc. have dots in their Ollama tag (e.g. "3.8b"); normalize.
         tag_head = card.ollama_tag.split(":")[0].replace(".", "-")
         # We allow a one-segment vs many-segment mismatch (qwen2.5-coder
         # ↔ qwen2.5-coder-7b) — the heuristic is "tag prefix appears

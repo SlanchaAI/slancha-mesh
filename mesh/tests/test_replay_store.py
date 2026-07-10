@@ -37,7 +37,7 @@ def test_entry_jsonl_roundtrip():
         domain="math",
         difficulty="easy",
         captured_at=now,
-        served_by_specialist="qwen3-math-7b-q4",
+        served_by_specialist="nemotron-math-7b-q4",
         oracle_cost_usd=0.0001,
     )
     line = e.to_jsonl()
@@ -192,7 +192,7 @@ def test_recent_n_negative_raises():
 
 def test_dump_and_load_roundtrip(tmp_path: Path):
     s = TrafficReplayStore(max_size=10)
-    s.add("p1", "r1", "code", "easy", served_by_specialist="qwen3-coder-7b-q4")
+    s.add("p1", "r1", "code", "easy", served_by_specialist="qwen3-coder-30b-a3b-fp8")
     s.add("p2", "r2", "math", "medium", oracle_cost_usd=0.005)
     path = tmp_path / "replay.jsonl"
     n_dumped = s.dump(path)
@@ -202,7 +202,7 @@ def test_dump_and_load_roundtrip(tmp_path: Path):
     assert len(loaded) == 2
     entries = list(loaded)
     by_text = {e.prompt_text: e for e in entries}
-    assert by_text["p1"].served_by_specialist == "qwen3-coder-7b-q4"
+    assert by_text["p1"].served_by_specialist == "qwen3-coder-30b-a3b-fp8"
     assert by_text["p2"].oracle_cost_usd == 0.005
 
 

@@ -318,7 +318,7 @@ def test_smoke_five_prompts_in_under_one_second(
     )
     reg.record_heartbeat(
         HeartbeatPostRequest(
-            heartbeat=make_heartbeat(mac_mini_node, fresh_now, ["qwen3-math-7b-q4"], catalog),
+            heartbeat=make_heartbeat(mac_mini_node, fresh_now, ["nemotron-math-7b-q4"], catalog),
             node_url="http://mac-mini:8001/v1",
         )
     )

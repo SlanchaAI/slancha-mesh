@@ -106,7 +106,7 @@ class SpecialistCard(_Frozen):
     """
 
     model_id: ModelId
-    specialist_id: SpecialistId  # local handle, e.g., "qwen3-math-7b-q4"
+    specialist_id: SpecialistId  # local handle, e.g., "nemotron-math-7b-q4"
     domain: DomainId
     difficulty_tiers: list[DifficultyTier]
     languages: list[str] = Field(default_factory=lambda: ["en"])

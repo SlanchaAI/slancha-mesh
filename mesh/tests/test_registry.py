@@ -16,7 +16,7 @@ from mesh.tests.conftest import make_heartbeat
 
 def test_heartbeat_ingest_creates_node(spark_node, catalog, fresh_now):
     reg = MeshRegistry(catalog=catalog)
-    hb = make_heartbeat(spark_node, fresh_now, ["qwen3-math-7b-q4"], catalog)
+    hb = make_heartbeat(spark_node, fresh_now, ["nemotron-math-7b-q4"], catalog)
     resp = reg.record_heartbeat(
         HeartbeatPostRequest(heartbeat=hb, node_url="http://spark-1:8000/v1")
     )
@@ -24,17 +24,17 @@ def test_heartbeat_ingest_creates_node(spark_node, catalog, fresh_now):
     snap = reg.snapshot(now=fresh_now)
     assert spark_node.node_id in snap.nodes
     assert snap.nodes[spark_node.node_id].node_url == "http://spark-1:8000/v1"
-    assert "qwen3-math-7b-q4" in snap.specialists
-    assert snap.specialists["qwen3-math-7b-q4"][0].node_id == spark_node.node_id
+    assert "nemotron-math-7b-q4" in snap.specialists
+    assert snap.specialists["nemotron-math-7b-q4"][0].node_id == spark_node.node_id
 
 
 def test_heartbeat_replay_takes_latest(spark_node, catalog, fresh_now):
     reg = MeshRegistry(catalog=catalog)
-    hb1 = make_heartbeat(spark_node, fresh_now, ["qwen3-math-7b-q4"], catalog, queue_depth=0)
+    hb1 = make_heartbeat(spark_node, fresh_now, ["nemotron-math-7b-q4"], catalog, queue_depth=0)
     hb2 = make_heartbeat(
         spark_node,
         fresh_now + timedelta(seconds=5),
-        ["qwen3-math-7b-q4"],
+        ["nemotron-math-7b-q4"],
         catalog,
         queue_depth=3,
     )
@@ -48,7 +48,7 @@ def test_heartbeat_replay_takes_latest(spark_node, catalog, fresh_now):
 def test_node_unreachable_after_5_min(spark_node, catalog, fresh_now):
     # #102: age is measured from the SERVER receive time, so inject the clock.
     reg = MeshRegistry(catalog=catalog, clock=lambda: fresh_now)
-    hb = make_heartbeat(spark_node, fresh_now, ["qwen3-math-7b-q4"], catalog)
+    hb = make_heartbeat(spark_node, fresh_now, ["nemotron-math-7b-q4"], catalog)
     reg.record_heartbeat(HeartbeatPostRequest(heartbeat=hb, node_url="http://spark-1:8000/v1"))
     snap = reg.snapshot(now=fresh_now + NODE_UNREACHABLE_AFTER + timedelta(seconds=1))
     assert snap.nodes[spark_node.node_id].health == "unreachable"
@@ -58,7 +58,7 @@ def test_client_cannot_fake_freshness_with_future_ts(spark_node, catalog, fresh_
     """#102: a node that sends a far-future heartbeat ts can't stay 'healthy'
     forever — the server-stamped receive time governs the unreachable calc."""
     reg = MeshRegistry(catalog=catalog, clock=lambda: fresh_now)
-    lying = make_heartbeat(spark_node, fresh_now + timedelta(hours=1), ["qwen3-math-7b-q4"], catalog)
+    lying = make_heartbeat(spark_node, fresh_now + timedelta(hours=1), ["nemotron-math-7b-q4"], catalog)
     reg.record_heartbeat(HeartbeatPostRequest(heartbeat=lying, node_url="http://spark-1:8000/v1"))
     snap = reg.snapshot(now=fresh_now + NODE_UNREACHABLE_AFTER + timedelta(seconds=1))
     assert snap.nodes[spark_node.node_id].health == "unreachable"  # server clock wins, not the node's
@@ -66,7 +66,7 @@ def test_client_cannot_fake_freshness_with_future_ts(spark_node, catalog, fresh_
 
 def test_node_left_event_drops_node(spark_node, catalog, fresh_now):
     reg = MeshRegistry(catalog=catalog)
-    hb = make_heartbeat(spark_node, fresh_now, ["qwen3-math-7b-q4"], catalog)
+    hb = make_heartbeat(spark_node, fresh_now, ["nemotron-math-7b-q4"], catalog)
     reg.record_heartbeat(HeartbeatPostRequest(heartbeat=hb, node_url="http://spark-1:8000/v1"))
     reg.record_node_left(spark_node.node_id, reason="graceful")
     snap = reg.snapshot(now=fresh_now + timedelta(seconds=10))
@@ -78,7 +78,7 @@ def test_coverage_built_from_loaded_models(spark_node, catalog, fresh_now):
     hb = make_heartbeat(
         spark_node,
         fresh_now,
-        ["qwen3-math-7b-q4", "qwen3-coder-7b-q4"],
+        ["nemotron-math-7b-q4", "qwen3-coder-30b-a3b-fp8"],
         catalog,
     )
     reg.record_heartbeat(HeartbeatPostRequest(heartbeat=hb, node_url="http://spark-1:8000/v1"))
@@ -90,7 +90,7 @@ def test_coverage_built_from_loaded_models(spark_node, catalog, fresh_now):
 
 def test_build_ranked_routes(spark_node, catalog, fresh_now):
     reg = MeshRegistry(catalog=catalog)
-    hb = make_heartbeat(spark_node, fresh_now, ["qwen3-math-7b-q4"], catalog, queue_depth=1)
+    hb = make_heartbeat(spark_node, fresh_now, ["nemotron-math-7b-q4"], catalog, queue_depth=1)
     reg.record_heartbeat(HeartbeatPostRequest(heartbeat=hb, node_url="http://spark-1:8000/v1"))
     snap = reg.snapshot(now=fresh_now)
     ranked = build_ranked_routes(snap)
@@ -104,7 +104,7 @@ def test_build_ranked_routes(spark_node, catalog, fresh_now):
 
 def test_event_log_is_append_only(spark_node, catalog, fresh_now):
     reg = MeshRegistry(catalog=catalog)
-    hb = make_heartbeat(spark_node, fresh_now, ["qwen3-math-7b-q4"], catalog)
+    hb = make_heartbeat(spark_node, fresh_now, ["nemotron-math-7b-q4"], catalog)
     reg.record_heartbeat(HeartbeatPostRequest(heartbeat=hb, node_url="http://spark-1:8000/v1"))
     assert len(reg.events) == 1
     reg.record_heartbeat(HeartbeatPostRequest(heartbeat=hb))
@@ -132,7 +132,7 @@ def _spam_heartbeats(reg, spark_node, catalog, fresh_now, n: int):
         hb = make_heartbeat(
             spark_node,
             fresh_now + timedelta(seconds=5 * i),
-            ["qwen3-math-7b-q4"],
+            ["nemotron-math-7b-q4"],
             catalog,
             queue_depth=i,
         )

@@ -1,0 +1,32 @@
+# Tier-1 specialist: math reasoning (hard difficulty).
+# Card schema: SpecialistCard in mesh/models.py.
+#
+# Repointed 2026-07 SOTA audit (#139): the previous `qwen3-math-7b-q4` card
+# pointed at `Qwen/Qwen3-Math-7B-Instruct`, which never shipped (config.json
+# returns 401 — nonexistent, not gated). `nvidia/OpenReasoning-Nemotron-7B`
+# (CC-BY-4.0, Qwen2.5-7B lineage) is the verified replacement: it beats both
+# `nvidia/OpenMath-Nemotron-7B` and `Qwen/Qwen2.5-Math-7B-Instruct` on every
+# reported math benchmark (AIME24 84.7 / AIME25 78.2). specialist_id renamed
+# to match — see docs/CATALOG_STATUS.md for the retired/repointed table.
+model_id = "nvidia/OpenReasoning-Nemotron-7B"
+specialist_id = "nemotron-math-7b-q4"
+domain = "math"
+difficulty_tiers = ["medium", "hard"]
+languages = ["en"]
+required_backend = "vllm"
+requires_fp4 = false
+storage_gb = 4.6
+runtime_gb = 6.8
+min_vram_gb = 7.0
+context_window = 131072
+n_layers = 28
+hidden_size = 3584
+supports_lora_finetune = true
+upstream_model_card = "nvidia/OpenReasoning-Nemotron-7B"
+coverage_tier = 1
+
+[estimated_tps_at]
+gb10 = 65.0
+m4_pro = 55.0
+m3_ultra = 90.0
+l40 = 110.0

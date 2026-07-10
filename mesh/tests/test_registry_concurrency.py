@@ -70,7 +70,7 @@ def test_concurrent_heartbeat_during_compaction_is_not_lost(catalog, fresh_now):
     serialize mutations across threads.
     """
     node_a, node_b, node_c = _node("node-a"), _node("node-b"), _node("node-c")
-    sid = "qwen3-math-7b-q4"
+    sid = "nemotron-math-7b-q4"
 
     # max_events=1 so the next append after seeding triggers compaction.
     reg = MeshRegistry(catalog=catalog, max_events=1)
@@ -164,7 +164,7 @@ def test_record_and_snapshot_under_thread_storm_preserve_all_nodes(catalog, fres
     n_nodes = 12
     n_beats = 25
     reg = MeshRegistry(catalog=catalog, max_events=4)
-    sid = "qwen3-math-7b-q4"
+    sid = "nemotron-math-7b-q4"
     nodes = [_node(f"node-{i:02d}") for i in range(n_nodes)]
 
     def hammer(idx: int) -> None:
@@ -202,7 +202,7 @@ def test_concurrent_record_and_snapshot_dont_crash(catalog, fresh_now, n_threads
     test asserts the no-crash baseline; correctness of the latest-beat
     semantics is covered by the deterministic test above.
     """
-    sid = "qwen3-math-7b-q4"
+    sid = "nemotron-math-7b-q4"
     reg = MeshRegistry(catalog=catalog, max_events=8)
     stop = threading.Event()
 

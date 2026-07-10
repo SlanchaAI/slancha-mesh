@@ -1,0 +1,38 @@
+# DRAFT — unvalidated. Targets `ollama pull ministral-3:14b-instruct-2512-q4_K_M`.
+# Card schema-checked + loadable; no live serve + heartbeat + route call yet.
+#
+# Tier-2 reasoning specialist for mid-tier hardware (~11 GB VRAM).
+#
+# Repointed 2026-07 SOTA audit (#141): `mistral-nemo-12b-q4-ollama` superseded
+# by Ministral 3 (2512) — Apache-2.0, native vision, strong reasoning + tool
+# use. Sized up to the 14B tier (closer size match to the 12B card it
+# replaces than the 8B tier, which is already used for the general/fallback
+# cards). Pairs with `phi-4-14b-q4` as the next tier up when 11 GB is the
+# constraint. specialist_id renamed to match.
+model_id = "mistralai/Ministral-3-14B-Instruct-2512"
+specialist_id = "ministral-3-14b-q4-ollama"
+domain = "reasoning"
+difficulty_tiers = ["medium", "hard"]
+languages = ["en", "fr", "de", "es"]
+required_backend = "ollama"
+ollama_tag = "ministral-3:14b-instruct-2512-q4_K_M"
+storage_gb = 8.4
+runtime_gb = 10.1
+min_vram_gb = 11.0
+context_window = 262144
+n_layers = 40
+hidden_size = 5120
+n_kv_heads = 8
+head_dim = 128
+kv_arch = "gqa"
+supports_lora_finetune = false
+upstream_model_card = "mistralai/Ministral-3-14B-Instruct-2512"
+coverage_tier = 2
+capabilities = ["tools", "json_mode"]
+
+[estimated_tps_at]
+gb10 = 27.0
+m4_pro = 20.0
+m3_ultra = 45.0
+rtx_4090 = 68.0
+rtx_3090 = 45.0

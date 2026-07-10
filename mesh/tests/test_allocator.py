@@ -36,7 +36,7 @@ def _spec_by_id(cards: list[SpecialistCard], sid: str) -> SpecialistCard:
 
 
 def test_fit_score_hard_filter_backend(spark_node, catalog):
-    spec = _spec_by_id(catalog, "qwen3-math-7b-q4")  # requires vllm
+    spec = _spec_by_id(catalog, "nemotron-math-7b-q4")  # requires vllm
     # Node without vllm
     no_vllm = spark_node.model_copy(update={"available_backends": ["llamacpp"]})
     assert model_fit_score(spec, no_vllm, {}) == -math.inf
@@ -56,7 +56,7 @@ def test_fit_score_hard_filter_vram(tiny_node, catalog):
 
 
 def test_fit_score_passes_on_spark(spark_node, catalog):
-    spec = _spec_by_id(catalog, "qwen3-math-7b-q4")
+    spec = _spec_by_id(catalog, "nemotron-math-7b-q4")
     score = model_fit_score(spec, spark_node, {})
     assert math.isfinite(score)
     assert score > 0
@@ -65,8 +65,8 @@ def test_fit_score_passes_on_spark(spark_node, catalog):
 def test_fit_score_coverage_need_dominates(spark_node, mac_mini_node, catalog):
     """A specialist not yet covered should out-score one that is covered,
     when hardware fit is similar."""
-    coder = _spec_by_id(catalog, "qwen3-coder-7b-q4")
-    math_ = _spec_by_id(catalog, "qwen3-math-7b-q4")
+    coder = _spec_by_id(catalog, "qwen3-coder-30b-a3b-fp8")
+    math_ = _spec_by_id(catalog, "nemotron-math-7b-q4")
     # Cluster already has math covered on mac-mini-1
     coverage = {"math": {"mac-mini-1"}}
     s_math = model_fit_score(math_, spark_node, coverage)
@@ -257,9 +257,9 @@ def test_allocate_unknown_strategy_errors_quietly(spark_node, catalog):
 @pytest.mark.parametrize(
     "spec_id,node_fix,expected_finite",
     [
-        ("qwen3-math-7b-q4", "spark_node", True),
+        ("nemotron-math-7b-q4", "spark_node", True),
         ("phi-4-14b-q4", "tiny_node", False),  # no VRAM + no vllm
-        ("qwen3-coder-7b-q4", "mac_mini_node", False),  # no vllm
+        ("qwen3-coder-30b-a3b-fp8", "mac_mini_node", False),  # no vllm
     ],
 )
 def test_fit_score_synthetic_combos(spec_id, node_fix, expected_finite, request, catalog):

@@ -106,7 +106,7 @@ def test_e2e_two_spark_mesh(spark_node):
     # starves) when both math and code prompts are present.
     node_ids_hit = {r.node_id for r in mesh_hits}
     domains_loaded = {primary_by_node[nid] for nid in primary_by_node}
-    if {"qwen3-math-7b-q4", "qwen3-coder-7b-q4"} <= domains_loaded:
+    if {"nemotron-math-7b-q4", "qwen3-coder-30b-a3b-fp8"} <= domains_loaded:
         # Both Sparks should be exercised.
         assert len(node_ids_hit) == 2, (
             f"expected both Sparks exercised; hit {node_ids_hit}, "
@@ -131,7 +131,7 @@ def test_e2e_event_replay_is_deterministic(spark_node):
         hardware=spark_node,
         loaded_models=[
             LoadedModel(
-                specialist_id="qwen3-math-7b-q4",
+                specialist_id="nemotron-math-7b-q4",
                 model_id="Qwen/Qwen3-Math-7B-Instruct",
                 loaded_at=now,
             )

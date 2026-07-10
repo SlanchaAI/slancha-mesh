@@ -1,0 +1,36 @@
+# Tier-2 specialist: multilingual.
+#
+# Repointed 2026-07 SOTA audit (#141): `aya-expanse-8b-q4` pointed at
+# `CohereForAI/aya-expanse-8b`, which is CC-BY-NC (verified verbatim on the
+# model card) — a commercial-use blocker, not something to leave silently
+# NC-licensed in the catalog. `Qwen/Qwen3-8B` (Apache-2.0) is the verified
+# replacement; `google/gemma-4-12B-it` was the other option the audit named,
+# but it's already used for the `gemma-4-12b-q4-ollama` repoint, and keeping
+# distinct models across the two multilingual cards is the better hedge
+# (this lane keeps one Chinese-origin + one non-Chinese-origin card rather
+# than collapsing both to the same model). specialist_id renamed to match.
+model_id = "Qwen/Qwen3-8B"
+specialist_id = "qwen3-8b-q4"
+domain = "multilingual"
+difficulty_tiers = ["easy", "medium", "hard"]
+# Qwen3 dense models are trained on a broad multilingual corpus (100+
+# languages per the Qwen3 technical report); listing the most common in
+# classifier traffic, same list Aya Expanse used.
+languages = ["en", "es", "fr", "de", "pt", "it", "nl", "pl", "ru", "ja", "ko", "zh", "ar", "tr", "vi", "id", "hi"]
+required_backend = "vllm"
+requires_fp4 = false
+storage_gb = 4.9
+runtime_gb = 6.9
+min_vram_gb = 7.5
+context_window = 40960
+n_layers = 36
+hidden_size = 4096
+supports_lora_finetune = true
+upstream_model_card = "Qwen/Qwen3-8B"
+coverage_tier = 2
+
+[estimated_tps_at]
+gb10 = 55.0
+m4_pro = 45.0
+m3_ultra = 78.0
+l40 = 95.0

@@ -149,14 +149,14 @@ def test_list_models_returns_sorted_specialist_ids():
     snap = _snapshot(
         cards=[
             _card(specialist_id="qwen2.5-coder-7b-q4-ollama"),
-            _card(specialist_id="phi-3.5-mini-q5-ollama"),
+            _card(specialist_id="phi-4-mini-q4-ollama"),
         ],
         bindings={
             "qwen2.5-coder-7b-q4-ollama": [
                 _binding(specialist_id="qwen2.5-coder-7b-q4-ollama")
             ],
-            "phi-3.5-mini-q5-ollama": [
-                _binding(node_id="node-b", specialist_id="phi-3.5-mini-q5-ollama")
+            "phi-4-mini-q4-ollama": [
+                _binding(node_id="node-b", specialist_id="phi-4-mini-q4-ollama")
             ],
         },
     )
@@ -166,7 +166,7 @@ def test_list_models_returns_sorted_specialist_ids():
     payload = r.json()
     assert payload["object"] == "list"
     assert [m["id"] for m in payload["data"]] == [
-        "phi-3.5-mini-q5-ollama",
+        "phi-4-mini-q4-ollama",
         "qwen2.5-coder-7b-q4-ollama",
     ]
     for entry in payload["data"]:
