@@ -18,6 +18,13 @@ difficulty_tiers = ["easy", "medium", "hard"]
 # classifier traffic, same list Aya Expanse used.
 languages = ["en", "es", "fr", "de", "pt", "it", "nl", "pl", "ru", "ja", "ko", "zh", "ar", "tr", "vi", "id", "hi"]
 required_backend = "vllm"
+# Supply-chain provenance (#142/#148): HF commit pinned so a repo rename/squat
+# can't swap weights on restart; SHA = main-branch HEAD 2026-07-10
+# (huggingface.co/api/models/Qwen/Qwen3-8B .sha). trust_remote_code OFF —
+# Qwen3ForCausalLM is native in transformers (no repo modeling_*.py exec).
+revision = "b968826d9c46dd6066d109eabc6255188de91218"
+license = "Apache-2.0"
+trust_remote_code = false
 requires_fp4 = false
 storage_gb = 4.9
 runtime_gb = 6.9

@@ -14,6 +14,14 @@ domain = "general"
 difficulty_tiers = ["easy", "medium"]
 languages = ["en"]
 required_backend = "vllm"
+# Supply-chain provenance (#142/#148): HF commit pinned so a repo rename/squat
+# can't swap weights on restart; SHA = main-branch HEAD 2026-07-10
+# (huggingface.co/api/models/mistralai/Ministral-3-8B-Instruct-2512 .sha).
+# trust_remote_code OFF — Mistral3ForConditionalGeneration is native in
+# transformers v5 (no repo modeling_*.py exec).
+revision = "aae06a2125402f2a89efbacf0881623c15a711d0"
+license = "Apache-2.0"
+trust_remote_code = false
 requires_fp4 = false
 storage_gb = 5.2
 runtime_gb = 8.0
