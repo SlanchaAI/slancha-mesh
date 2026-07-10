@@ -69,6 +69,12 @@ class _Event(BaseModel):
 class HeartbeatEvent(_Event):
     kind: Literal["heartbeat"] = "heartbeat"
     node_url: str | None = None
+    # #102 H3: the pinned Ed25519 public key at record time, persisted so the
+    # TOFU pin survives a registry restart. Without this the durable log rebuilt
+    # `_events` but not `_node_pubkeys`, so after a crash/deploy an attacker could
+    # re-pin a victim's node_id to their own key (self-signed certs always verify)
+    # and lock the real node out. None = the node presented no identity cert.
+    public_key_b64: str | None = None
     heartbeat: NodeHeartbeat
 
 
@@ -235,8 +241,15 @@ class MeshRegistry:
         self._lock = threading.RLock()
         # Boot replay: rebuild the in-memory read model from the durable log
         # (no-op for NullEventStore). Done before serving any write.
+        # #102 H3: also rebuild the identity pins (`_node_pubkeys`) from the
+        # replayed heartbeats — first-seen key per node wins, matching the
+        # pin-on-first-sight TOFU semantics — so the pin isn't silently reset
+        # (and re-pinnable by an attacker) across a restart.
         for env in self._store.replay():
-            self._events.append(_decode(env))
+            ev = _decode(env)
+            self._events.append(ev)
+            if isinstance(ev, HeartbeatEvent) and ev.public_key_b64:
+                self._node_pubkeys.setdefault(ev.heartbeat.node_id, ev.public_key_b64)
 
     def _record(self, ev: Event) -> None:
         """Durably persist `ev`, then add it to the in-memory read model.
@@ -250,11 +263,13 @@ class MeshRegistry:
 
     # --- ingestion ---
 
-    def _check_node_identity(self, req: HeartbeatPostRequest) -> None:
+    def _check_node_identity(self, req: HeartbeatPostRequest) -> str | None:
         """Verify + pin the node's identity cert (#102). Caller holds the lock.
-        Raises NodeIdentityError on an invalid cert, a pin violation
-        (impersonation), a missing cert when required, or a cert-less heartbeat
-        from a node that previously authenticated (downgrade)."""
+        Returns the pinned public key (so the caller can persist it in the
+        heartbeat event), or None when the node presented no cert. Raises
+        NodeIdentityError on an invalid cert, a pin violation (impersonation), a
+        missing cert when required, or a cert-less heartbeat from a node that
+        previously authenticated (downgrade)."""
         node_id = req.heartbeat.node_id
         cert = req.identity_cert
         if cert is not None:
@@ -265,17 +280,18 @@ class MeshRegistry:
                 raise NodeIdentityError(
                     f"node {node_id!r} is pinned to a different key — impersonation refused")
             self._node_pubkeys[node_id] = cert.public_key_b64
-            return
+            return cert.public_key_b64
         if self._require_node_identity:
             raise NodeIdentityError(f"node {node_id!r} must present an identity cert (required)")
         if node_id in self._node_pubkeys:
             raise NodeIdentityError(
                 f"node {node_id!r} previously presented an identity cert; a cert-less "
                 "heartbeat is refused (downgrade)")
+        return None
 
     def record_heartbeat(self, req: HeartbeatPostRequest) -> HeartbeatPostResponse:
         with self._lock:
-            self._check_node_identity(req)
+            pinned_pubkey = self._check_node_identity(req)
             if req.node_url:
                 self._node_urls[req.heartbeat.node_id] = req.node_url
             self._record(
@@ -286,7 +302,10 @@ class MeshRegistry:
                 # event ts is now the server's receive time; the node's reported
                 # ts is preserved in `heartbeat.heartbeat.ts` as telemetry.
                 HeartbeatEvent(
-                    ts=self._clock(), node_url=req.node_url, heartbeat=req.heartbeat
+                    ts=self._clock(),
+                    node_url=req.node_url,
+                    public_key_b64=pinned_pubkey,
+                    heartbeat=req.heartbeat,
                 )
             )
             if len(self._events) > self._max_events:

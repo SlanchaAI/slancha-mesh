@@ -160,6 +160,13 @@ def cmd_up(args: argparse.Namespace) -> int:
         _print("[up] --dry-run: not starting backends or the server.")
         return 0
 
+    # Fail-closed (#97): the node-info app is the full registry control plane.
+    # Don't expose it on a public interface unauthenticated — same guard the
+    # router path uses. Loopback binds and token-present binds pass; a public
+    # bind with no token raises unless SLANCHA_AUTH_REQUIRED=false.
+    from mesh.auth import assert_bind_safe
+    assert_bind_safe(args.node_info_host, token_present=bool(os.environ.get(NODE_TOKEN_ENV)))
+
     node.run(
         node_info_host=args.node_info_host,
         node_info_port=args.node_info_port,
@@ -677,7 +684,18 @@ def cmd_node(args: argparse.Namespace) -> int:
         _print(f"[node] {out} exists — refusing to overwrite (use --force). No key written.")
         return 1
     out.parent.mkdir(parents=True, exist_ok=True)
-    out.write_text(sk_b64 + "\n", encoding="utf-8")
+    # Create the key file 0600 ATOMICALLY (os.open with the mode) rather than
+    # write_text()+chmod: the latter creates the file with the process umask
+    # (usually world-readable) and only tightens it afterward, leaving a window
+    # where the Ed25519 secret is readable by other local users — and if the
+    # chmod fails, the secret is left on disk world-readable. O_CREAT|O_TRUNC
+    # (not O_EXCL, since --force intentionally overwrites) with mode 0o600; on a
+    # forced overwrite of a pre-existing file, re-chmod to enforce 0600.
+    fd = os.open(out, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    try:
+        os.write(fd, (sk_b64 + "\n").encode("utf-8"))
+    finally:
+        os.close(fd)
     try:
         os.chmod(out, 0o600)
     except OSError:
@@ -716,7 +734,10 @@ def build_parser() -> argparse.ArgumentParser:
     up.add_argument("--base-port", type=int, default=8003, help="First model port (vLLM convention 8003).")
     up.add_argument("--node-info-port", type=int, default=DEFAULT_NODE_INFO_PORT,
                     help="Port the pull-able /models self-description listens on.")
-    up.add_argument("--node-info-host", default="0.0.0.0", help="Bind host for the node-info app.")
+    up.add_argument("--node-info-host", default="127.0.0.1",
+                    help="Bind host for the node-info app. Loopback by default (single-box safe); "
+                         "set to 0.0.0.0 or the tailnet IP for a multi-box mesh — that needs "
+                         f"{NODE_TOKEN_ENV} set (or SLANCHA_AUTH_REQUIRED=false on a trusted network).")
     up.add_argument("--key", default=None, help="Tailscale/Headscale ephemeral auth key (first join only).")
     up.add_argument("--tailnet", action="store_true", help="Force tailnet mode (else inferred from --key/env).")
     up.add_argument("--advertise-host", default=None, help="Override MagicDNS advertise host.")

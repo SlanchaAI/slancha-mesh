@@ -88,6 +88,47 @@ def test_certless_default_path_unaffected(spark_node, catalog, fresh_now):
     assert resp.ack is True
 
 
+class _MemStore:
+    """Durable EventStore fake: keeps appended envelopes so a fresh MeshRegistry
+    built on the same store replays them — i.e. simulates a process restart."""
+
+    def __init__(self):
+        self.envelopes = []
+
+    def append(self, env):
+        self.envelopes.append(env)
+
+    def replay(self):
+        return list(self.envelopes)
+
+
+def test_pin_survives_registry_restart(spark_node, catalog, fresh_now):
+    """H3 (#102): the identity pin must be rebuilt from the durable log on
+    restart. Before the fix, `_node_pubkeys` was reset empty on boot (the cert
+    was never persisted), so an attacker could re-pin a victim's node_id to
+    their own key after any crash/deploy, and a previously-authenticated node
+    could be silently downgraded."""
+    nid = spark_node.node_id
+    sk, pk = generate_node_keypair()
+    store = _MemStore()
+
+    reg1 = MeshRegistry(catalog=catalog, store=store)
+    reg1.record_heartbeat(_req(spark_node, fresh_now, catalog, build_node_cert(nid, sk)))
+    assert reg1._node_pubkeys[nid] == pk
+
+    # "Restart": a new registry on the same durable store.
+    reg2 = MeshRegistry(catalog=catalog, store=store)
+    assert reg2._node_pubkeys.get(nid) == pk  # pin rebuilt from the log
+
+    # And it's enforced: a different key is refused (no re-pin window)...
+    sk2, _ = generate_node_keypair()
+    with pytest.raises(NodeIdentityError, match="pinned"):
+        reg2.record_heartbeat(_req(spark_node, fresh_now, catalog, build_node_cert(nid, sk2)))
+    # ...and a cert-less heartbeat is still a refused downgrade.
+    with pytest.raises(NodeIdentityError, match="downgrade"):
+        reg2.record_heartbeat(_req(spark_node, fresh_now, catalog, cert=None))
+
+
 # ── #108 peer challenge (sign/verify) ────────────────────────────────────────
 def test_challenge_sign_verify():
     from mesh.identity import sign_challenge, verify_challenge

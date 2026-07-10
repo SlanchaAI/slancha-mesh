@@ -31,7 +31,34 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Iterable, Literal, Protocol
 
+from mesh.url_guard import NodeUrlError, validate_node_url
+
 logger = logging.getLogger(__name__)
+
+
+class _SsrfGuardedRedirect(urllib.request.HTTPRedirectHandler):
+    """Re-run the SSRF guard on every redirect hop (#98 follow-up).
+
+    `node_url` is validated once at heartbeat ingest, but urllib follows 3xx
+    redirects by default and never re-checks the target — so a node that passed
+    ingest with a benign URL could 302 the probe to an internal/IMDS host the
+    guard was written to block. Validating each hop closes that bypass; an unsafe
+    redirect surfaces as an HTTPError, which every call site already handles as a
+    failed probe (URLError superclass)."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        try:
+            validate_node_url(newurl)
+        except NodeUrlError as exc:
+            raise urllib.error.HTTPError(
+                newurl, code, f"unsafe redirect blocked: {exc}", headers, fp
+            ) from exc
+        return super().redirect_request(req, fp, code, msg, headers, newurl)
+
+
+# Module-level opener used for every outbound probe/registry call so redirect
+# targets are SSRF-checked (plain urllib.request.urlopen would not be).
+_SSRF_OPENER = urllib.request.build_opener(_SsrfGuardedRedirect)
 
 
 # ── Probe set ───────────────────────────────────────────────────────────────
@@ -331,7 +358,7 @@ class ProbeRunner:
             headers={"Content-Type": "application/json"},
         )
         try:
-            with urllib.request.urlopen(req, timeout=self.http_timeout_s) as resp:  # noqa: S310
+            with _SSRF_OPENER.open(req, timeout=self.http_timeout_s) as resp:  # noqa: S310
                 payload = json.loads(resp.read())
         except (urllib.error.URLError, TimeoutError, json.JSONDecodeError) as exc:
             logger.warning("probe call failed: %s", type(exc).__name__)
@@ -413,7 +440,7 @@ def write_observation(
         },
     )
     try:
-        with urllib.request.urlopen(req, timeout=http_timeout_s) as resp:  # noqa: S310
+        with _SSRF_OPENER.open(req, timeout=http_timeout_s) as resp:  # noqa: S310
             return json.loads(resp.read())
     except (urllib.error.URLError, TimeoutError, json.JSONDecodeError) as exc:
         logger.warning("write_observation failed: %s", type(exc).__name__)
@@ -445,7 +472,7 @@ def _main(argv: list[str] | None = None) -> int:
         headers={"Authorization": f"Bearer {args.token}"},
     )
     try:
-        with urllib.request.urlopen(req, timeout=30.0) as resp:  # noqa: S310
+        with _SSRF_OPENER.open(req, timeout=30.0) as resp:  # noqa: S310
             payload = json.loads(resp.read())
     except (urllib.error.URLError, TimeoutError, json.JSONDecodeError) as exc:
         # This is a cron/systemd-timer entry point; an unhandled traceback
