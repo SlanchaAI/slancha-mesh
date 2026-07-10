@@ -25,8 +25,16 @@ supports_lora_finetune = true
 upstream_model_card = "mistralai/Ministral-3-8B-Instruct-2512"
 coverage_tier = 1
 
+# estimated_tps_at DERIVED (not measured) via the §3.2 roofline in
+# docs/SIZING_BANDWIDTH_BRIEF.md: tps = MBU 0.8 × datasheet BW ÷ runtime_gb
+# (batch-1, short-ctx upper bound; MBU 0.8 per the measured 0.82 on the
+# RTX PRO 6000, see the brief's hardware-verification table). Datasheet BW
+# (GB/s): gb10 273, m4_pro 273, m3_ultra 819, l40 864. Replaces the values
+# carried from the retired llama-3.1 card, which were never derived for
+# this architecture. Allocator uses them only for tie-breaking when no
+# live bandwidth probe exists.
 [estimated_tps_at]
-gb10 = 58.0
-m4_pro = 48.0
-m3_ultra = 80.0
-l40 = 100.0
+gb10 = 27.0
+m4_pro = 27.0
+m3_ultra = 82.0
+l40 = 86.0

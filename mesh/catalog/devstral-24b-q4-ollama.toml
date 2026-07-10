@@ -1,0 +1,46 @@
+# DRAFT — unvalidated. Targets `ollama pull devstral:24b-small-2505-q4_K_M`.
+# Card schema-checked + loadable; no live serve + heartbeat + route call yet.
+#
+# Tier-1 code specialist: the non-Chinese-origin code card (catalog hedge:
+# keep ≥1 non-Chinese card per lane). Added 2026-07 after PR #150 review —
+# `mistralai/Devstral-Small-2505` (Apache-2.0, Mistral AI, 23.6B dense)
+# verified live on HF; agentic-coding focused (SWE-bench-class), the
+# strongest open non-Chinese coder at a size a 24 GB consumer GPU can
+# serve at Q4_K_M. model_id and ollama_tag are pinned to the SAME release
+# (2505); do not mix with the 2507 revision's tag.
+# Architecture fields from mistralai/Devstral-Small-2505 config.json:
+# 40 layers, hidden 5120, 32 Q / 8 KV heads (GQA), head_dim 128, 131072 ctx.
+model_id = "mistralai/Devstral-Small-2505"
+specialist_id = "devstral-24b-q4-ollama"
+domain = "code"
+difficulty_tiers = ["medium", "hard"]
+languages = ["en"]
+required_backend = "ollama"
+ollama_tag = "devstral:24b-small-2505-q4_K_M"
+storage_gb = 14.3
+runtime_gb = 16.5
+min_vram_gb = 17.0
+context_window = 131072
+n_layers = 40
+hidden_size = 5120
+n_kv_heads = 8
+head_dim = 128
+kv_arch = "gqa"
+supports_lora_finetune = false
+upstream_model_card = "mistralai/Devstral-Small-2505"
+coverage_tier = 1
+
+# estimated_tps_at DERIVED (not measured) via the §3.2 roofline in
+# docs/SIZING_BANDWIDTH_BRIEF.md: tps = MBU 0.8 × datasheet BW ÷ runtime_gb
+# (batch-1, short-ctx upper bound; MBU 0.8 per the measured 0.82 on the
+# RTX PRO 6000, see the brief's hardware-verification table). Datasheet BW
+# (GB/s): gb10 273, m4_pro 273, m3_ultra 819, rtx_4090 1008, rtx_3090 936.
+# The allocator uses these only for tie-breaking when no live bandwidth
+# probe exists; conservative (runtime_gb over-counts bytes/token) is the
+# safe direction.
+[estimated_tps_at]
+gb10 = 13.0
+m4_pro = 13.0
+m3_ultra = 40.0
+rtx_4090 = 49.0
+rtx_3090 = 45.0

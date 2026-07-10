@@ -25,8 +25,16 @@ supports_lora_finetune = true
 upstream_model_card = "nvidia/OpenReasoning-Nemotron-7B"
 coverage_tier = 1
 
+# estimated_tps_at DERIVED (not measured) via the §3.2 roofline in
+# docs/SIZING_BANDWIDTH_BRIEF.md: tps = MBU 0.8 × datasheet BW ÷ runtime_gb
+# (batch-1, short-ctx upper bound; MBU 0.8 per the measured 0.82 on the
+# RTX PRO 6000, see the brief's hardware-verification table). Datasheet BW
+# (GB/s): gb10 273, m4_pro 273, m3_ultra 819, l40 864. The retired card's
+# table was NOT carried over (it was written for a model that never
+# existed); these values replace it. Allocator uses them only for
+# tie-breaking when no live bandwidth probe exists.
 [estimated_tps_at]
-gb10 = 65.0
-m4_pro = 55.0
-m3_ultra = 90.0
-l40 = 110.0
+gb10 = 32.0
+m4_pro = 32.0
+m3_ultra = 96.0
+l40 = 102.0

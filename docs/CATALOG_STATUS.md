@@ -29,7 +29,7 @@ note the hardware you tested on, and add a short note. PRs are welcome.
 
 | specialist_id | engine | hardware | date | notes |
 |---|---|---|---|---|
-| `qwen3-coder-30b-a3b-fp8` | vllm (FP8) | DGX Spark GB10, ~49 GB GPU free, `gpu-mem-util 0.12` stand-in | 2026-05-29 | discover + e2e route through MagicDNS host worked; see `memory/mesh-sharpening-loop.md` `SERVED-SPECIALIST CAPSTONE DEMO`. The 30B-FP8 itself OOMs on consumer GB10 sm_121 due to the vLLM 0.17 cutlass FP8 gap; validated via a Qwen2.5-7B stand-in under the same served-model-name. |
+| `qwen3-coder-30b-a3b-fp8` | vllm (FP8) | DGX Spark GB10, ~49 GB GPU free, `gpu-mem-util 0.12` stand-in | 2026-05-29 | discover + e2e route through MagicDNS host worked (2026-05-29 live capstone demo on the GB10 tailnet). **Caveat:** the 30B-FP8 itself OOMs on consumer GB10 sm_121 due to the vLLM 0.17 cutlass FP8 gap; validated via a Qwen2.5-7B stand-in under the same served-model-name — so this row proves the mesh plumbing (serve/heartbeat/discover/route), not the 30B weights on that box. |
 
 ## DRAFT — unvalidated
 
@@ -51,6 +51,16 @@ each TOML.
 | `phi-4-mini-q4-ollama` | ollama | `microsoft/Phi-4-mini-instruct` | tiny — Mac mini 8 GB, RTX 3060, Pi 5 + eGPU |
 | `gemma-4-12b-q4-ollama` | ollama | `google/gemma-4-12B-it` | 8 GB+ Ollama box (multilingual fallback) |
 | `ministral-3-14b-q4-ollama` | ollama | `mistralai/Ministral-3-14B-Instruct-2512` | 11 GB+ Ollama box (tools + reasoning) |
+| `devstral-24b-q4-ollama` | ollama | `mistralai/Devstral-Small-2505` | 24 GB Ollama box (RTX 3090/4090; agentic code, the non-Chinese code card) |
+
+A note on the `estimated_tps_at` tables in these cards: they are
+**derived, not measured** — computed from the §3.2 roofline in
+[`SIZING_BANDWIDTH_BRIEF.md`](SIZING_BANDWIDTH_BRIEF.md)
+(`tps = MBU 0.8 × datasheet bandwidth ÷ runtime_gb`, batch-1, short-ctx
+upper bound; MBU 0.8 per the measured 0.82 on the RTX PRO 6000). Each
+TOML carries the derivation comment inline. The allocator uses these only
+for tie-breaking when no live bandwidth probe exists; bring-up reports
+with real tok/s numbers are exactly what moves a card out of DRAFT.
 
 ## Retired / repointed (2026-07 SOTA audit, #139 + #141)
 
@@ -74,12 +84,11 @@ is in the DRAFT table above.
 | `phi-3.5-mini-q5-ollama` | repointed → `phi-4-mini-q4-ollama` | direct family successor; also dropped Q5_K_M → Q4_K_M for the same Ollama-tag-availability reason as Ministral above. |
 | `deepseek-coder-v2-16b-lite-q4-ollama` | **retired**, no replacement card | DeepSeek discontinued the small-Coder line; `qwen3-coder-30b-a3b-fp8` already covers this role. |
 
-Known residual gap: the **code** lane (`qwen2.5-coder-7b-q4-ollama`,
-`qwen3-coder-30b-a3b-fp8`) is now entirely Qwen/Chinese-origin — the
-retirements above removed the two non-Qwen code cards without a verified
-non-Chinese replacement to put in their place. Flagged, not silently
-dropped; every other lane (math, multilingual, general, reasoning) keeps
-at least one non-Chinese-origin card.
+Lane-hedge status: the retirements above initially left the **code** lane
+all-Qwen; `devstral-24b-q4-ollama` (`mistralai/Devstral-Small-2505`,
+Apache-2.0, verified live on HF + ollama.com) was added in the same PR to
+close that gap, so every lane (code, math, multilingual, general,
+reasoning) now keeps at least one non-Chinese-origin card.
 
 ## Why the brutal honesty
 

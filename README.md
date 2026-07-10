@@ -17,8 +17,9 @@ optional). No data leaves your hardware. Apache-2.0.
 > the 30B-FP8 weights themselves OOM on consumer GB10 (sm_121) today, so
 > the validated run above actually served a Qwen2.5-7B stand-in under the
 > same `qwen3-coder-30b-a3b-fp8` served-model-name**, not the real 30B
-> weights — and 9 DRAFT cards spanning Ollama (Ministral-3-8B,
-> Qwen2.5-Coder-7B, Phi-4-mini, Gemma-4-12B, Ministral-3-14B) and vLLM
+> weights — and 10 DRAFT cards spanning Ollama (Ministral-3-8B,
+> Qwen2.5-Coder-7B, Devstral-Small-24B, Phi-4-mini, Gemma-4-12B,
+> Ministral-3-14B) and vLLM
 > (Ministral-3-8B, Nemotron-Math-7B, Qwen3-8B, Phi-4-14B). See
 > [`docs/CATALOG_STATUS.md`](docs/CATALOG_STATUS.md) for the per-card truth.
 
@@ -140,7 +141,7 @@ See [`docs/HOMELAB.md`](docs/HOMELAB.md) for the longer walkthrough
 | **vLLM / llama.cpp directly** | Best-in-class single-engine throughput. | The mesh treats them as backends. The router still sees `/v1/chat/completions`; the engine choice happens behind that seam. |
 | **Litellm / OpenRouter** | Unified API across N hosted providers. | Same OpenAI-compat surface, but every node is *yours* on *your* hardware — no third-party inference billing, no data egress. |
 | **llama-swap** | OpenAI-compatible proxy that hot-swaps which local model process is running (llama.cpp and other backends) on one box — good for VRAM-constrained single-GPU model-juggling. | Single-box, no cross-node discovery or federation. Slancha-Mesh's router picks *which node* answers a prompt, not just which model is currently loaded on the one box you're on — the two are complementary if you're already running llama-swap on an individual node. |
-| **SGLang** | High-performance serving engine — RadixAttention prefix caching, structured-output/JSON decoding, strong agentic/tool-call throughput. A real third leg alongside vLLM/Ollama. | It's an engine, not an orchestrator — no cross-node discovery or specialist catalog. Backends are a pluggable seam here (vLLM/Ollama/llama.cpp/MLX today); SGLang is a natural fit for the same seam and is on the roadmap, not wired yet. |
+| **SGLang** | High-performance serving engine — RadixAttention prefix caching, structured-output/JSON decoding, strong agentic/tool-call throughput. A real third leg alongside vLLM/Ollama. | It's an engine, not an orchestrator — no cross-node discovery or specialist catalog. Backends are a pluggable seam here (vLLM/Ollama/llama.cpp/MLX today); SGLang is a natural fit for the same seam and is on the roadmap (#152), not wired yet. |
 
 ## What ships (today)
 
@@ -155,7 +156,7 @@ See [`docs/HOMELAB.md`](docs/HOMELAB.md) for the longer walkthrough
 | `mesh/select.py` | v0.0.7 | `select_mesh_route` — classifier verdict + snapshot → ranked routes + cloud fallback |
 | `mesh/allocator.py` | v0.0.1 | `model_fit_score` + 3 cluster strategies |
 | `mesh/probe.py` | v0.0.1 | NodeProbe with GB10 unified-mem detection |
-| `mesh/catalog/*.toml` | 10 cards | 1 bring-up-validated + 9 DRAFT — [`docs/CATALOG_STATUS.md`](docs/CATALOG_STATUS.md) |
+| `mesh/catalog/*.toml` | 11 cards | 1 bring-up-validated + 10 DRAFT — [`docs/CATALOG_STATUS.md`](docs/CATALOG_STATUS.md) |
 | `mesh/tests/` | 980+ tests | hermetic unit suite + live-vLLM integration tests (gated by `VLLM_LIVE_URL`) |
 
 ## Backend support
@@ -187,7 +188,7 @@ membrane).
 ## How to run
 
 ```bash
-# Hermetic unit tests (~3 s, 650+ tests)
+# Hermetic unit tests (~3 s, 980+ tests)
 uv run pytest mesh/tests/ -v
 
 # Live vLLM integration tests (require a running vLLM)

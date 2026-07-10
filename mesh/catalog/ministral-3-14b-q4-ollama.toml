@@ -30,9 +30,16 @@ upstream_model_card = "mistralai/Ministral-3-14B-Instruct-2512"
 coverage_tier = 2
 capabilities = ["tools", "json_mode"]
 
+# estimated_tps_at DERIVED (not measured) via the §3.2 roofline in
+# docs/SIZING_BANDWIDTH_BRIEF.md: tps = MBU 0.8 × datasheet BW ÷ runtime_gb
+# (batch-1, short-ctx upper bound; MBU 0.8 per the measured 0.82 on the
+# RTX PRO 6000, see the brief's hardware-verification table). Datasheet BW
+# (GB/s): gb10 273, m4_pro 273, m3_ultra 819, rtx_4090 1008, rtx_3090 936.
+# Allocator uses them only for tie-breaking when no live bandwidth probe
+# exists.
 [estimated_tps_at]
-gb10 = 27.0
-m4_pro = 20.0
-m3_ultra = 45.0
-rtx_4090 = 68.0
-rtx_3090 = 45.0
+gb10 = 22.0
+m4_pro = 22.0
+m3_ultra = 65.0
+rtx_4090 = 80.0
+rtx_3090 = 74.0

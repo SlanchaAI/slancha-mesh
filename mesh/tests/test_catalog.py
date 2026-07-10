@@ -15,7 +15,9 @@ def test_catalog_loads_expected_set():
     `qwen3-coder-7b-q4` was retired in the 2026-07 SOTA audit (#139) — the
     HF repo it pointed at never existed; `qwen2.5-coder-7b-q4-ollama` is
     the still-current 7B code leader and `qwen3-coder-30b-a3b-fp8` already
-    covers tier-1 code, so no direct replacement card was added.
+    covers tier-1 code, so no direct same-size replacement was added
+    (`devstral-24b-q4-ollama` joined the code lane separately as its
+    non-Chinese-origin hedge card).
     """
     cards = load_catalog()
     ids = {c.specialist_id for c in cards}
@@ -59,6 +61,7 @@ def test_tier_1_specialists_cover_math_code_general():
 _OLLAMA_CARD_IDS = {
     "ministral-3-8b-q4-ollama",
     "qwen2.5-coder-7b-q4-ollama",
+    "devstral-24b-q4-ollama",
     "phi-4-mini-q4-ollama",
     "gemma-4-12b-q4-ollama",
     "ministral-3-14b-q4-ollama",

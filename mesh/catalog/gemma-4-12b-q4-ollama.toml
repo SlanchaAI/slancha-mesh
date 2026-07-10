@@ -36,9 +36,16 @@ supports_lora_finetune = false
 upstream_model_card = "google/gemma-4-12B-it"
 coverage_tier = 2
 
+# estimated_tps_at DERIVED (not measured) via the §3.2 roofline in
+# docs/SIZING_BANDWIDTH_BRIEF.md: tps = MBU 0.8 × datasheet BW ÷ runtime_gb
+# (batch-1, short-ctx upper bound; MBU 0.8 per the measured 0.82 on the
+# RTX PRO 6000, see the brief's hardware-verification table). Datasheet BW
+# (GB/s): gb10 273, m4_pro 273, m3_ultra 819, rtx_4090 1008, rtx_3090 936.
+# Allocator uses them only for tie-breaking when no live bandwidth probe
+# exists.
 [estimated_tps_at]
-gb10 = 26.0
-m4_pro = 22.0
-m3_ultra = 50.0
-rtx_4090 = 70.0
-rtx_3090 = 48.0
+gb10 = 23.0
+m4_pro = 23.0
+m3_ultra = 69.0
+rtx_4090 = 85.0
+rtx_3090 = 79.0
