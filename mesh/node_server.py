@@ -48,7 +48,7 @@ class NodeServer:
     def run(
         self,
         *,
-        node_info_host: str = "0.0.0.0",
+        node_info_host: str = "127.0.0.1",
         node_info_port: int = DEFAULT_NODE_INFO_PORT,
         ready_timeout: float = 600.0,
     ) -> None:

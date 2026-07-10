@@ -14,7 +14,14 @@
 ##
 ## Cross-machine: run the registry on a tailnet host (tag:gateway) and have
 ## tagged specialist nodes heartbeat to it — see docs/SELF_ORGANIZING_LOOP_SCOPE.md.
-## Auth: set SLANCHA_NODE_TOKEN to require Bearer on every endpoint but /health.
+##
+## Auth: the registry is an authenticated-write control plane ONLY if
+## SLANCHA_NODE_TOKEN is set — unset, every endpoint but /health is open, and
+## any reachable peer can register/hijack a node binding (steer its traffic).
+## So the host port is published on LOOPBACK by default ("127.0.0.1:8088:8088").
+## To let nodes on other machines heartbeat in, you MUST set SLANCHA_NODE_TOKEN
+## below AND widen the publish to "8088:8088" (or a specific host IP) — never
+## expose it token-less on a routable interface.
 
 services:
   registry:
@@ -23,9 +30,11 @@ services:
       dockerfile: docker/Dockerfile
     image: slancha-registry:0.0.6
     ports:
-      - "8088:8088"
+      # Loopback-only by default. Widen to "8088:8088" ONLY together with
+      # SLANCHA_NODE_TOKEN below (see the auth note above).
+      - "127.0.0.1:8088:8088"
     environment:
       - MESH_REGISTRY_HOST=0.0.0.0
       - MESH_REGISTRY_PORT=8088
-      # - SLANCHA_NODE_TOKEN=change-me   # uncomment to require Bearer auth
+      # - SLANCHA_NODE_TOKEN=change-me   # REQUIRED before publishing off-loopback
     restart: on-failure

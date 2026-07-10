@@ -81,7 +81,7 @@ def test_main_warns_when_stub_scorer_writes_to_registry(monkeypatch, caplog):
     import json as _json
     import logging
 
-    from mesh.quality_probe import _main
+    from mesh.quality_probe import _SSRF_OPENER, _main
 
     payload = _json.dumps({"snapshot": {"catalog": {}, "specialists": {}}}).encode()
 
@@ -95,7 +95,7 @@ def test_main_warns_when_stub_scorer_writes_to_registry(monkeypatch, caplog):
         def read(self):
             return payload
 
-    monkeypatch.setattr("urllib.request.urlopen", lambda *a, **k: _Resp())
+    monkeypatch.setattr(_SSRF_OPENER, "open", lambda *a, **k: _Resp())
     with caplog.at_level(logging.WARNING):
         _main(["--base-url", "http://registry.test", "--token", "t"])
     assert any("StubScorer" in r.message for r in caplog.records)
@@ -495,18 +495,35 @@ def test_get_models_requires_auth(monkeypatch):
     assert resp.status_code in (401, 403)
 
 
+def test_redirect_guard_blocks_imds_hop():
+    """M1 (#98 follow-up): urllib follows 3xx by default; a malicious node that
+    passed node_url validation at ingest could 302 the probe to the cloud IMDS
+    endpoint. The guarded opener re-validates each hop and refuses the unsafe
+    redirect (surfaced as an HTTPError the call sites already handle)."""
+    import urllib.error
+
+    from mesh.quality_probe import _SsrfGuardedRedirect
+
+    handler = _SsrfGuardedRedirect()
+    with pytest.raises(urllib.error.HTTPError):
+        handler.redirect_request(
+            None, None, 302, "Found", {},
+            "http://169.254.169.254/latest/meta-data/iam/security-credentials/",
+        )
+
+
 def test_main_returns_1_on_registry_fetch_failure(monkeypatch, caplog):
     """The CLI is a cron/systemd-timer entry point — a registry fetch
     failure must exit non-zero with a logged error, not a raw traceback."""
     import logging
     import urllib.error
 
-    from mesh.quality_probe import _main
+    from mesh.quality_probe import _SSRF_OPENER, _main
 
     def _boom(*a, **k):
         raise urllib.error.URLError("connection refused")
 
-    monkeypatch.setattr("urllib.request.urlopen", _boom)
+    monkeypatch.setattr(_SSRF_OPENER, "open", _boom)
     with caplog.at_level(logging.ERROR):
         rc = _main(["--base-url", "http://registry.test", "--token", "t"])
     assert rc == 1

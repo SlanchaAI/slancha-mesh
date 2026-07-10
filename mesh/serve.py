@@ -577,7 +577,20 @@ def resolve_node_key() -> str | None:
     path = os.environ.get("SLANCHA_NODE_KEY_FILE")
     if path:
         try:
-            return Path(path).read_text(encoding="utf-8").strip()
+            p = Path(path)
+            # Warn (don't fail — avoid breaking existing deploys) if the secret
+            # is readable beyond the owner; `node keygen` writes it 0600 but an
+            # env-pointed file may have been created elsewhere with lax perms.
+            try:
+                mode = p.stat().st_mode
+                if mode & 0o077:
+                    logging.getLogger(__name__).warning(
+                        "node key %s is group/world-accessible (mode %o) — chmod 600 it",
+                        path, mode & 0o777,
+                    )
+            except OSError:
+                pass
+            return p.read_text(encoding="utf-8").strip()
         except OSError:
             return None
     return None
