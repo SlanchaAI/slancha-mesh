@@ -83,6 +83,12 @@ KNOWN_LANGUAGE_TAGS = {
 # which must use error()/warning() so CI's `--strict` gate fails on it.
 _ADVISORY_CODES = frozenset({"REVISION_UNPINNED"})
 
+# Backends that pull weights + code straight from a mutable HF repo, so a
+# rename/squat can serve different bits on the next restart (#142/#149). The
+# revision-pin gate applies to these; llamacpp (local GGUF) and ollama (its own
+# registry) don't share the surface.
+_HF_DOWNLOAD_BACKENDS = frozenset({"vllm", "mlx"})
+
 
 @dataclass(frozen=True)
 class Finding:
@@ -242,52 +248,59 @@ def _check_kv_geometry(card: SpecialistCard, path: Path, report: _Report) -> Non
 
 
 def _check_revision_pin(card: SpecialistCard, path: Path, report: _Report) -> None:
-    """A vllm-engine card without a `revision` resolves a mutable HF ref (#142).
+    """An HF-download card without a `revision` resolves a mutable HF ref (#142).
+
+    Both vllm (`vllm serve --revision`) and mlx (mlx_lm, pinned via a
+    snapshot pre-fetch — #149) pull weights + code straight from a mutable HF
+    repo, so a rename/squat serves different weights (or code) on the next
+    restart. llamacpp (local GGUF) and ollama (its own registry) don't share
+    this surface, so the check is scoped to the HF-download backends.
 
     Severity tracks the ACTUAL risk of the unpinned ref, not just the tier:
 
     * `trust_remote_code=true` + no pin → hard ERROR at ANY tier. This is the
-      direct #142 RCE precondition: vllm serve executes the repo's own
-      `modeling_*.py` from a MUTABLE ref, so a rename/squat repoints it to
-      attacker code on the next restart. Enabling remote code without a pin is
-      never acceptable — the tier heuristic (below) is a proxy for "does a
-      default deploy run this", but remote-code execution is the real trigger
-      and must gate independently of coverage_tier (#148 security review).
+      direct #142 RCE precondition: the engine executes the repo's own code
+      from a MUTABLE ref, so a rename/squat repoints it to attacker code on
+      the next restart. Enabling remote code without a pin is never acceptable
+      — the tier heuristic (below) is a proxy for "does a default deploy run
+      this", but remote-code execution is the real trigger and must gate
+      independently of coverage_tier (#148 security review).
     * tier-1 (the essentials a default deploy runs) + no pin → WARNING, so
       CI's `--strict` gate fails it.
     * tier-2+ + no pin → soft advisory while the remaining migration finishes:
       the nudge without the fleet-wide break.
     """
-    if card.required_backend != "vllm" or card.revision:
+    if card.required_backend not in _HF_DOWNLOAD_BACKENDS or card.revision:
         return
+    backend = card.required_backend
     if card.trust_remote_code:
         report.error(
             path,
             "TRUST_REMOTE_CODE_UNPINNED",
-            "trust_remote_code=true with no `revision` pin: vllm serve would "
-            "execute the repo's modeling_*.py from a mutable HF ref, which a "
-            "rename/squat can repoint to attacker code between node restarts "
-            "(#142). Enabling remote code REQUIRES pinning an HF commit SHA — "
-            "this gates at every tier, not just tier-1.",
+            f"trust_remote_code=true with no `revision` pin: the {backend} "
+            f"backend would execute the repo's own code from a mutable HF ref, "
+            f"which a rename/squat can repoint to attacker code between node "
+            f"restarts (#142). Enabling remote code REQUIRES pinning an HF "
+            f"commit SHA — this gates at every tier, not just tier-1.",
         )
     elif card.coverage_tier == 1:
         report.warning(
             path,
             "REVISION_UNPINNED",
-            "tier-1 required_backend=vllm card without a `revision` pin: "
-            "vllm serve resolves the mutable default-branch ref, which a "
-            "repo rename/squat can repoint to attacker weights between node "
-            "restarts. Tier-1 essentials MUST pin an HF commit SHA "
-            "(#142/#148) — set `revision` from the model's HF commit.",
+            f"tier-1 required_backend={backend} card without a `revision` pin: "
+            f"the {backend} backend resolves the mutable default-branch ref, "
+            f"which a repo rename/squat can repoint to attacker weights between "
+            f"node restarts. Tier-1 essentials MUST pin an HF commit SHA "
+            f"(#142/#148) — set `revision` from the model's HF commit.",
         )
     else:
         report.advise(
             path,
             "REVISION_UNPINNED",
-            "required_backend=vllm but no `revision` set; vllm serve resolves "
-            "the mutable default-branch ref, which can change (or point at a "
-            "renamed/squatted repo) between node restarts. Pin an HF commit "
-            "SHA or tag when you have one.",
+            f"required_backend={backend} but no `revision` set; the {backend} "
+            f"backend resolves the mutable default-branch ref, which can change "
+            f"(or point at a renamed/squatted repo) between node restarts. Pin "
+            f"an HF commit SHA or tag when you have one.",
         )
 
 

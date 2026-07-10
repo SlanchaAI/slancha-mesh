@@ -188,6 +188,48 @@ def test_trust_remote_code_without_revision_errors_at_any_tier(tmp_path):
     assert not any(x.code == "TRUST_REMOTE_CODE_UNPINNED" for x in rep2.findings)
 
 
+def test_mlx_backend_shares_the_revision_gate(tmp_path):
+    """#149: mlx downloads from HF the same way vllm does, so the revision-pin
+    gate covers it too — tier-1 mlx unpinned WARNS (strict-fails), and
+    trust_remote_code + unpinned is a hard ERROR at any tier.
+    """
+    t1 = (
+        _GOOD_TOML.format(stem="mlx-t1")
+        .replace('revision = "abc123def456"\n', "")
+        .replace('required_backend = "vllm"', 'required_backend = "mlx"')
+    )
+    f1 = _write(tmp_path / "mlx-t1.toml", t1)
+    rep1 = validate_paths([f1])
+    assert any(x.code == "REVISION_UNPINNED" for x in rep1.findings)
+    assert rep1.has_warnings
+    assert main([str(f1), "--strict"]) == 1
+
+    trc = t1 + "coverage_tier = 2\ntrust_remote_code = true\n"
+    f2 = _write(tmp_path / "mlx-trc.toml", trc)
+    rep2 = validate_paths([f2])
+    assert any(x.code == "TRUST_REMOTE_CODE_UNPINNED" for x in rep2.findings)
+    assert rep2.has_errors
+    assert main([str(f2)]) == 1  # hard error fails even without --strict
+
+
+def test_ollama_and_llamacpp_never_hit_the_revision_gate(tmp_path):
+    """#149: the gate is scoped to HF-download backends — ollama (own registry)
+    and llamacpp (local GGUF) don't share the mutable-ref surface."""
+    for backend in ("ollama", "llamacpp"):
+        toml = (
+            _GOOD_TOML.format(stem=f"{backend}-norev")
+            .replace('revision = "abc123def456"\n', "")
+            .replace('required_backend = "vllm"', f'required_backend = "{backend}"')
+            + "trust_remote_code = true\n"  # even with remote code: not an HF-download path
+        )
+        f = _write(tmp_path / f"{backend}.toml", toml)
+        rep = validate_paths([f])
+        assert not any(
+            x.code in ("REVISION_UNPINNED", "TRUST_REMOTE_CODE_UNPINNED")
+            for x in rep.findings
+        ), f"{backend} should not trip the HF-download revision gate"
+
+
 def test_advise_rejects_non_allowlisted_code():
     """advise() refuses a code outside _ADVISORY_CODES (#148 design note).
 

@@ -29,6 +29,8 @@ def _card(
     required_backend: str = "llamacpp",
     gguf_path: str | None = "/models/qwen.gguf",
     mlx_repo: str | None = "mlx-community/Qwen2.5-Coder-7B-Instruct-4bit",
+    revision: str | None = None,
+    trust_remote_code: bool = False,
 ) -> SpecialistCard:
     return SpecialistCard(
         model_id="Qwen/Qwen2.5-Coder-7B-Instruct",
@@ -44,6 +46,8 @@ def _card(
         estimated_tps_at={"gb10": 40.0},
         gguf_path=gguf_path,
         mlx_repo=mlx_repo,
+        revision=revision,
+        trust_remote_code=trust_remote_code,
     )
 
 
@@ -163,6 +167,59 @@ def test_mlx_start_spawns_mlx_lm_server(monkeypatch):
     cmd = _FakePopen.last_cmd
     assert cmd is not None
     assert cmd[1:3] == ["-m", "mlx_lm.server"]
+    # No revision pin → the bare repo id is the --model, no snapshot pre-fetch.
     assert cmd[cmd.index("--model") + 1] == "mlx-community/Qwen2.5-Coder-7B-Instruct-4bit"
     assert cmd[cmd.index("--port") + 1] == "8139"
+    assert "--trust-remote-code" not in cmd  # default off
     assert be.is_alive()
+
+
+def test_mlx_trust_remote_code_appends_flag(monkeypatch):
+    """card.trust_remote_code=True → `--trust-remote-code` on the argv (#149).
+
+    mlx_lm.server executes the repo's own tokenizer code under this flag, so it
+    is a per-card opt-in exactly like VLLMBackend, not forced on.
+    """
+    monkeypatch.setattr("mesh.backends._is_apple_silicon", lambda: True)
+    monkeypatch.setattr("mesh.backends.subprocess.Popen", _FakePopen)
+    monkeypatch.setattr(MLXBackend, "_port_in_use", lambda self: False)
+    be = MLXBackend(card=_card(required_backend="mlx", trust_remote_code=True), port=8141)
+    be.start()
+    assert "--trust-remote-code" in _FakePopen.last_cmd
+
+
+def test_mlx_revision_pin_prefetches_snapshot(monkeypatch):
+    """card.revision set → snapshot_download the exact commit, use the local path (#149).
+
+    mlx_lm.server has no `--revision` flag, so we materialize the pinned commit
+    into the HF cache and hand mlx_lm the immutable snapshot dir as `--model`.
+    """
+    import sys
+    import types
+
+    calls: dict[str, str] = {}
+
+    def _fake_snapshot(repo_id: str, revision: str) -> str:
+        calls["repo_id"] = repo_id
+        calls["revision"] = revision
+        return "/hfcache/models--mlx-community--Qwen/snapshots/abc123"
+
+    fake_hub = types.ModuleType("huggingface_hub")
+    fake_hub.snapshot_download = _fake_snapshot  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "huggingface_hub", fake_hub)
+    monkeypatch.setattr("mesh.backends._is_apple_silicon", lambda: True)
+    monkeypatch.setattr("mesh.backends.subprocess.Popen", _FakePopen)
+    monkeypatch.setattr(MLXBackend, "_port_in_use", lambda self: False)
+
+    be = MLXBackend(
+        card=_card(required_backend="mlx", revision="abc123def456abc123def456abc123def456abcd"),
+        port=8142,
+    )
+    be.start()
+    assert calls == {
+        "repo_id": "mlx-community/Qwen2.5-Coder-7B-Instruct-4bit",
+        "revision": "abc123def456abc123def456abc123def456abcd",
+    }
+    cmd = _FakePopen.last_cmd
+    assert cmd is not None
+    assert cmd[cmd.index("--model") + 1] == "/hfcache/models--mlx-community--Qwen/snapshots/abc123"

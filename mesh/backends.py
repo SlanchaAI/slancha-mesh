@@ -846,6 +846,28 @@ class MLXBackend:
         # mlx_lm.server has no dedicated /health; /v1/models answers 200 once up.
         return f"{self.base_url}/v1/models"
 
+    def _resolve_model_ref(self) -> str:
+        """The `--model` value for mlx_lm.server, pinned to `card.revision` if set.
+
+        Supply-chain provenance (#142/#149): mlx_lm.server has NO `--revision`
+        flag (verified against mlx-lm main, 2026-07-10), so a bare `mlx_repo`
+        resolves the MUTABLE HF default branch — the same repo-squat/rename
+        exposure #145 closed for vLLM's `--revision`. When the card pins a
+        `revision`, materialize that exact commit into the HF cache and hand
+        mlx_lm the immutable local snapshot path instead. Unlike vLLM (which
+        pins via a child-process flag), this pre-fetch is synchronous: a
+        revision-pinned MLX card pays a one-time download here in start().
+        """
+        repo = self.card.mlx_repo
+        assert repo is not None  # start() guards mlx_repo before calling us
+        if not self.card.revision:
+            return repo
+        # huggingface_hub is provided by the mlx_lm runtime the operator installs;
+        # imported lazily so the no-pin path adds no dependency.
+        from huggingface_hub import snapshot_download
+
+        return snapshot_download(repo_id=repo, revision=self.card.revision)
+
     def start(self) -> None:
         """Spawn `python -m mlx_lm.server --model <repo>`. Apple Silicon only.
 
@@ -881,12 +903,17 @@ class MLXBackend:
             "-m",
             "mlx_lm.server",
             "--model",
-            self.card.mlx_repo,
+            self._resolve_model_ref(),
             "--host",
             self.host,
             "--port",
             str(self.port),
         ]
+        # mlx_lm.server runs the repo's own tokenizer code under
+        # --trust-remote-code; default OFF, per-card opt-in (mirrors
+        # VLLMBackend / #142/#149).
+        if self.card.trust_remote_code:
+            cmd.append("--trust-remote-code")
         cmd.extend(self.extra_args)
 
         env = os.environ.copy()
