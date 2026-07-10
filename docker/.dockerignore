@@ -14,6 +14,7 @@ docs
 deploy
 tests
 mesh/tests
-uv.lock
+# uv.lock is NOT ignored (#144) — the build stage needs it to `uv export
+# --frozen` a pinned dependency closure instead of resolving fresh from PyPI.
 *.md
 !README.md
