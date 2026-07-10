@@ -11,6 +11,11 @@
 # docker inspect --format='{{index .RepoDigests 0}}' python:3.12-slim
 FROM python:3.12-slim@sha256:090ba77e2958f6af52a5341f788b50b032dd4ca28377d2893dcf1ecbdfdfe203 AS build
 
+# uv binary, digest-pinned same as the base image (#144). Bump deliberately:
+# docker pull ghcr.io/astral-sh/uv:<version> &&
+# docker inspect --format='{{index .RepoDigests 0}}' ghcr.io/astral-sh/uv:<version>
+COPY --from=ghcr.io/astral-sh/uv@sha256:3b7b60a81d3c57ef471703e5c83fd4aaa33abcd403596fb22ab07db85ae91347 /uv /usr/local/bin/uv
+
 ENV PIP_DISABLE_PIP_VERSION_CHECK=1 \
     PIP_NO_CACHE_DIR=1 \
     PYTHONDONTWRITEBYTECODE=1
@@ -22,8 +27,17 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /build
-COPY pyproject.toml README.md /build/
+COPY pyproject.toml uv.lock README.md /build/
 COPY mesh /build/mesh
+
+# Frozen, hash-locked dependency list resolved from uv.lock (#144) — NOT a
+# fresh PyPI resolve. `--no-dev` drops dev/test-only groups; `--no-emit-project`
+# drops slancha-mesh itself (installed below from the wheel we build next), so
+# this file is exactly the runtime dependency closure CI's `uv sync --frozen`
+# already tests against. Two builds a week apart now install byte-identical
+# transitive dependencies instead of whatever floor-pinned range PyPI serves
+# that day.
+RUN uv export --frozen --no-dev --no-emit-project -o requirements.lock.txt
 
 RUN pip install --upgrade pip && pip install hatchling
 RUN python -m hatchling build && ls -la dist/
@@ -39,8 +53,14 @@ ENV PIP_DISABLE_PIP_VERSION_CHECK=1 \
     MESH_REGISTRY_HOST=0.0.0.0 \
     MESH_REGISTRY_PORT=8088
 
+COPY --from=build /build/requirements.lock.txt /tmp/requirements.lock.txt
 COPY --from=build /build/dist/*.whl /tmp/
-RUN pip install /tmp/*.whl && rm /tmp/*.whl
+# --no-deps on both: requirements.lock.txt already IS the full pinned
+# transitive closure (uv export), and the wheel's own loose specifiers
+# (e.g. httpx>=0.27) must not trigger a second, unpinned PyPI resolve (#144).
+RUN pip install --no-deps -r /tmp/requirements.lock.txt \
+    && pip install --no-deps /tmp/*.whl \
+    && rm -rf /tmp/requirements.lock.txt /tmp/*.whl
 
 EXPOSE 8088
 
