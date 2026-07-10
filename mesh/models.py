@@ -13,7 +13,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, ValidationInfo, field_validator
 
 from mesh.url_guard import validate_node_url
 
@@ -97,6 +97,19 @@ class NodeProbe(_Frozen):
 # ---------------------------------------------------------------------------
 
 
+def _reject_leading_dash(field: str, v: str | None) -> str | None:
+    """Argument-confusion guard for card fields interpolated into a backend's
+    CLI argv (mirrors #98's node_url SSRF guard). A value like "--foo" would be
+    parsed by vllm/mlx/llama.cpp as a flag rather than a model ref/path. HF
+    repos, specialist handles, and file paths never legitimately start with '-'."""
+    if v is not None and v.startswith("-"):
+        raise ValueError(
+            f"{field} must not start with '-' (got {v!r}); it is passed as a "
+            f"CLI argument and a leading dash would be parsed as a flag"
+        )
+    return v
+
+
 class SpecialistCard(_Frozen):
     """A model card extending exo's TOML schema with Slancha routing fields.
 
@@ -170,18 +183,16 @@ class SpecialistCard(_Frozen):
     @field_validator("revision")
     @classmethod
     def _safe_revision(cls, v: str | None) -> str | None:
-        """Reject a leading '-' — argument-confusion guard (mirrors #98's node_url SSRF guard).
+        return _reject_leading_dash("revision", v)
 
-        `revision` is interpolated into the `vllm serve` argv; a value like
-        "--allowed-origins=*" would be parsed as a flag, not a ref. HF
-        commit SHAs and tags never start with '-'.
-        """
-        if v is not None and v.startswith("-"):
-            raise ValueError(
-                f"revision must not start with '-' (got {v!r}); it is passed "
-                f"as a CLI argument and a leading dash would be parsed as a flag"
-            )
-        return v
+    # model_id (positional `vllm serve <model_id>`), specialist_id
+    # (`--served-model-name`), mlx_repo (mlx_lm.server argv) and gguf_path
+    # (llama-server `-m`) all reach a backend argv the same way `revision`
+    # does — guard them identically so a catalog card can't smuggle a flag.
+    @field_validator("model_id", "specialist_id", "mlx_repo", "gguf_path")
+    @classmethod
+    def _safe_argv_field(cls, v: str | None, info: ValidationInfo) -> str | None:
+        return _reject_leading_dash(info.field_name, v)
 
     # Per-engine model tags. Catalog cards target HF (`model_id`) by default,
     # but the alternative engines name models differently — Ollama uses

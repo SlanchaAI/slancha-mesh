@@ -39,8 +39,12 @@ COPY mesh /build/mesh
 # that day.
 RUN uv export --frozen --no-dev --no-emit-project -o requirements.lock.txt
 
-RUN pip install --upgrade pip && pip install hatchling
-RUN python -m hatchling build && ls -la dist/
+# Build the wheel with the already-digest-pinned `uv` toolchain instead of an
+# unpinned `pip install hatchling` (#144 parity). uv builds in an isolated env
+# using the version-pinned backend from pyproject's [build-system].requires
+# (hatchling==...), so the tool that produces the shipped wheel is deterministic
+# — no fresh, unverified PyPI resolve of the build backend at image-build time.
+RUN uv build --wheel --out-dir dist && ls -la dist/
 
 # ---
 
@@ -61,6 +65,14 @@ COPY --from=build /build/dist/*.whl /tmp/
 RUN pip install --no-deps -r /tmp/requirements.lock.txt \
     && pip install --no-deps /tmp/*.whl \
     && rm -rf /tmp/requirements.lock.txt /tmp/*.whl
+
+# Drop root: the registry is a network-facing HTTP service that needs no
+# privileges (port 8088 > 1024). Running as a dedicated non-root user means a
+# future RCE in uvicorn/FastAPI/app code lands unprivileged, materially raising
+# the bar for container escape. site-packages installed above stay root-owned
+# and world-readable, which is what we want (immutable to the runtime user).
+RUN useradd --uid 10001 --no-create-home --shell /usr/sbin/nologin mesh
+USER mesh
 
 EXPOSE 8088
 

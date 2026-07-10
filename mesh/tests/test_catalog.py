@@ -203,3 +203,18 @@ def test_revision_leading_dash_rejected():
     data = tomllib.loads(_BASE_TOML.format(extra='revision = "--allowed-origins=*"\n'))
     with pytest.raises(ValidationError, match="revision"):
         SpecialistCard(**data)
+
+
+def test_argv_reaching_fields_reject_leading_dash():
+    """M5: model_id/specialist_id/mlx_repo/gguf_path reach a backend argv the
+    same way `revision` does (positional model, --served-model-name, mlx repo,
+    llama.cpp -m). A leading '-' is rejected at card parse time so a card can't
+    smuggle a CLI flag into vllm/mlx/llama.cpp."""
+    import pytest
+    from pydantic import ValidationError
+
+    for field in ("model_id", "specialist_id", "mlx_repo", "gguf_path"):
+        data = tomllib.loads(_BASE_TOML.format(extra=""))
+        data[field] = "--flag=evil"
+        with pytest.raises(ValidationError, match=field):
+            SpecialistCard(**data)
