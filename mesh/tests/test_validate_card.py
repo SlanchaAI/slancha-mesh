@@ -219,6 +219,17 @@ def test_main_strict_promotes_warnings_to_errors(tmp_path):
 # ── Run against the actual on-disk catalog ─────────────────────────────────
 
 
+def test_real_catalog_passes_strict():
+    """The real on-disk catalog must exit 0 under `--strict` — CI's exact gate.
+
+    Locks the invariant that the #142 REVISION_UNPINNED advisory (which
+    fires on every unmigrated vllm card today) is never promoted to a
+    failure by --strict. Previously only verified manually.
+    """
+    assert main(["--all"]) == 0
+    assert main(["--all", "--strict"]) == 0
+
+
 def test_real_catalog_has_known_capabilities_and_domains():
     """Sanity check: KNOWN_* sets cover the real catalog's authored values.
 

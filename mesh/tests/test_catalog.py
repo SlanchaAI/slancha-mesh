@@ -143,3 +143,14 @@ def test_revision_license_trust_remote_code_default_when_absent():
     assert card.revision is None
     assert card.license is None
     assert card.trust_remote_code is False
+
+
+def test_revision_leading_dash_rejected():
+    """Argument-confusion guard: revision reaches the `vllm serve` argv, so a
+    leading '-' would parse as a flag, not a ref. Rejected at card parse time."""
+    import pytest
+    from pydantic import ValidationError
+
+    data = tomllib.loads(_BASE_TOML.format(extra='revision = "--allowed-origins=*"\n'))
+    with pytest.raises(ValidationError, match="revision"):
+        SpecialistCard(**data)

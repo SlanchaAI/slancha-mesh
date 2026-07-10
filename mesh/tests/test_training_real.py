@@ -71,6 +71,42 @@ def test_fingerprint_config_order_invariant():
     assert a == b
 
 
+def test_fingerprint_revision_sensitive():
+    """Same id + config, different HF revision → different fingerprint (#142).
+
+    Two revisions of one repo commonly ship identical config.json with
+    different weights; without folding revision in, the promotion gate's
+    base/adapter mismatch check is blind to revision drift.
+    """
+    cfg = {"hidden": 4096}
+    a = _base_model_fingerprint("Qwen/Qwen3-8B", cfg, revision="aaa111")
+    b = _base_model_fingerprint("Qwen/Qwen3-8B", cfg, revision="bbb222")
+    unpinned = _base_model_fingerprint("Qwen/Qwen3-8B", cfg)
+    assert a != b
+    assert a != unpinned
+    assert b != unpinned
+
+
+def test_fingerprint_revision_none_matches_pre_142_formula():
+    """revision=None must produce the EXACT pre-#142 fingerprint, byte for byte.
+
+    Existing champion baselines were stamped with sha256(id + sorted-JSON
+    config)[:16]; if adding the revision parameter changed the None path,
+    every unpinned card's champion would be invalidated on upgrade.
+    """
+    import hashlib
+    import json as _json
+
+    cfg = {"hidden": 4096, "arch": "llama"}
+    expected_h = hashlib.sha256()
+    expected_h.update(b"Qwen/Qwen3-8B")
+    expected_h.update(_json.dumps(cfg, sort_keys=True, default=str).encode("utf-8"))
+    expected = f"Qwen/Qwen3-8B@sha256:{expected_h.hexdigest()[:16]}"
+
+    assert _base_model_fingerprint("Qwen/Qwen3-8B", cfg) == expected
+    assert _base_model_fingerprint("Qwen/Qwen3-8B", cfg, revision=None) == expected
+
+
 # ---------------------------------------------------------------------------
 # Dispatch guard: neither flag → StubTrainingError (issue #55 contract)
 # ---------------------------------------------------------------------------

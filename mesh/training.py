@@ -84,8 +84,13 @@ class RealTrainingError(RuntimeError):
     """
 
 
-def _base_model_fingerprint(base_model_id: str, config: dict | None = None) -> str:
-    """Deterministic fingerprint of (base_model_id + its config).
+def _base_model_fingerprint(
+    base_model_id: str,
+    config: dict | None = None,
+    *,
+    revision: str | None = None,
+) -> str:
+    """Deterministic fingerprint of (base_model_id + revision + its config).
 
     The eval/promotion gate (issue #57 provenance) refuses to load an
     adapter whose base differs from the champion's — a base/adapter
@@ -94,9 +99,21 @@ def _base_model_fingerprint(base_model_id: str, config: dict | None = None) -> s
     gate can compare bases. `config` is the resolved model config dict
     when available (architecture + hidden size etc.); when absent we
     fingerprint the id alone (still stable per base).
+
+    `revision` (#142) folds the pinned HF commit SHA/tag into the hash:
+    two revisions of the same repo commonly ship an identical config.json
+    with different weights, so id+config alone is blind to revision
+    drift. None-safe BY DESIGN: revision=None produces the exact pre-#142
+    fingerprint (id+config only), so unpinned cards' existing champion
+    baselines stay valid — only cards that opt into a pin get (and want)
+    a revision-sensitive identity.
     """
     h = hashlib.sha256()
     h.update(base_model_id.encode("utf-8"))
+    if revision:
+        # NUL-prefixed marker: cannot collide with base_model_id bytes
+        # (HF ids never contain NUL) or the JSON config that follows.
+        h.update(b"\x00revision=" + revision.encode("utf-8"))
     if config:
         # Sort keys so the fingerprint is order-independent + JSON-stable.
         h.update(json.dumps(config, sort_keys=True, default=str).encode("utf-8"))
@@ -401,7 +418,9 @@ class TrainingPass:
         model.train()
 
         fingerprint = _base_model_fingerprint(
-            self.base_model_id, dict(getattr(model.config, "to_dict", dict)())
+            self.base_model_id,
+            dict(getattr(model.config, "to_dict", dict)()),
+            revision=self.base_model_revision,
         )
 
         lora_cfg = peft.LoraConfig(

@@ -167,6 +167,22 @@ class SpecialistCard(_Frozen):
     license: str | None = None
     trust_remote_code: bool = False
 
+    @field_validator("revision")
+    @classmethod
+    def _safe_revision(cls, v: str | None) -> str | None:
+        """Reject a leading '-' — argument-confusion guard (mirrors #98's node_url SSRF guard).
+
+        `revision` is interpolated into the `vllm serve` argv; a value like
+        "--allowed-origins=*" would be parsed as a flag, not a ref. HF
+        commit SHAs and tags never start with '-'.
+        """
+        if v is not None and v.startswith("-"):
+            raise ValueError(
+                f"revision must not start with '-' (got {v!r}); it is passed "
+                f"as a CLI argument and a leading dash would be parsed as a flag"
+            )
+        return v
+
     # Per-engine model tags. Catalog cards target HF (`model_id`) by default,
     # but the alternative engines name models differently — Ollama uses
     # repo-like tags (`qwen2.5-coder:7b-instruct-q4_K_M`), llama.cpp wants a
