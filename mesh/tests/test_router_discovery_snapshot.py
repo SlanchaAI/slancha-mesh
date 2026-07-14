@@ -14,9 +14,10 @@ from __future__ import annotations
 
 import threading
 import time
+from datetime import datetime, timedelta, timezone
 
 from mesh.discovery import DiscoveredSpecialist, DiscoveryResult
-from mesh.models import SpecialistCard
+from mesh.models import NodeBinding, NodeSummary, RegistrySnapshot, SpecialistCard
 from mesh.router_app import _RefreshingSnapshot, discovery_to_snapshot
 
 
@@ -198,3 +199,73 @@ def test_refreshing_snapshot_stop_terminates_thread():
     holder.stop(timeout=1.0)
     assert holder._thread is not None
     assert not holder._thread.is_alive()
+
+
+# ---------------------------------------------------------------------------
+# _RefreshingSnapshot — staleness-tolerant refresh (a transient discovery miss
+# must not 404 a live route for a whole cycle, but a truly-gone node must
+# eventually age out).
+# ---------------------------------------------------------------------------
+
+
+def _snap_with(sid: str, url: str, last_seen: datetime, ts: datetime) -> RegistrySnapshot:
+    binding = NodeBinding(
+        node_id=url, specialist_id=sid, health="healthy",
+        queue_depth=0, node_url=url, last_seen=last_seen,
+    )
+    return RegistrySnapshot(
+        snapshot_ts=ts,
+        nodes={url: NodeSummary(
+            node_id=url, friendly_name=url, health="healthy",
+            last_seen=last_seen, node_url=url,
+        )},
+        specialists={sid: [binding]},
+    )
+
+
+def _holder(retain_s: float) -> _RefreshingSnapshot:
+    return _RefreshingSnapshot(lambda: DiscoveryResult(), refresh_s=30.0, retain_s=retain_s)
+
+
+def test_merge_retains_binding_a_pass_transiently_missed():
+    """qwen3 was live last pass; this pass misses it (peer mid-restart). Within
+    the retain window it stays routable instead of 404ing."""
+    t0 = datetime(2026, 7, 14, tzinfo=timezone.utc)
+    prior = _snap_with("qwen3", "http://gb10:11434", t0, t0)
+    fresh = RegistrySnapshot(snapshot_ts=t0 + timedelta(seconds=30))  # empty pass, +30s
+    merged = _holder(retain_s=60.0)._merge_retaining_recent(prior, fresh)
+    assert "qwen3" in merged.specialists  # age 30s < retain 60s → retained
+    assert merged.specialists["qwen3"][0].node_url == "http://gb10:11434"
+    assert "http://gb10:11434" in {n.node_url for n in merged.nodes.values()}  # node carried too
+
+
+def test_merge_ages_out_binding_past_retain_window():
+    """A node that stays missing past retain_s stops being served — retention
+    is a bridge, not a permanent zombie route."""
+    t0 = datetime(2026, 7, 14, tzinfo=timezone.utc)
+    prior = _snap_with("qwen3", "http://gb10:11434", t0, t0)
+    fresh = RegistrySnapshot(snapshot_ts=t0 + timedelta(seconds=90))  # +90s > retain 60s
+    merged = _holder(retain_s=60.0)._merge_retaining_recent(prior, fresh)
+    assert "qwen3" not in merged.specialists  # aged out
+
+
+def test_merge_fresh_binding_is_authoritative_not_duplicated():
+    """When this pass re-sees the binding, fresh wins and it isn't double-added."""
+    t0 = datetime(2026, 7, 14, tzinfo=timezone.utc)
+    prior = _snap_with("qwen3", "http://gb10:11434", t0, t0)
+    fresh_ts = t0 + timedelta(seconds=30)
+    fresh = _snap_with("qwen3", "http://gb10:11434", fresh_ts, fresh_ts)
+    merged = _holder(retain_s=60.0)._merge_retaining_recent(prior, fresh)
+    assert len(merged.specialists["qwen3"]) == 1
+    assert merged.specialists["qwen3"][0].last_seen == fresh_ts  # the fresh binding
+
+
+def test_merge_retain_zero_restores_strict_drop():
+    """SLANCHA_ROUTER_BINDING_RETAIN_S=0 → old behaviour: a missed pass drops
+    the binding immediately (fresh returned unchanged)."""
+    t0 = datetime(2026, 7, 14, tzinfo=timezone.utc)
+    prior = _snap_with("qwen3", "http://gb10:11434", t0, t0)
+    fresh = RegistrySnapshot(snapshot_ts=t0 + timedelta(seconds=1))
+    merged = _holder(retain_s=0.0)._merge_retaining_recent(prior, fresh)
+    assert "qwen3" not in merged.specialists
+    assert merged is fresh

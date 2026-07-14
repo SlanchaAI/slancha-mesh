@@ -53,7 +53,7 @@ import hmac
 import logging
 import os
 import threading
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Annotated, Callable
 from urllib.parse import urlsplit
 
@@ -324,10 +324,26 @@ class _RefreshingSnapshot:
         *,
         catalog: list[SpecialistCard] | None = None,
         refresh_s: float = 5.0,
+        retain_s: float | None = None,
     ) -> None:
         self._refresher = refresher
         self._catalog = list(catalog or [])
         self._refresh_s = refresh_s
+        # Staleness tolerance for the whole-snapshot swap. A discovery pass that
+        # transiently misses a peer (fetch timeout, node mid-restart, or a
+        # specialist whose node_url isn't populated yet during staggered
+        # warm-up) would otherwise evict that specialist from the fresh
+        # snapshot, 404ing a live route for up to one refresh cycle. We retain a
+        # vanished binding until it is `retain_s` old so a single missed pass
+        # can't drop it. Default = 2 cycles; env-tunable; 0 restores the strict
+        # drop-immediately behaviour.
+        env_retain = os.environ.get("SLANCHA_ROUTER_BINDING_RETAIN_S")
+        if retain_s is not None:
+            self._retain_s = retain_s
+        elif env_retain not in (None, ""):
+            self._retain_s = float(env_retain)  # type: ignore[arg-type]
+        else:
+            self._retain_s = 2.0 * refresh_s
         self._lock = threading.Lock()
         self._snapshot: RegistrySnapshot | None = None
         self._stop = threading.Event()
@@ -347,10 +363,60 @@ class _RefreshingSnapshot:
         return snap
 
     def refresh_once(self) -> None:
-        """Run one discovery pass + swap the snapshot under the lock."""
-        snap = discovery_to_snapshot(self._refresher(), catalog=self._catalog)
+        """Run one discovery pass + swap the snapshot under the lock.
+
+        The swap is staleness-tolerant: bindings the prior snapshot had that
+        this pass transiently missed are carried over until they are
+        `retain_s` old, so one missed discovery pass can't 404 a live route.
+        """
+        fresh = discovery_to_snapshot(self._refresher(), catalog=self._catalog)
         with self._lock:
-            self._snapshot = snap
+            self._snapshot = self._merge_retaining_recent(self._snapshot, fresh)
+
+    def _merge_retaining_recent(
+        self, prior: RegistrySnapshot | None, fresh: RegistrySnapshot
+    ) -> RegistrySnapshot:
+        """Fresh discovery wins; carry over prior bindings it transiently missed.
+
+        A prior ``(specialist_id, node_url)`` binding absent from ``fresh`` is
+        retained iff it was last seen within ``retain_s`` — bridging a single
+        missed discovery pass. Genuinely-gone nodes age out (their ``last_seen``
+        stops advancing once discovery no longer reports them); until then the
+        chat fallback chain skips a retained-but-dead node on connect error, so
+        the cost of retention is a bounded connect attempt, not a wrong answer.
+        """
+        if prior is None or self._retain_s <= 0:
+            return fresh
+        cutoff = fresh.snapshot_ts - timedelta(seconds=self._retain_s)
+        fresh_keys = {
+            (sid, b.node_url)
+            for sid, bindings in fresh.specialists.items()
+            for b in bindings
+        }
+        merged = {sid: list(bindings) for sid, bindings in fresh.specialists.items()}
+        merged_nodes = dict(fresh.nodes)
+        retained = 0
+        for sid, bindings in prior.specialists.items():
+            for b in bindings:
+                if (sid, b.node_url) in fresh_keys or b.last_seen < cutoff:
+                    continue
+                merged.setdefault(sid, []).append(b)
+                retained += 1
+                if b.node_id not in merged_nodes and b.node_id in prior.nodes:
+                    merged_nodes[b.node_id] = prior.nodes[b.node_id]
+        if retained == 0:
+            return fresh
+        _log.debug(
+            "[router] retained %d recent binding(s) a discovery pass missed", retained
+        )
+        return RegistrySnapshot(
+            snapshot_ts=fresh.snapshot_ts,
+            nodes=merged_nodes,
+            specialists=merged,
+            coverage=fresh.coverage,
+            ranked_routes=fresh.ranked_routes,
+            catalog=fresh.catalog,
+        )
 
     def _loop(self) -> None:
         while not self._stop.is_set():
