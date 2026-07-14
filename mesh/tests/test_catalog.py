@@ -110,6 +110,9 @@ _OLLAMA_CARD_IDS = {
     "phi-4-mini-q4-ollama",
     "gemma-4-12b-q4-ollama",
     "ministral-3-14b-q4-ollama",
+    "qwen3.5-9b-q4-ollama",
+    "qwen3.6-27b-q4-ollama",
+    "qwen3-coder-next-80b-q4-ollama",
 }
 
 

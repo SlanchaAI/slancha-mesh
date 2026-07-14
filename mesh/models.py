@@ -189,7 +189,11 @@ class SpecialistCard(_Frozen):
     # (`--served-model-name`), mlx_repo (mlx_lm.server argv) and gguf_path
     # (llama-server `-m`) all reach a backend argv the same way `revision`
     # does — guard them identically so a catalog card can't smuggle a flag.
-    @field_validator("model_id", "specialist_id", "mlx_repo", "gguf_path")
+    # served_model_name only reaches an HTTP JSON body today, but it is named
+    # after a vLLM argv flag — guard it now so a future "honor the alias in
+    # mesh-spawned vLLM argv" change can't turn a catalog string into a
+    # smuggled flag (#158).
+    @field_validator("model_id", "specialist_id", "mlx_repo", "gguf_path", "served_model_name")
     @classmethod
     def _safe_argv_field(cls, v: str | None, info: ValidationInfo) -> str | None:
         return _reject_leading_dash(info.field_name, v)
@@ -208,6 +212,13 @@ class SpecialistCard(_Frozen):
     # with `required_backend = "external"`; the mesh routes to this URL and never
     # manages the process lifecycle (no start/stop). Form: "http://host:port".
     static_base_url: str | None = None
+    # Name the upstream server actually serves the model under, when it differs
+    # from `specialist_id`. Mesh-spawned vLLM sets `--served-model-name` to the
+    # specialist_id so no alias is needed; an ADOPTED endpoint (external backend)
+    # was launched by someone else and can't be renamed without a restart the
+    # mesh must never trigger. The router rewrites the upstream request body's
+    # `model` to this value (same mechanism as `ollama_tag`).
+    served_model_name: str | None = None
 
     # Slancha-internal: coverage tier used by the tiered allocator.
     # Tier 1 = essentials (math/code/general); Tier 2 = important

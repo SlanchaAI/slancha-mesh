@@ -1,0 +1,60 @@
+# General hard-lane specialist — ADOPTED endpoint (external backend).
+# dellpromax runs Dot's production vLLM 24/7: `vllm serve
+# Qwen/Qwen3.6-27B-FP8 --served-model-name dot-backbone --port 8011
+# --max-model-len 131072 --enable-auto-tool-choice --tool-call-parser
+# qwen3_xml`. The mesh routes to it and NEVER manages its lifecycle
+# (no start/stop — it is another product's backbone). `served_model_name`
+# makes the router rewrite the upstream body's `model`, because the vLLM
+# serves "dot-backbone", not this specialist_id, and restarting someone
+# else's service to rename it is not an option.
+#
+# DEPLOYMENT: this card must be adopted by a serve agent running ON
+# dellpromax. The loopback static_base_url is advertised into the registry
+# as-is; it only resolves correctly because the mac router dials the agent
+# via --peer host-pinning (same pattern as the gb10 ollama cards). A serve
+# agent on any other box would advertise a loopback URL that dials the
+# WRONG machine's :8011.
+#
+# SHARED CAPACITY: mesh traffic batches alongside Dot's own load
+# (--max-num-seqs 256, prefix caching). Fine for bursty routing; do not
+# point sustained bulk pipelines here without checking with Dot's owner.
+model_id = "Qwen/Qwen3.6-27B-FP8"
+specialist_id = "qwen3.6-27b-fp8-dot"
+domain = "general"
+# hard ONLY, deliberately: ExternalBackend.utilization() can't see vLLM's
+# real queue (always heartbeats queue_depth 0), so on any tier this card
+# claims it wins ranking by construction (fastest box, zero queue signal)
+# and would siphon ALL of that tier's traffic onto Dot's shared endpoint.
+# Claiming just the hard tier bounds the blast radius to the lane that
+# actually needs the big box. Widen only after utilization() learns to
+# read vLLM metrics.
+difficulty_tiers = ["hard"]
+languages = ["en", "es", "fr", "de", "zh", "ja"]
+required_backend = "external"
+static_base_url = "http://127.0.0.1:8011"
+served_model_name = "dot-backbone"
+storage_gb = 28.0
+runtime_gb = 77.0
+min_vram_gb = 28.0
+context_window = 131072
+n_layers = 64
+hidden_size = 5120
+n_kv_heads = 4
+head_dim = 256
+kv_arch = "gqa"
+capabilities = ["streaming", "system_prompt", "tools"]
+supports_lora_finetune = false
+upstream_model_card = "Qwen/Qwen3.6-27B-FP8"
+coverage_tier = 1
+
+# estimated_tps_at: rtx_pro_6000 uses the MEASURED MBU 0.82 × 1467 GB/s
+# (2026-06-27 ctypes CUDA bench on this exact box) ÷ 27GB FP8 weights.
+# Batch-1 upper bound; shared with Dot's traffic in practice. NOTE the
+# rtx_pro_6000 key is documentation, not probe-reachable: the allocator's
+# chip map has no such branch and the box's nvidia-smi name misses both
+# probe tables. The gb10 key satisfies the catalog invariant (every card
+# carries one); this card is pinned to the dell endpoint and won't
+# actually run there.
+[estimated_tps_at]
+rtx_pro_6000 = 44.0
+gb10 = 8.1

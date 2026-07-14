@@ -481,7 +481,14 @@ class OllamaBackend:
             if self._daemon_alive() and self._model_pulled():
                 # Pre-warm: a no-op `/api/generate` loads the model into VRAM
                 # so the first routed request doesn't pay the cold-start cost.
-                if self._prewarm():
+                # Give the request the REMAINING deadline, not the tight
+                # warm-heuristic timeout: a cold load takes 10s+ and an early
+                # client disconnect makes Ollama cancel the in-flight load, so
+                # a 5s-timeout retry loop never converges (#160).
+                remaining = deadline - time.time()
+                if remaining > 0 and self._prewarm(
+                    timeout=max(remaining, _OLLAMA_WARM_TIMEOUT_S)
+                ):
                     return True
             time.sleep(2.0)
         return False
@@ -584,12 +591,14 @@ class OllamaBackend:
             # The pull is best-effort; wait_ready will retry via `_model_pulled`.
             pass
 
-    def _prewarm(self) -> bool:
+    def _prewarm(self, timeout: float = _OLLAMA_WARM_TIMEOUT_S) -> bool:
         """Touch `/api/generate` with an empty prompt so Ollama loads the model.
 
         Returns True if the daemon accepts the request (model is now hot),
         False on any transport error. We use `keep_alive` from the
-        backend to set the live window.
+        backend to set the live window. `timeout` must cover a cold load
+        (weights → VRAM), not just a warm touch — Ollama cancels the load
+        if the client disconnects first (#160).
         """
         try:
             r = httpx.post(
@@ -600,7 +609,7 @@ class OllamaBackend:
                     "keep_alive": self.keep_alive,
                     "stream": False,
                 },
-                timeout=_OLLAMA_WARM_TIMEOUT_S,
+                timeout=timeout,
             )
             return r.status_code == 200
         except (httpx.HTTPError, OSError):

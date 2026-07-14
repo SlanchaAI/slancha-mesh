@@ -29,7 +29,12 @@ from mesh.models import (
 from mesh.router_app import create_router_app
 
 
-def _card(specialist_id: str, backend: str = "ollama", domain: str = "code") -> SpecialistCard:
+def _card(
+    specialist_id: str,
+    backend: str = "ollama",
+    domain: str = "code",
+    served_model_name: str | None = None,
+) -> SpecialistCard:
     return SpecialistCard(
         model_id="Qwen/Qwen2.5-Coder-7B-Instruct",
         specialist_id=specialist_id,
@@ -37,6 +42,7 @@ def _card(specialist_id: str, backend: str = "ollama", domain: str = "code") -> 
         difficulty_tiers=["medium"],
         required_backend=backend,
         ollama_tag="qwen2.5-coder:7b" if backend == "ollama" else None,
+        served_model_name=served_model_name,
         storage_gb=5.0,
         runtime_gb=6.0,
         min_vram_gb=8.0,
@@ -47,7 +53,10 @@ def _card(specialist_id: str, backend: str = "ollama", domain: str = "code") -> 
 
 
 def _snapshot(
-    specialist_id: str, backend: str = "ollama", domain: str = "code"
+    specialist_id: str,
+    backend: str = "ollama",
+    domain: str = "code",
+    served_model_name: str | None = None,
 ) -> RegistrySnapshot:
     now = datetime.now(timezone.utc)
     binding = NodeBinding(
@@ -72,7 +81,9 @@ def _snapshot(
             )
         },
         specialists={specialist_id: [binding]},
-        catalog={specialist_id: _card(specialist_id, backend, domain)},
+        catalog={
+            specialist_id: _card(specialist_id, backend, domain, served_model_name)
+        },
     )
 
 
@@ -137,10 +148,11 @@ def test_auto_resolves_and_proxies_to_selected_specialist():
 
 
 def test_auto_never_leaks_auto_upstream_for_vllm_passthrough():
-    """vLLM/external cards skip the ollama_tag rewrite — the upstream must
+    """vLLM cards without an alias pass `model` through — the upstream must
     still receive the resolved specialist_id, never the literal "auto"
-    (vLLM serves under --served-model-name=specialist_id and 404s on
-    unknown ids)."""
+    (mesh-spawned vLLM serves under --served-model-name=specialist_id and
+    404s on unknown ids). External cards with `served_model_name` get the
+    alias rewrite instead — see the external-alias test below."""
     sid = "phi-4-14b-q4"
     fake = _FakeAutoRouter(_selection(sid))
     client, seen = _client(_snapshot(sid, backend="vllm"), fake)
@@ -151,6 +163,27 @@ def test_auto_never_leaks_auto_upstream_for_vllm_passthrough():
     import json
 
     assert json.loads(seen[0].content)["model"] == sid
+
+
+def test_auto_external_card_gets_served_model_name_alias():
+    """auto → external card → the upstream body carries the ADOPTED
+    endpoint's `served_model_name`, not the specialist_id and never "auto".
+    Pins the ordering: auto resolution happens before the shared
+    _rewrite_model_for_upstream call, so the alias applies on this path."""
+    sid = "qwen3.6-27b-fp8-dot"
+    fake = _FakeAutoRouter(_selection(sid))
+    client, seen = _client(
+        _snapshot(sid, backend="external", served_model_name="dot-backbone"),
+        fake,
+    )
+
+    resp = client.post("/v1/chat/completions", json=_BODY)
+
+    assert resp.status_code == 200
+    assert resp.headers["X-Slancha-Specialist"] == sid
+    import json
+
+    assert json.loads(seen[0].content)["model"] == "dot-backbone"
 
 
 def test_auto_streaming_resolves_before_proxying():

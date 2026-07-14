@@ -159,6 +159,35 @@ def test_wait_ready_succeeds_once_model_pulls_and_prewarms(monkeypatch):
     assert warm_calls and warm_calls[-1][2]["keep_alive"] == "30m"
 
 
+def test_wait_ready_gives_prewarm_the_remaining_deadline(monkeypatch):
+    """#160: a cold load takes >5s. The prewarm request must be allowed to
+    hold the connection for the remaining wait_ready budget — a tight 5s
+    timeout disconnects mid-load, Ollama cancels the load, and the retry
+    loop never converges."""
+    daemon = _MockDaemon()
+    daemon.reply("GET", "/", body={"status": "ok"})
+    daemon.reply("GET", "/api/tags", body={"models": [{"name": "qwen2.5-coder:7b"}]})
+    daemon.install(monkeypatch)
+
+    seen_timeouts: list[float] = []
+
+    def post(url: str, **kw: Any) -> httpx.Response:
+        if httpx.URL(url).path == "/api/generate":
+            seen_timeouts.append(kw.get("timeout"))
+            return httpx.Response(200, json={"done": True, "done_reason": "load"})
+        return daemon._resolve("POST", url, **kw)
+
+    monkeypatch.setattr("mesh.backends.httpx.post", post)
+    be = _make(daemon)
+    be.start()
+    assert be.wait_ready(timeout=600.0) is True
+    assert seen_timeouts, "prewarm never fired"
+    # The request budget must be the remaining deadline (~600s, minus probe
+    # overhead) — not the 5s warm heuristic that used to abort cold loads,
+    # and not any other hardcoded constant.
+    assert seen_timeouts[-1] == pytest.approx(600.0, abs=5.0)
+
+
 def test_wait_ready_returns_false_if_model_never_pulls(monkeypatch):
     """No flakiness: a timed-out pull is a False, not a raise."""
     daemon = _MockDaemon()
