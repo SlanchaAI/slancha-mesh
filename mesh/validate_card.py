@@ -217,6 +217,26 @@ def _check_reserved_id(card: SpecialistCard, path: Path, report: _Report) -> Non
         )
 
 
+def _check_served_model_name_scope(card: SpecialistCard, path: Path, report: _Report) -> None:
+    """`served_model_name` only means something on an ADOPTED endpoint.
+
+    Mesh-spawned vLLM serves under `--served-model-name=specialist_id`, so
+    an alias on a non-external card makes the router rewrite `model` to a
+    name the upstream never registered — every request 404s, at request
+    time, with a confusing upstream error.
+    """
+    if card.served_model_name and card.required_backend != "external":
+        report.warning(
+            path,
+            "SERVED_MODEL_NAME_NON_EXTERNAL",
+            f'served_model_name "{card.served_model_name}" is set but '
+            f'required_backend is "{card.required_backend}" — the alias is '
+            f'only honored (and only makes sense) with required_backend = '
+            f'"external"; mesh-managed backends serve under specialist_id '
+            f"or ollama_tag.",
+        )
+
+
 def _check_quality_consistency(card: SpecialistCard, path: Path, report: _Report) -> None:
     """quality.router_observed should never be set directly in a TOML.
 
@@ -354,6 +374,7 @@ def _check_one(path: Path) -> tuple[SpecialistCard | None, _Report]:
     _check_languages(card, path, report)
     _check_specialist_id_matches_filename(card, path, report)
     _check_reserved_id(card, path, report)
+    _check_served_model_name_scope(card, path, report)
     _check_quality_consistency(card, path, report)
     _check_kv_geometry(card, path, report)
     _check_revision_pin(card, path, report)

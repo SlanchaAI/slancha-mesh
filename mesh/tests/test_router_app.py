@@ -42,6 +42,7 @@ def _card(
     specialist_id: str,
     required_backend: str = "ollama",
     ollama_tag: str | None = "qwen2.5-coder:7b-instruct-q4_K_M",
+    served_model_name: str | None = None,
 ) -> SpecialistCard:
     return SpecialistCard(
         model_id="Qwen/Qwen2.5-Coder-7B-Instruct",
@@ -50,6 +51,7 @@ def _card(
         difficulty_tiers=["medium"],
         required_backend=required_backend,  # type: ignore[arg-type]
         ollama_tag=ollama_tag if required_backend == "ollama" else None,
+        served_model_name=served_model_name,
         storage_gb=5.0,
         runtime_gb=6.0,
         min_vram_gb=8.0,
@@ -264,6 +266,88 @@ def test_chat_completions_vllm_passes_model_through():
     assert r.status_code == 200
     import json as _json
     assert _json.loads(captured["body"])["model"] == "qwen3-coder-30b-a3b-fp8"
+
+
+def test_chat_completions_external_rewrites_model_to_served_model_name():
+    """An ADOPTED endpoint (external backend) serves under a name the mesh
+    doesn't control — e.g. a 24/7 vLLM launched with its own
+    `--served-model-name`. The router must rewrite `model` to
+    `served_model_name` or the upstream 404s on the specialist_id."""
+    snap = _snapshot(
+        cards=[
+            _card(
+                specialist_id="qwen3.6-27b-fp8-dot",
+                required_backend="external",
+                ollama_tag=None,
+                served_model_name="dot-backbone",
+            )
+        ],
+        bindings={
+            "qwen3.6-27b-fp8-dot": [
+                _binding(
+                    node_id="dellpromax",
+                    specialist_id="qwen3.6-27b-fp8-dot",
+                    node_url="http://dellpromax:8011",
+                )
+            ]
+        },
+    )
+
+    captured: dict[str, Any] = {}
+
+    def handler(request: httpx.Request):
+        captured["body"] = request.read()
+        return (200, {"id": "ok"}, None)
+
+    client = _client(snap, handler)
+    r = client.post(
+        "/v1/chat/completions",
+        json={
+            "model": "qwen3.6-27b-fp8-dot",
+            "messages": [{"role": "user", "content": "hi"}],
+        },
+    )
+    assert r.status_code == 200
+    import json as _json
+    assert _json.loads(captured["body"])["model"] == "dot-backbone"
+
+
+def test_chat_completions_ollama_tag_wins_over_served_model_name():
+    """Ollama cards keep the engine-tag rewrite even if someone also sets
+    `served_model_name` — the tag is what the Ollama daemon actually loads."""
+    snap = _snapshot(
+        cards=[
+            _card(
+                specialist_id="qwen2.5-coder-7b-q4-ollama",
+                required_backend="ollama",
+                ollama_tag="qwen2.5-coder:7b-instruct-q4_K_M",
+                served_model_name="some-alias",
+            )
+        ],
+        bindings={
+            "qwen2.5-coder-7b-q4-ollama": [
+                _binding(specialist_id="qwen2.5-coder-7b-q4-ollama")
+            ]
+        },
+    )
+
+    captured: dict[str, Any] = {}
+
+    def handler(request: httpx.Request):
+        captured["body"] = request.read()
+        return (200, {"id": "ok"}, None)
+
+    client = _client(snap, handler)
+    r = client.post(
+        "/v1/chat/completions",
+        json={
+            "model": "qwen2.5-coder-7b-q4-ollama",
+            "messages": [{"role": "user", "content": "hi"}],
+        },
+    )
+    assert r.status_code == 200
+    import json as _json
+    assert _json.loads(captured["body"])["model"] == "qwen2.5-coder:7b-instruct-q4_K_M"
 
 
 def test_chat_completions_sets_routing_audit_headers():

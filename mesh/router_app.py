@@ -217,6 +217,12 @@ def _rewrite_model_for_upstream(
         return dict(body)
     if card.required_backend == "ollama" and card.ollama_tag:
         return {**body, "model": card.ollama_tag}
+    if card.required_backend == "external" and card.served_model_name:
+        # Adopted endpoint serving under a name the mesh doesn't control
+        # (e.g. an external vLLM launched with its own --served-model-name).
+        # Gated on the external backend: mesh-spawned vLLM serves under the
+        # specialist_id, so an alias there would 404 every request.
+        return {**body, "model": card.served_model_name}
     return dict(body)
 
 
@@ -789,10 +795,10 @@ def create_router_app(
                     detail=f"auto-route found no mesh route: {selection.reason}",
                 )
             specialist_id = selection.specialist_id
-            # The upstream must see the resolved id, not "auto": the ollama
-            # rewrite below maps specialist_id → ollama_tag, but vLLM /
-            # external backends pass `model` through verbatim and serve
-            # under the specialist_id.
+            # The upstream must see the resolved id, not "auto": the rewrite
+            # below maps specialist_id → ollama_tag / served_model_name, and
+            # vLLM specialists without an alias serve under the specialist_id
+            # verbatim.
             body = {**body, "model": specialist_id}
             _log.info("[router] auto → %s (%s)", specialist_id, selection.reason)
 

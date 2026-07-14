@@ -1,0 +1,51 @@
+# Code specialist, Ollama (GGUF) edition — 2026-07 SOTA refresh, second pass.
+# Qwen3-Coder-Next (Feb 2026, Apache-2.0): 80B-total / 3B-active MoE
+# (512 experts, 10 active/tok) on the Qwen3-Next hybrid-attention base,
+# agentically trained (executable task synthesis + RL). Supersedes the
+# qwen2.5-coder 7B lane. HF config verified live 2026-07-14: 48 layers,
+# hidden 2048, 2 KV heads on the full-attention layers (hybrid: most
+# layers are linear attention → small KV footprint), 256K context.
+# Native tool calling (ollama library "tools" badge) — this is also the
+# tool-lane replacement for consumers that need structured tool_calls.
+model_id = "Qwen/Qwen3-Coder-Next"
+specialist_id = "qwen3-coder-next-80b-q4-ollama"
+domain = "code"
+difficulty_tiers = ["easy", "medium", "hard"]
+languages = ["en", "es", "fr", "de", "zh", "ja"]
+required_backend = "ollama"
+ollama_tag = "qwen3-coder-next:q4_K_M"
+storage_gb = 52.0
+# runtime: 52GB weights + ~6GB KV at the full 256K window (hybrid attention
+# — only ~1/4 of the 48 layers carry full-attention KV; the schema's
+# all-layers KV formula over-counts, so the resident estimate is set here
+# explicitly) + headroom. Unmeasured; revisit after first gb10 bring-up.
+runtime_gb = 60.0
+min_vram_gb = 62.0
+# MoE decode reads ~3B active params (~1.9GB at q4), not the 52GB footprint
+# — this is what bandwidth-probed nodes must use for tps estimation
+# (allocator._decode_bytes_gb falls back to runtime_gb without it and would
+# rank this card ~12x slower than reality).
+active_params_gb = 1.9
+context_window = 262144
+n_layers = 48
+hidden_size = 2048
+n_kv_heads = 2
+head_dim = 256
+kv_arch = "gqa"
+capabilities = ["streaming", "system_prompt", "tools"]
+supports_lora_finetune = false
+upstream_model_card = "Qwen/Qwen3-Coder-Next"
+coverage_tier = 1
+
+# estimated_tps_at DERIVED (not measured). MoE decode reads ~3B active
+# params (~1.9GB at q4), not the 52GB footprint, so the §3.2 dense roofline
+# (docs/SIZING_BANDWIDTH_BRIEF.md) over-estimates wildly; numbers below are
+# the active-param roofline (MBU 0.8 × datasheet BW ÷ ~1.9GB) haircut ~30%
+# for expert-routing + hybrid-attention overhead. Treat as upper bounds
+# until measured.
+[estimated_tps_at]
+gb10 = 80.0
+m4_pro = 80.0
+m3_ultra = 240.0
+rtx_4090 = 290.0
+rtx_3090 = 270.0

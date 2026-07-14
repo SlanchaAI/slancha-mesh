@@ -1,0 +1,45 @@
+# General specialist, Ollama (GGUF) edition — 2026-07 SOTA refresh, second
+# pass. Qwen3.6-27B (Apache-2.0, ungated, HF config verified live
+# 2026-07-14; arch class is "qwen3_5" — Qwen3.6 checkpoints reuse the 3.5
+# architecture). Supersedes qwen3.5-27b-q4-ollama same-day: the 3.5 card
+# was authored hours before the deeper check surfaced the open 3.6 line.
+# Multimodal (vision), thinking, native tools, 256K context. "Substantial
+# upgrades, particularly in Agentic Coding" per the model page — but the
+# code domain lane belongs to qwen3-coder-next-80b; this card is the
+# general reasoner.
+model_id = "Qwen/Qwen3.6-27B"
+specialist_id = "qwen3.6-27b-q4-ollama"
+domain = "general"
+difficulty_tiers = ["easy", "medium", "hard"]
+languages = ["en", "es", "fr", "de", "zh", "ja"]
+required_backend = "ollama"
+ollama_tag = "qwen3.6:27b"
+storage_gb = 17.0
+# runtime/min_vram sized from MEASUREMENT, not weights: the same-geometry
+# qwen3.5:27b (64L × 4 KV heads × head_dim 256, 256K window) measured 42GB
+# resident on gb10 2026-07-14 — Ollama allocates KV for the full context
+# window. Weights-only numbers here are the lie the allocator packs with.
+runtime_gb = 42.0
+min_vram_gb = 43.0
+context_window = 262144
+n_layers = 64
+hidden_size = 5120
+n_kv_heads = 4
+head_dim = 256
+kv_arch = "gqa"
+capabilities = ["streaming", "system_prompt", "tools", "vision"]
+supports_lora_finetune = false
+upstream_model_card = "Qwen/Qwen3.6-27B"
+coverage_tier = 1
+
+# estimated_tps_at DERIVED (not measured) via the §3.2 roofline in
+# docs/SIZING_BANDWIDTH_BRIEF.md: tps = MBU 0.8 × datasheet BW ÷ WEIGHTS
+# bytes (storage_gb 17.0 — decode reads weights, not the KV-inflated
+# resident set). Datasheet BW (GB/s): gb10 273, m4_pro 273, m3_ultra 819,
+# rtx_4090 1008, rtx_3090 936.
+[estimated_tps_at]
+gb10 = 12.8
+m4_pro = 12.8
+m3_ultra = 38.5
+rtx_4090 = 47.4
+rtx_3090 = 44.0
