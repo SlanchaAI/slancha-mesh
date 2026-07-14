@@ -402,6 +402,35 @@ def cmd_gpu(args: argparse.Namespace) -> int:
 # ---------------------------------------------------------------------------
 
 
+def _usage_sink_from_env():
+    """Build a usage `SpoolDrainSink` from the environment, or None when telemetry is off.
+
+    Off (returns None) unless `SLANCHA_USAGE_SINK_URL` is set. Optional:
+    `SLANCHA_USAGE_SINK_TOKEN` (bearer, sent only to that URL), `SLANCHA_USAGE_SPOOL_PATH`
+    (default `~/.slancha/usage-spool.jsonl`), `SLANCHA_USAGE_DRAIN_INTERVAL_S` (default 5;
+    a malformed value falls back to 5 rather than crash the router). Extracted so the
+    env→sink wiring is unit-testable.
+    """
+    url = os.environ.get("SLANCHA_USAGE_SINK_URL", "").strip()
+    if not url:
+        return None
+    from mesh.usage import SpoolDrainSink
+
+    spool = os.environ.get("SLANCHA_USAGE_SPOOL_PATH", "").strip() or str(
+        Path.home() / ".slancha" / "usage-spool.jsonl"
+    )
+    try:
+        interval = float(os.environ.get("SLANCHA_USAGE_DRAIN_INTERVAL_S", "5"))
+    except ValueError:
+        interval = 5.0
+    return SpoolDrainSink(
+        spool,
+        url,
+        token=os.environ.get("SLANCHA_USAGE_SINK_TOKEN", "").strip() or None,
+        interval_s=interval,
+    )
+
+
 def cmd_router(args: argparse.Namespace) -> int:
     """Stand up the OpenAI-compat router endpoint.
 
@@ -475,7 +504,17 @@ def cmd_router(args: argparse.Namespace) -> int:
             return 1
         _print('[router] auto-route on: `model: "auto"` resolves via the classifier')
 
-    app = create_router_app(snapshot_source=holder.get, auto_router=auto_router)
+    # Usage telemetry (opt-in): built from env (see _usage_sink_from_env). Unset URL →
+    # None → NullSink → off, no behavior change.
+    usage_sink = _usage_sink_from_env()
+    if usage_sink is not None:
+        _print(f"[router] usage telemetry on → "
+               f"{os.environ.get('SLANCHA_USAGE_SINK_URL', '').strip()} "
+               f"(spool={usage_sink.spool})")
+
+    app = create_router_app(
+        snapshot_source=holder.get, auto_router=auto_router, usage_sink=usage_sink
+    )
 
     # Fail-closed (#97): don't expose the router on a public interface unauthenticated.
     from mesh.auth import assert_bind_safe
