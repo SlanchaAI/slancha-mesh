@@ -67,6 +67,15 @@ def test_unknown_capability_warns(tmp_path):
     assert not report.has_errors
 
 
+def test_reserved_auto_id_errors(tmp_path):
+    """`"auto"` is the router's classifier-routing pseudo-model — a card
+    claiming it would be shadowed under --auto-route."""
+    f = _write(tmp_path / "auto.toml", _GOOD_TOML.format(stem="auto"))
+    report = validate_paths([f])
+    assert any(x.code == "RESERVED_SPECIALIST_ID" for x in report.findings)
+    assert report.has_errors
+
+
 def test_unknown_domain_warns(tmp_path):
     bad = _GOOD_TOML.format(stem="d").replace(
         'domain = "general"', 'domain = "wrtiing"'

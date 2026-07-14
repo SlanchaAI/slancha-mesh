@@ -203,6 +203,20 @@ def _check_specialist_id_matches_filename(
         )
 
 
+def _check_reserved_id(card: SpecialistCard, path: Path, report: _Report) -> None:
+    """`"auto"` is the router's classifier-routing pseudo-model (mesh.router_app
+    AUTO_MODEL_ID). A card claiming it would be shadowed under --auto-route
+    and 404 with a misleading hint without it.
+    """
+    if card.specialist_id == "auto":
+        report.error(
+            path,
+            "RESERVED_SPECIALIST_ID",
+            'specialist_id "auto" is reserved for classifier-driven routing '
+            "(slancha-mesh router --auto-route); pick another id",
+        )
+
+
 def _check_quality_consistency(card: SpecialistCard, path: Path, report: _Report) -> None:
     """quality.router_observed should never be set directly in a TOML.
 
@@ -339,6 +353,7 @@ def _check_one(path: Path) -> tuple[SpecialistCard | None, _Report]:
     _check_capabilities(card, path, report)
     _check_languages(card, path, report)
     _check_specialist_id_matches_filename(card, path, report)
+    _check_reserved_id(card, path, report)
     _check_quality_consistency(card, path, report)
     _check_kv_geometry(card, path, report)
     _check_revision_pin(card, path, report)

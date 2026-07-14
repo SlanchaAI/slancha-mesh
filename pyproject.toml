@@ -71,11 +71,25 @@ signing = [
   #   pip install -e ".[signing]"
   "pynacl>=1.5",
 ]
+classifier = [
+  # Classifier-driven `model:"auto"` routing (mesh/classifier/, wired via
+  # `slancha-mesh router --auto-route`). Assets (mmBERT-small ONNX INT8 +
+  # treelite heads) are vendored in the wheel so this works air-gapped.
+  # Opt-in: the router imports it lazily; package + default test suite run
+  # without it.
+  #   pip install -e ".[classifier]"
+  "numpy>=1.26",
+  "onnxruntime>=1.17",
+  "tokenizers>=0.20",
+  "treelite>=4.0",
+]
 loop = [
   # The traffic-cluster → experiment-spec generator (issue #87) reuses the
   # embedding/clustering substrate from the PUBLIC slancha-local package rather
   # than vendoring ~1000 lines of ML code (which would be a second parity-mirror
-  # to drift, after the gate mirror). "Everything in the container": this extra
+  # to drift, after the gate mirror). (The classifier perception layer is the
+  # deliberate exception: mesh/classifier/ is its canonical home now, and
+  # slancha-local is slated to import it from here — see the [classifier] extra.) "Everything in the container": this extra
   # bundles slancha-local INTO the mesh image so the whole loop is one
   # deployable unit. `mesh.generator` imports it lazily — the package + test
   # suite run without this extra installed.
