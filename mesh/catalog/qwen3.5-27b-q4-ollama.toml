@@ -1,0 +1,37 @@
+# Tier-2 hard-lane general specialist, Ollama (GGUF) edition — 2026-07 SOTA
+# refresh (issue #141 family; handle verified live vs HF raw config
+# 2026-07-14). The GB10-class boxes (≥96GB unified) have headroom far past
+# 9B — this card puts the hard tier on a 27B at ~12 tok/s roofline instead
+# of falling through to a 9B. Thinking + native tools + vision, 256K
+# context, Apache-2.0.
+model_id = "Qwen/Qwen3.5-27B"
+specialist_id = "qwen3.5-27b-q4-ollama"
+domain = "general"
+difficulty_tiers = ["medium", "hard"]
+languages = ["en", "es", "fr", "de", "zh", "ja"]
+required_backend = "ollama"
+ollama_tag = "qwen3.5:27b"
+storage_gb = 17.0
+runtime_gb = 19.5
+min_vram_gb = 21.0
+context_window = 262144
+n_layers = 64
+hidden_size = 6144
+n_kv_heads = 4
+head_dim = 256
+kv_arch = "gqa"
+capabilities = ["streaming", "system_prompt", "tools", "vision"]
+supports_lora_finetune = false
+upstream_model_card = "Qwen/Qwen3.5-27B"
+coverage_tier = 2
+
+# estimated_tps_at DERIVED (not measured) via the §3.2 roofline in
+# docs/SIZING_BANDWIDTH_BRIEF.md: tps = MBU 0.8 × datasheet BW ÷ runtime_gb
+# (batch-1, short-ctx upper bound). Datasheet BW (GB/s): gb10 273, m4_pro 273,
+# m3_ultra 819, rtx_4090 1008, rtx_3090 936.
+[estimated_tps_at]
+gb10 = 11.2
+m4_pro = 11.2
+m3_ultra = 33.6
+rtx_4090 = 41.4
+rtx_3090 = 38.4
