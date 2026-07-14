@@ -55,8 +55,10 @@ import hmac
 import logging
 import os
 import threading
+import time
+from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
-from typing import Annotated, Callable, Protocol
+from typing import Annotated, Any, Callable, Protocol
 from urllib.parse import urlsplit
 
 import httpx
@@ -73,6 +75,15 @@ from mesh.models import (
     SpecialistCard,
 )
 from mesh.registry import MeshRegistry
+from mesh.usage import (
+    MAX_TAIL_BYTES,
+    NullSink,
+    UsageSink,
+    build_usage_event,
+    parse_response_body,
+    parse_stream_usage,
+    safe_emit,
+)
 
 NODE_TOKEN_ENV = "SLANCHA_NODE_TOKEN"
 UPSTREAM_TIMEOUT_S = 120.0  # generous; covers a cold Ollama load on the upstream
@@ -473,6 +484,8 @@ async def _proxy_stream_with_fallback(
     bindings: list[NodeBinding],
     specialist_id: str,
     upstream_body: dict,
+    sink: UsageSink,
+    user_field: Any = None,
 ) -> StreamingResponse:
     """Open a streaming request, falling through the binding chain on failure.
 
@@ -498,7 +511,7 @@ async def _proxy_stream_with_fallback(
     """
     last_status: int | None = None
     last_detail: str | None = None
-    for binding in bindings:
+    for idx, binding in enumerate(bindings):
         upstream_url = f"{binding.node_url.rstrip('/')}/v1/chat/completions"  # type: ignore[union-attr]
         stream_ctx = client.stream(
             "POST",
@@ -506,6 +519,7 @@ async def _proxy_stream_with_fallback(
             json=upstream_body,
             headers=_upstream_headers(),
         )
+        t0 = time.perf_counter()  # per-attempt; the winner's t0 closes into gen()
         try:
             response = await stream_ctx.__aenter__()
         except (httpx.HTTPError, OSError) as exc:
@@ -532,6 +546,7 @@ async def _proxy_stream_with_fallback(
         # stream context open until the upstream closes.
         media_type = _safe_media_type(response.headers.get("content-type"), "text/event-stream")
         upstream_status = response.status_code
+        fallback_fired = idx > 0
         slancha_headers = {
             "X-Slancha-Specialist": specialist_id,
             "X-Slancha-Node": binding.node_id,
@@ -541,13 +556,48 @@ async def _proxy_stream_with_fallback(
             ),
         }
 
-        async def gen(_ctx=stream_ctx, _resp=response):
+        async def gen(
+            _ctx=stream_ctx,
+            _resp=response,
+            _t0=t0,
+            _status=upstream_status,
+            _fallback=fallback_fired,
+        ):
+            # Observe-only usage tap: the bytes yielded to the client are NEVER gated on
+            # it, and every tap/emit line is guarded — a tap failure can't corrupt or
+            # stall the stream. Usage is emitted in `finally` (skipped, honestly, when the
+            # caller didn't request `stream_options.include_usage`).
+            first_byte_at: float | None = None
+            tail = bytearray()
             try:
                 async for chunk in _resp.aiter_bytes():
                     if chunk:
+                        if first_byte_at is None:
+                            first_byte_at = time.perf_counter()
+                        try:
+                            tail.extend(chunk)
+                            if len(tail) > MAX_TAIL_BYTES:
+                                del tail[:-MAX_TAIL_BYTES]
+                        except Exception:  # noqa: BLE001 — tap must never affect the yield
+                            pass
                         yield chunk
             finally:
                 await _ctx.__aexit__(None, None, None)
+                try:
+                    latency_ms = int((time.perf_counter() - _t0) * 1000)
+                    ttft_ms = int((first_byte_at - _t0) * 1000) if first_byte_at else None
+                    ev = build_usage_event(
+                        specialist_id=specialist_id,
+                        user_field=user_field,
+                        status_code=_status,
+                        latency_ms=latency_ms,
+                        usage=parse_stream_usage(bytes(tail)),
+                        ttft_ms=ttft_ms,
+                        fallback_fired=_fallback,
+                    )
+                    safe_emit(sink, ev)
+                except Exception as exc:  # noqa: BLE001 — telemetry never breaks a stream
+                    _log.warning("stream usage tap failed (%s); skipped", type(exc).__name__)
 
         return StreamingResponse(
             gen(),
@@ -575,6 +625,7 @@ def create_router_app(
     snapshot_source: SnapshotSource | None = None,
     http_client: httpx.AsyncClient | None = None,
     auto_router: AutoRouterLike | None = None,
+    usage_sink: UsageSink | None = None,
 ) -> FastAPI:
     """Build the OpenAI-compatible router app.
 
@@ -618,6 +669,27 @@ def create_router_app(
 
     client = http_client or httpx.AsyncClient(timeout=DEFAULT_STREAMING_TIMEOUT)
 
+    # `usage_sink` is a neutral telemetry seam (mesh/usage.py). Default NullSink →
+    # telemetry off, zero behavior change. A real SpoolDrainSink (wired from env in
+    # cli.py) is duck-typed drainable: the lifespan starts its background drain task on
+    # startup and closes it on shutdown. NullSink has no start/aclose → nothing runs.
+    resolved_sink: UsageSink = usage_sink or NullSink()
+
+    @asynccontextmanager
+    async def _lifespan(app: FastAPI):
+        sink = app.state.usage_sink
+        if hasattr(sink, "start"):
+            try:
+                sink.start()
+            except Exception as exc:  # noqa: BLE001 — telemetry must never block startup
+                _log.warning("[router] usage sink start failed: %s", exc)
+        yield
+        if hasattr(sink, "aclose"):
+            try:
+                await sink.aclose()
+            except Exception as exc:  # noqa: BLE001
+                _log.warning("[router] usage sink aclose failed: %s", exc)
+
     app = FastAPI(
         title="Slancha-Mesh OpenAI-compatible router",
         version="0.0.8",
@@ -626,10 +698,12 @@ def create_router_app(
             "Pick `model = <specialist_id>`; the router proxies to the right "
             "node and returns the upstream response."
         ),
+        lifespan=_lifespan,
     )
     app.state.registry = registry
     app.state.snapshot_source = _snapshot
     app.state.http_client = client
+    app.state.usage_sink = resolved_sink
 
     @app.get("/v1/models", summary="OpenAI-compatible list of mesh specialists")
     def list_models(
@@ -735,6 +809,10 @@ def create_router_app(
         bindings = bindings[:MAX_FALLBACK_ATTEMPTS]
 
         upstream_body = _rewrite_model_for_upstream(body, specialist_id, snap)
+        # Caller-asserted user (OpenAI `user` param) — the only user handle the router
+        # has (auth is a single shared node token, not a per-user principal). Preserved
+        # through the auto-route body rewrite above.
+        user_field = body.get("user")
 
         if body.get("stream") is True:
             return await _proxy_stream_with_fallback(
@@ -742,6 +820,8 @@ def create_router_app(
                 bindings=bindings,
                 specialist_id=specialist_id,
                 upstream_body=upstream_body,
+                sink=app.state.usage_sink,
+                user_field=user_field,
             )
 
         # Non-streaming fallback chain: try each binding in order; first
@@ -750,6 +830,7 @@ def create_router_app(
         last_detail: str | None = None
         for idx, binding in enumerate(bindings):
             upstream_url = f"{binding.node_url.rstrip('/')}/v1/chat/completions"  # type: ignore[union-attr]
+            t0 = time.perf_counter()  # per-attempt; latency_ms measures the WINNING call only
             try:
                 upstream = await client.post(
                     upstream_url,
@@ -775,6 +856,7 @@ def create_router_app(
                 )
                 continue
             # Win — forward as-is.
+            latency_ms = int((time.perf_counter() - t0) * 1000)
             position = "primary" if idx == 0 else f"fallback#{idx}"
             slancha_headers = {
                 "X-Slancha-Specialist": specialist_id,
@@ -785,12 +867,31 @@ def create_router_app(
                 ),
             }
             media_type = _safe_media_type(upstream.headers.get("content-type"), "application/json")
-            return Response(
+            response = Response(
                 content=upstream.content,
                 status_code=upstream.status_code,
                 media_type=media_type,
                 headers=slancha_headers,
             )
+            # Usage tap (guarded — telemetry NEVER faults a completion). Only the win
+            # branch emits; the 4xx/5xx/no-node error paths above never do.
+            try:
+                rbody = parse_response_body(upstream.content)
+                safe_emit(
+                    app.state.usage_sink,
+                    build_usage_event(
+                        specialist_id=specialist_id,
+                        user_field=user_field,
+                        status_code=upstream.status_code,
+                        latency_ms=latency_ms,
+                        usage=rbody.get("usage"),
+                        response_id=rbody.get("id"),
+                        fallback_fired=idx > 0,
+                    ),
+                )
+            except Exception as exc:  # noqa: BLE001 — never break a completion on telemetry
+                _log.warning("[router] usage tap failed (%s); skipped", type(exc).__name__)
+            return response
 
         # All bindings exhausted.
         raise HTTPException(

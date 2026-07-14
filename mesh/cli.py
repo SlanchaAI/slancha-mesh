@@ -475,7 +475,30 @@ def cmd_router(args: argparse.Namespace) -> int:
             return 1
         _print('[router] auto-route on: `model: "auto"` resolves via the classifier')
 
-    app = create_router_app(snapshot_source=holder.get, auto_router=auto_router)
+    # Usage telemetry (opt-in): if SLANCHA_USAGE_SINK_URL is set, completed-inference
+    # usage events (token counts + metadata only — NO prompt/completion bodies) are
+    # spooled locally and drained to that receiver. Unset → NullSink → off, no behavior
+    # change. The bearer (if any) is sent ONLY to that URL. See mesh/usage.py.
+    usage_sink = None
+    _usage_url = os.environ.get("SLANCHA_USAGE_SINK_URL", "").strip()
+    if _usage_url:
+        from mesh.usage import SpoolDrainSink
+
+        _spool = os.environ.get("SLANCHA_USAGE_SPOOL_PATH", "").strip() or str(
+            Path.home() / ".slancha" / "usage-spool.jsonl"
+        )
+        _interval = float(os.environ.get("SLANCHA_USAGE_DRAIN_INTERVAL_S", "5"))
+        usage_sink = SpoolDrainSink(
+            _spool,
+            _usage_url,
+            token=os.environ.get("SLANCHA_USAGE_SINK_TOKEN", "").strip() or None,
+            interval_s=_interval,
+        )
+        _print(f"[router] usage telemetry on → {_usage_url} (spool={_spool})")
+
+    app = create_router_app(
+        snapshot_source=holder.get, auto_router=auto_router, usage_sink=usage_sink
+    )
 
     # Fail-closed (#97): don't expose the router on a public interface unauthenticated.
     from mesh.auth import assert_bind_safe
