@@ -1,0 +1,37 @@
+# Tier-1 general specialist, Ollama (GGUF) edition — 2026-07 SOTA refresh
+# (issue #141: Qwen3.5 supersedes the Qwen3/Llama-3.1 8B class; handle
+# verified live vs HF raw config 2026-07-14). Strongest 8-9B general
+# reasoner at time of authoring (MMLU-Pro 82.5); native structured
+# tool_calls via the ollama template (the TOOL-CALLING lane — replaces
+# qwen3-8b-q4-ollama), thinking + vision, 256K context, Apache-2.0.
+model_id = "Qwen/Qwen3.5-9B"
+specialist_id = "qwen3.5-9b-q4-ollama"
+domain = "general"
+difficulty_tiers = ["easy", "medium"]
+languages = ["en", "es", "fr", "de", "zh", "ja"]
+required_backend = "ollama"
+ollama_tag = "qwen3.5:9b"
+storage_gb = 6.6
+runtime_gb = 8.6
+min_vram_gb = 9.5
+context_window = 262144
+n_layers = 32
+hidden_size = 4096
+n_kv_heads = 4
+head_dim = 256
+kv_arch = "gqa"
+capabilities = ["streaming", "system_prompt", "tools", "vision"]
+supports_lora_finetune = false
+upstream_model_card = "Qwen/Qwen3.5-9B"
+coverage_tier = 1
+
+# estimated_tps_at DERIVED (not measured) via the §3.2 roofline in
+# docs/SIZING_BANDWIDTH_BRIEF.md: tps = MBU 0.8 × datasheet BW ÷ runtime_gb
+# (batch-1, short-ctx upper bound). Datasheet BW (GB/s): gb10 273, m4_pro 273,
+# m3_ultra 819, rtx_4090 1008, rtx_3090 936.
+[estimated_tps_at]
+gb10 = 25.4
+m4_pro = 25.4
+m3_ultra = 76.2
+rtx_4090 = 93.8
+rtx_3090 = 87.1

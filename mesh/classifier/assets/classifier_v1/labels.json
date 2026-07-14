@@ -1,0 +1,96 @@
+{
+  "domain": {
+    "labels": [
+      "biology",
+      "business",
+      "chemistry",
+      "computer science",
+      "economics",
+      "engineering",
+      "health",
+      "history",
+      "law",
+      "math",
+      "other",
+      "philosophy",
+      "physics",
+      "psychology"
+    ],
+    "label2id": {
+      "biology": 0,
+      "business": 1,
+      "chemistry": 2,
+      "computer science": 3,
+      "economics": 4,
+      "engineering": 5,
+      "health": 6,
+      "history": 7,
+      "law": 8,
+      "math": 9,
+      "other": 10,
+      "philosophy": 11,
+      "physics": 12,
+      "psychology": 13
+    }
+  },
+  "jailbreak": {
+    "labels": [
+      "benign",
+      "jailbreak"
+    ],
+    "label2id": {
+      "benign": 0,
+      "jailbreak": 1
+    }
+  },
+  "pii": {
+    "labels": [
+      "clean",
+      "pii"
+    ],
+    "label2id": {
+      "clean": 0,
+      "pii": 1
+    }
+  },
+  "difficulty": {
+    "labels": [
+      "easy",
+      "medium",
+      "hard"
+    ],
+    "label2id": {
+      "easy": 0,
+      "medium": 1,
+      "hard": 2
+    }
+  },
+  "tool_calling": {
+    "labels": [
+      "no_tool",
+      "tool_calling"
+    ],
+    "label2id": {
+      "no_tool": 0,
+      "tool_calling": 1
+    }
+  },
+  "language": {
+    "labels": [
+      "en",
+      "es",
+      "fr",
+      "de",
+      "zh",
+      "ja"
+    ],
+    "label2id": {
+      "en": 0,
+      "es": 1,
+      "fr": 2,
+      "de": 3,
+      "zh": 4,
+      "ja": 5
+    }
+  }
+}

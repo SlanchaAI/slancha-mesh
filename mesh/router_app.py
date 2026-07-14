@@ -23,10 +23,12 @@ What it does NOT do (yet — incremental scope):
     `text/event-stream` passthrough.
   - Fallback-on-upstream-5xx. Phase-1 returns the upstream error
     verbatim. Followup PR walks the snapshot's secondary bindings.
-  - Classifier-driven domain inference. Phase-1 requires the client to
-    send `model = <specialist_id>` directly. The classifier-on-prompt
-    path (route by domain/difficulty instead of by id) is a followup
-    that depends on slancha-api's classifier being importable.
+
+Classifier-driven routing: pass `auto_router=` (see
+`mesh.classifier.auto.build_auto_router`, needs the `classifier` extra)
+and `model = "auto"` resolves per-prompt via the classifier +
+`mesh.select.select_mesh_route`. Without it, `model` must be an explicit
+specialist_id, as before.
 
 Mounting:
 
@@ -53,16 +55,23 @@ import hmac
 import logging
 import os
 import threading
-from datetime import datetime, timezone
-from typing import Annotated, Callable
+from datetime import datetime, timedelta, timezone
+from typing import Annotated, Callable, Protocol
 from urllib.parse import urlsplit
 
 import httpx
 from fastapi import Depends, FastAPI, Header, HTTPException, Request, Response, status
 from fastapi.responses import JSONResponse, StreamingResponse
+from starlette.concurrency import run_in_threadpool
 
 from mesh.discovery import DiscoveryResult
-from mesh.models import NodeBinding, NodeSummary, RegistrySnapshot, SpecialistCard
+from mesh.models import (
+    MeshSelectionResult,
+    NodeBinding,
+    NodeSummary,
+    RegistrySnapshot,
+    SpecialistCard,
+)
 from mesh.registry import MeshRegistry
 
 NODE_TOKEN_ENV = "SLANCHA_NODE_TOKEN"
@@ -83,6 +92,20 @@ MAX_FALLBACK_ATTEMPTS = int(os.environ.get("SLANCHA_ROUTER_MAX_FALLBACK", "3"))
 _log = logging.getLogger(__name__)
 
 SnapshotSource = Callable[[], RegistrySnapshot]
+
+#: The pseudo-model id that triggers classifier-driven routing.
+AUTO_MODEL_ID = "auto"
+
+
+class AutoRouterLike(Protocol):
+    """What `create_router_app(auto_router=...)` needs: request body +
+    snapshot in, selection result out. `mesh.classifier.auto.AutoRouter`
+    is the production impl; tests inject fakes."""
+
+    def select(
+        self, body: dict, snapshot: RegistrySnapshot
+    ) -> MeshSelectionResult:  # pragma: no cover - protocol
+        ...
 
 
 # ---------------------------------------------------------------------------
@@ -324,10 +347,26 @@ class _RefreshingSnapshot:
         *,
         catalog: list[SpecialistCard] | None = None,
         refresh_s: float = 5.0,
+        retain_s: float | None = None,
     ) -> None:
         self._refresher = refresher
         self._catalog = list(catalog or [])
         self._refresh_s = refresh_s
+        # Staleness tolerance for the whole-snapshot swap. A discovery pass that
+        # transiently misses a peer (fetch timeout, node mid-restart, or a
+        # specialist whose node_url isn't populated yet during staggered
+        # warm-up) would otherwise evict that specialist from the fresh
+        # snapshot, 404ing a live route for up to one refresh cycle. We retain a
+        # vanished binding until it is `retain_s` old so a single missed pass
+        # can't drop it. Default = 2 cycles; env-tunable; 0 restores the strict
+        # drop-immediately behaviour.
+        env_retain = os.environ.get("SLANCHA_ROUTER_BINDING_RETAIN_S")
+        if retain_s is not None:
+            self._retain_s = retain_s
+        elif env_retain not in (None, ""):
+            self._retain_s = float(env_retain)  # type: ignore[arg-type]
+        else:
+            self._retain_s = 2.0 * refresh_s
         self._lock = threading.Lock()
         self._snapshot: RegistrySnapshot | None = None
         self._stop = threading.Event()
@@ -347,10 +386,60 @@ class _RefreshingSnapshot:
         return snap
 
     def refresh_once(self) -> None:
-        """Run one discovery pass + swap the snapshot under the lock."""
-        snap = discovery_to_snapshot(self._refresher(), catalog=self._catalog)
+        """Run one discovery pass + swap the snapshot under the lock.
+
+        The swap is staleness-tolerant: bindings the prior snapshot had that
+        this pass transiently missed are carried over until they are
+        `retain_s` old, so one missed discovery pass can't 404 a live route.
+        """
+        fresh = discovery_to_snapshot(self._refresher(), catalog=self._catalog)
         with self._lock:
-            self._snapshot = snap
+            self._snapshot = self._merge_retaining_recent(self._snapshot, fresh)
+
+    def _merge_retaining_recent(
+        self, prior: RegistrySnapshot | None, fresh: RegistrySnapshot
+    ) -> RegistrySnapshot:
+        """Fresh discovery wins; carry over prior bindings it transiently missed.
+
+        A prior ``(specialist_id, node_url)`` binding absent from ``fresh`` is
+        retained iff it was last seen within ``retain_s`` — bridging a single
+        missed discovery pass. Genuinely-gone nodes age out (their ``last_seen``
+        stops advancing once discovery no longer reports them); until then the
+        chat fallback chain skips a retained-but-dead node on connect error, so
+        the cost of retention is a bounded connect attempt, not a wrong answer.
+        """
+        if prior is None or self._retain_s <= 0:
+            return fresh
+        cutoff = fresh.snapshot_ts - timedelta(seconds=self._retain_s)
+        fresh_keys = {
+            (sid, b.node_url)
+            for sid, bindings in fresh.specialists.items()
+            for b in bindings
+        }
+        merged = {sid: list(bindings) for sid, bindings in fresh.specialists.items()}
+        merged_nodes = dict(fresh.nodes)
+        retained = 0
+        for sid, bindings in prior.specialists.items():
+            for b in bindings:
+                if (sid, b.node_url) in fresh_keys or b.last_seen < cutoff:
+                    continue
+                merged.setdefault(sid, []).append(b)
+                retained += 1
+                if b.node_id not in merged_nodes and b.node_id in prior.nodes:
+                    merged_nodes[b.node_id] = prior.nodes[b.node_id]
+        if retained == 0:
+            return fresh
+        _log.debug(
+            "[router] retained %d recent binding(s) a discovery pass missed", retained
+        )
+        return RegistrySnapshot(
+            snapshot_ts=fresh.snapshot_ts,
+            nodes=merged_nodes,
+            specialists=merged,
+            coverage=fresh.coverage,
+            ranked_routes=fresh.ranked_routes,
+            catalog=fresh.catalog,
+        )
 
     def _loop(self) -> None:
         while not self._stop.is_set():
@@ -485,6 +574,7 @@ def create_router_app(
     *,
     snapshot_source: SnapshotSource | None = None,
     http_client: httpx.AsyncClient | None = None,
+    auto_router: AutoRouterLike | None = None,
 ) -> FastAPI:
     """Build the OpenAI-compatible router app.
 
@@ -495,6 +585,12 @@ def create_router_app(
       - Else, `registry.snapshot()` is called per request.
       - Both None → `ValueError`. The router needs *some* way to know
         what's reachable.
+
+    `auto_router` enables classifier-driven routing: when set, requests
+    with `model = "auto"` resolve to a specialist per-prompt (see
+    `mesh.classifier.auto`), and `"auto"` shows up in `GET /v1/models`.
+    When None (the default), `"auto"` 404s with an install hint — no
+    behavior change for explicit specialist_ids either way.
 
     `http_client` is the `httpx.AsyncClient` used for upstream calls.
     Tests inject one wired to `httpx.MockTransport` so no real socket is
@@ -540,6 +636,9 @@ def create_router_app(
         _: Annotated[None, Depends(verify_router_token)],
     ) -> dict:
         snap = _snapshot()
+        ids = sorted(snap.specialists)
+        if auto_router is not None and AUTO_MODEL_ID not in ids:
+            ids.insert(0, AUTO_MODEL_ID)
         return {
             "object": "list",
             "data": [
@@ -548,7 +647,7 @@ def create_router_app(
                     "object": "model",
                     "owned_by": "slancha-mesh",
                 }
-                for sid in sorted(snap.specialists)
+                for sid in ids
             ],
         }
 
@@ -596,6 +695,33 @@ def create_router_app(
             )
 
         snap = _snapshot()
+
+        if specialist_id == AUTO_MODEL_ID:
+            if auto_router is None:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail=(
+                        'model "auto" needs classifier-driven routing: start the '
+                        "router with --auto-route (requires slancha-mesh[classifier]), "
+                        "or pass an explicit specialist_id from GET /v1/models."
+                    ),
+                )
+            # CPU-bound (embed + heads) → threadpool so the event loop
+            # keeps serving concurrent requests.
+            selection = await run_in_threadpool(auto_router.select, body, snap)
+            if selection.specialist_id is None:
+                raise HTTPException(
+                    status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                    detail=f"auto-route found no mesh route: {selection.reason}",
+                )
+            specialist_id = selection.specialist_id
+            # The upstream must see the resolved id, not "auto": the ollama
+            # rewrite below maps specialist_id → ollama_tag, but vLLM /
+            # external backends pass `model` through verbatim and serve
+            # under the specialist_id.
+            body = {**body, "model": specialist_id}
+            _log.info("[router] auto → %s (%s)", specialist_id, selection.reason)
+
         bindings = _reachable_bindings(specialist_id, snap)
         if not bindings:
             raise HTTPException(
@@ -696,8 +822,10 @@ def create_router_app(
 
 
 __all__ = [
+    "AUTO_MODEL_ID",
     "NODE_TOKEN_ENV",
     "UPSTREAM_TIMEOUT_S",
+    "AutoRouterLike",
     "create_router_app",
     "discovery_to_snapshot",
     "verify_router_token",

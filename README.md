@@ -77,6 +77,28 @@ That response came back from `localhost:8080` — your local router
 discovered the node and proxied the prompt to the model on your own
 Ollama daemon. No cloud, no API key, one box.
 
+### Let the router pick the model
+
+Install the classifier extra and start the router with `--auto-route`;
+then `model: "auto"` routes each prompt by classified domain and
+difficulty (a built-in mmBERT-small + treelite classifier, ~ms per
+prompt, fully local — the model weights ship in the wheel, so this
+works air-gapped):
+
+```bash
+pip install "slancha-mesh[classifier]"
+slancha-mesh router --peer 127.0.0.1 --port 8080 --auto-route
+
+curl -s http://localhost:8080/v1/chat/completions \
+  -H 'Content-Type: application/json' \
+  -d '{"model": "auto", "messages": [{"role":"user","content":"reverse a string in python"}]}'
+```
+
+The `X-Slancha-Specialist` response header names the model it picked,
+and the router log shows the classified signals per request. Coding
+prompts land on your coder, hard general prompts on your strongest
+generalist, easy ones on the smallest model that covers them.
+
 To inspect the routing table instead of sending a prompt:
 
 ```bash

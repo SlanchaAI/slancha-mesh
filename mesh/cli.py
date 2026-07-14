@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import logging
 import os
 import socket
 import sys
@@ -412,6 +413,13 @@ def cmd_router(args: argparse.Namespace) -> int:
     Open WebUI / LiteLLM / their own client at `http://localhost:8080/v1`,
     and the router handles which-node-to-call.
     """
+    # Make mesh.* logs (routing decisions, discovery warnings) visible —
+    # uvicorn configures only its own loggers. "trace" maps to DEBUG.
+    logging.basicConfig(
+        level=getattr(logging, args.log_level.upper(), logging.DEBUG),
+        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+    )
+
     # Build the refresher closure: one call → DiscoveryResult.
     token = args.token or os.environ.get(NODE_TOKEN_ENV) or None
     fetch = make_http_fetch(token=token, timeout=args.timeout)
@@ -452,7 +460,22 @@ def cmd_router(args: argparse.Namespace) -> int:
         _print(f"[router] initial discovery failed (will retry every "
                f"{args.refresh_s}s): {exc}")
 
-    app = create_router_app(snapshot_source=holder.get)
+    auto_router = None
+    if args.auto_route:
+        from mesh.classifier.auto import build_auto_router
+
+        try:
+            auto_router = build_auto_router()
+            auto_router.warmup()  # pay the ONNX-session cost at boot, not on request #1
+        except Exception as exc:  # noqa: BLE001 — boot-time fail-loud with a hint,
+            # whatever the layer (missing extra=RuntimeError, missing/broken
+            # assets=FileNotFoundError/ort errors), not a raw traceback.
+            _print(f"[router] auto-route failed to initialize: {exc}")
+            holder.stop()
+            return 1
+        _print('[router] auto-route on: `model: "auto"` resolves via the classifier')
+
+    app = create_router_app(snapshot_source=holder.get, auto_router=auto_router)
 
     # Fail-closed (#97): don't expose the router on a public interface unauthenticated.
     from mesh.auth import assert_bind_safe
@@ -849,6 +872,9 @@ def build_parser() -> argparse.ArgumentParser:
     rt.add_argument("--log-level", default="info",
                     choices=["critical", "error", "warning", "info", "debug", "trace"],
                     help="uvicorn log level.")
+    rt.add_argument("--auto-route", action="store_true",
+                    help='Resolve `model: "auto"` per-prompt via the built-in classifier '
+                         "(requires the [classifier] extra).")
     rt.set_defaults(func=cmd_router)
 
     # loop — supervised autonomous loop-runner around the champion gate (#82)
