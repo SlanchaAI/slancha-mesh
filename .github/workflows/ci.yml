@@ -22,6 +22,10 @@ permissions:
 jobs:
   test:
     runs-on: ubuntu-latest
+    # Bound a hung leg: a lock-across-await regression in the spool drain would DEADLOCK
+    # the single-threaded event loop synchronously (an in-test `asyncio.wait_for` can't
+    # fire — its callback never runs), so cap the job rather than let it hang for hours.
+    timeout-minutes: 15
     strategy:
       fail-fast: false
       matrix:

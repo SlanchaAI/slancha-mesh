@@ -27,6 +27,7 @@ import os
 import threading
 import unicodedata
 import uuid
+from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Protocol
@@ -34,6 +35,9 @@ from typing import Any, Protocol
 import httpx
 
 _log = logging.getLogger("mesh.usage")
+
+# O_NOFOLLOW rejects a symlink planted at the spool path; absent on Windows (0 = no-op).
+_O_NOFOLLOW = getattr(os, "O_NOFOLLOW", 0)
 
 # --- bounds / defaults ----------------------------------------------------
 MAX_ROW_BYTES = 64 * 1024          # a serialized event over this is dropped (never a torn line)
@@ -78,7 +82,11 @@ def _clean_user(x: Any) -> str | None:
     real user id, it's a DoS primitive). Mirrors audit.py `_clean_actor`."""
     if not isinstance(x, str):
         return None
-    s = unicodedata.normalize("NFKC", x).strip()
+    s = unicodedata.normalize("NFKC", x)
+    # Strip Unicode control (Cc) + format (Cf: RTL-override U+202E, zero-width, U+2028/9)
+    # chars — they enable display-spoofing / line-break confusion in a downstream viewer,
+    # and dropping Cc makes the "no multi-line spool row" guarantee total, not just escaped.
+    s = "".join(ch for ch in s if unicodedata.category(ch) not in ("Cc", "Cf")).strip()
     if not s or s.lower() in {"none", "null"}:
         return None
     if len(s.encode("utf-8")) > MAX_USER_ID_BYTES:
@@ -294,43 +302,37 @@ class SpoolDrainSink:
             self.oversized_dropped += 1
             return
         with self._lock:
-            self._enforce_cap_locked(len(data))
-            # Open fresh each call (no cached fd → no stale-inode write after a rewrite);
-            # O_APPEND + a single os.write is atomic under the lock. Mode 0o600 on create
-            # (the spool holds user_ids + counts). No fsync — the design is duplicate-
-            # tolerant and wants speed; do NOT "harden" this into an fsync later.
-            fd = os.open(self.spool, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
+            try:
+                size = self.spool.stat().st_size  # cheap O(1) — never a line scan/rewrite
+            except FileNotFoundError:
+                size = 0
+            # Bounded FIFO: when full, DROP THE NEWEST (this) event — O(1), append-only.
+            # emit must NEVER rewrite the head: a head-mutating rewrite here would both
+            # (a) race drain's line removal (silent loss of un-delivered events) and
+            # (b) block the single-process event loop with O(spool) I/O on the hot path —
+            # exactly when the system is already stressed (receiver down, spool filling).
+            # The drain is the sole rewriter; the spool self-heals as it delivers.
+            if size + len(data) > self._hard:
+                self.overflow_dropped += 1
+                _log.warning("usage spool full (%d bytes); dropping newest event", size)
+                return
+            if size >= self._soft:
+                _log.warning("usage spool %d bytes over soft cap %d", size, self._soft)
+            # Open fresh each call (no cached fd → no stale-inode write after a rewrite).
+            # O_NOFOLLOW rejects a symlink at the path; mode 0o600 applies on create only,
+            # so re-chmod unconditionally (tighten a pre-existing loose-perm file — the
+            # spool holds user_ids + counts). No fsync — the design is duplicate-tolerant
+            # and wants speed; do NOT "harden" this into an fsync later.
+            fd = os.open(self.spool, os.O_WRONLY | os.O_CREAT | os.O_APPEND | _O_NOFOLLOW, 0o600)
             try:
                 os.write(fd, data)
             finally:
                 os.close(fd)
+            try:
+                os.chmod(self.spool, 0o600)
+            except OSError:
+                pass
             self.spooled += 1
-
-    def _enforce_cap_locked(self, incoming: int) -> None:
-        try:
-            size = self.spool.stat().st_size  # cheap; NOT a line scan
-        except FileNotFoundError:
-            return
-        if size + incoming <= self._hard:
-            if size >= self._soft:
-                _log.warning("usage spool %d bytes over soft cap %d", size, self._soft)
-            return
-        # Hard cap: drop OLDEST down to ~50% in ONE rewrite (hysteresis — never per-line).
-        target = self._hard // 2
-        lines = self._read_lines_locked()
-        kept: list[str] = []
-        running = 0
-        for ln in reversed(lines):  # keep the NEWEST up to target
-            b = len(ln.encode("utf-8")) + 1
-            if running + b > target:
-                break
-            running += b
-            kept.append(ln)
-        kept.reverse()
-        dropped = len(lines) - len(kept)
-        self._rewrite_locked(kept)
-        self.overflow_dropped += dropped
-        _log.warning("usage spool overflow: dropped %d oldest events (kept %d)", dropped, len(kept))
 
     # --- spool file ops (all under the caller's lock) ---------------------
     def _read_lines_locked(self) -> list[str]:
@@ -341,7 +343,10 @@ class SpoolDrainSink:
 
     def _rewrite_locked(self, lines: list[str]) -> None:
         tmp = self.spool.with_name(self.spool.name + ".tmp")
-        with tmp.open("w", encoding="utf-8") as f:
+        # Create the temp at 0o600 (not the umask default) — it briefly holds user_ids +
+        # counts before the rename. os.replace then gives the spool the temp's 0o600 inode.
+        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | _O_NOFOLLOW, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
             for ln in lines:
                 f.write(ln + "\n")
             f.flush()
@@ -360,32 +365,46 @@ class SpoolDrainSink:
             return res
         batch = lines[: self._batch_max]
         client = self._client_or_build()
-        processed = 0  # contiguous head run consumed (delivered ∪ poison ∪ corrupt)
+        consumed: list[str] = []  # the EXACT raw lines we are done with (delivered/poison/corrupt)
         for raw in batch:
             try:
                 event = json.loads(raw)
             except Exception:  # noqa: BLE001 — a corrupt line must not wedge the loop
                 self.corrupt_lines += 1
                 res.corrupt += 1
-                processed += 1
+                consumed.append(raw)
                 continue
             verdict = await self._post_one(client, event)  # network await — NO lock held
             res.posted += 1
             if verdict == "delivered":
                 res.delivered += 1
-                processed += 1
+                consumed.append(raw)
             elif verdict == "poison":
                 self.poison_dropped += 1
                 res.poison += 1
-                processed += 1
-            else:  # transient — stop; keep the remainder for the next pass
+                consumed.append(raw)
+            else:  # transient — stop; keep the remainder (and all after it) for the next pass
                 res.stopped_transient = True
                 break
-        if processed:
+        if consumed:
             with self._lock:
-                current = self._read_lines_locked()  # may have grown (appends at end only)
-                self._rewrite_locked(current[processed:])  # drop the stable head prefix
+                self._remove_lines_locked(consumed)
         return res
+
+    def _remove_lines_locked(self, consumed: list[str]) -> None:
+        """Rewrite the spool removing exactly the consumed lines by IDENTITY (a multiset),
+        NOT by position. Robust to any concurrent mutation during the drain's network await
+        (an append) — only lines we actually delivered/dropped are removed, never a still-
+        pending event erased by a positional-slice accident (gate-#2 BLOCKER: the old
+        `current[processed:]` slice could delete un-posted events if the head shifted)."""
+        remove = Counter(consumed)
+        kept: list[str] = []
+        for ln in self._read_lines_locked():
+            if remove.get(ln, 0) > 0:
+                remove[ln] -= 1
+            else:
+                kept.append(ln)
+        self._rewrite_locked(kept)
 
     async def _post_one(self, client: httpx.AsyncClient, event: dict[str, Any]) -> str:
         headers = {"Authorization": f"Bearer {self._token}"} if self._token else {}

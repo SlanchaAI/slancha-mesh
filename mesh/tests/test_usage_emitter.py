@@ -16,6 +16,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import time
 from pathlib import Path
 
 import httpx
@@ -313,8 +314,46 @@ def test_no_emit_when_all_bindings_fail():
     assert r.status_code == 502 and sink.events == []  # never reached a winning completion
 
 
-def test_per_attempt_latency_and_fallback_fired():
-    # binding #1 returns a retriable 503, binding #2 wins → fallback_fired True.
+def test_no_emit_on_oversized_413(monkeypatch):
+    import mesh.router_app as ra
+    monkeypatch.setattr(ra, "MAX_REQUEST_BYTES", 10)  # tiny cap → any real body is 413
+    snap = _one_specialist_snap()
+    sink = _RecordSink()
+    app = _app(snap, lambda req: (200, {}, None), usage_sink=sink)
+    r = _post(TestClient(app))
+    assert r.status_code == 413 and sink.events == []
+
+
+def test_no_emit_on_no_reachable_node_404():
+    snap = _one_specialist_snap()
+    sink = _RecordSink()
+    app = _app(snap, lambda req: (200, {}, None), usage_sink=sink)
+    r = _post(TestClient(app), model="ghost-specialist")  # not in snapshot → 404
+    assert r.status_code == 404 and sink.events == []
+
+
+def test_stream_auto_route_emits_resolved_specialist():
+    # SC13 streaming half: model:"auto" over the STREAMING path must emit the resolved id.
+    snap = _one_specialist_snap()
+    sink = _RecordSink()
+    sse = _sse(
+        b'data: {"choices":[{"delta":{"content":"x"}}]}\n\n',
+        b'data: {"choices":[],"usage":{"prompt_tokens":3,"completion_tokens":2}}\n\n',
+        b"data: [DONE]\n\n",
+    )
+    app = _app(snap, lambda req: httpx.Response(200, content=sse,
+               headers={"content-type": "text/event-stream"}), usage_sink=sink,
+               auto_router=_FakeAuto(resolved=SID))
+    r = _post(TestClient(app), model="auto", stream=True)
+    assert r.status_code == 200 and r.content == sse
+    assert len(sink.events) == 1
+    assert sink.events[0]["model"] == SID and sink.events[0]["model"] != "auto"
+
+
+def test_per_attempt_latency_measures_winning_call_only():
+    # binding #1 is SLOW then returns a retriable 503; binding #2 wins fast. latency_ms must
+    # reflect only the winning call — a single t0 before the retry loop would fold in the
+    # 250ms failed detour. Also asserts fallback_fired.
     snap = _snapshot(
         cards=[_card(specialist_id=SID)],
         bindings={SID: [
@@ -328,12 +367,17 @@ def test_per_attempt_latency_and_fallback_fired():
 
     def handler(req: httpx.Request):
         calls["n"] += 1
-        return (503, {}, None) if calls["n"] == 1 else (200, win, None)  # first attempt fails
+        if calls["n"] == 1:
+            time.sleep(0.25)          # slow FAILING first attempt
+            return (503, {}, None)
+        return (200, win, None)       # fast WINNING second attempt
 
     app = _app(snap, handler, usage_sink=sink)
     r = _post(TestClient(app))
     assert r.status_code == 200
-    assert len(sink.events) == 1 and sink.events[0]["fallback_fired"] is True
+    ev = sink.events[0]
+    assert ev["fallback_fired"] is True
+    assert ev["latency_ms"] < 150  # winning call only, NOT the ~250ms detour
 
 
 def test_auto_route_emits_resolved_specialist_not_literal_auto():
@@ -438,9 +482,11 @@ def test_drain_preserves_line_appended_mid_drain(tmp_path):
                              latency_ms=10, usage=USAGE, response_id="B")
 
     def handler(request: httpx.Request) -> httpx.Response:
-        # Simulate a concurrent emit DURING the network await of line A's POST. This only
-        # works if the drain released the lock before awaiting (lock-across-await would
-        # deadlock here → the wait_for below turns a regression into a failure, not a hang).
+        # Simulate a concurrent emit DURING the network await of line A's POST. This works
+        # only if the drain released the lock before awaiting. NOTE: a lock-across-await
+        # regression would DEADLOCK the single-threaded loop synchronously — the wait_for
+        # below CANNOT fire (its callback can't run on the blocked thread), so such a
+        # regression hangs; the CI job's timeout-minutes is what bounds it, not this test.
         sink.emit(ev_b)
         return httpx.Response(200, json={"ok": True})
 
@@ -458,17 +504,46 @@ def test_drain_preserves_line_appended_mid_drain(tmp_path):
     assert len(remaining) == 1 and remaining[0]["request_id"] == "B"  # B kept, A dropped
 
 
-def test_overflow_drops_oldest_bounded(tmp_path):
+def test_overflow_bounded_drops_newest_when_full(tmp_path):
+    # Bounded FIFO: emit is append-or-drop-NEWEST (O(1), never a head rewrite — so it can't
+    # race the drain's line removal or stall the event loop with O(spool) I/O). Once full,
+    # later events are refused with a counter; the spool never exceeds the hard cap.
     spool = tmp_path / "s.jsonl"
-    # tiny caps so a handful of events trips the hard cap
     sink = SpoolDrainSink(spool, "http://r/v1/usage", soft_cap_bytes=200, hard_cap_bytes=1200)
     for i in range(60):
         sink.emit(build_usage_event(specialist_id=SID, user_field=f"user-{i:03d}", status_code=200,
                                     latency_ms=10, usage=USAGE, response_id=f"id-{i:03d}"))
-    assert sink.overflow_dropped > 0  # oldest were dropped
-    assert spool.stat().st_size <= 1200  # bounded, never unbounded
+    assert sink.overflow_dropped > 0
+    assert spool.stat().st_size <= 1200  # never exceeds the hard cap
     ids = [json.loads(x)["request_id"] for x in spool.read_text().splitlines()]
-    assert "id-059" in ids and "id-000" not in ids  # newest kept, oldest gone
+    assert "id-000" in ids and "id-059" not in ids  # earliest kept, newest-past-full refused
+
+
+def test_concurrent_overflow_during_drain_loses_no_undelivered_event(tmp_path):
+    # gate-#2 BLOCKER regression: a mutation during the drain's network await must not make
+    # the final rewrite erase an un-delivered event. emit A; during A's in-flight POST a
+    # burst of emits runs (crossing the tiny hard cap → some refused). A delivers → removed
+    # BY IDENTITY; every surviving line is a real un-posted burst event, never erased by a
+    # positional-slice accident.
+    spool = tmp_path / "s.jsonl"
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        for i in range(20):
+            sink.emit(build_usage_event(specialist_id=SID, user_field=None, status_code=200,
+                                        latency_ms=10, usage=USAGE, response_id=f"flood-{i:02d}"))
+        return httpx.Response(200, json={"ok": True})
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    sink = SpoolDrainSink(spool, "http://r/v1/usage", http_client=client, hard_cap_bytes=1500)
+    sink.emit(build_usage_event(specialist_id=SID, user_field=None, status_code=200,
+                                latency_ms=10, usage=USAGE, response_id="A"))
+
+    res = asyncio.run(asyncio.wait_for(sink.drain_once(), timeout=5))
+    assert res.delivered == 1
+    remaining = [json.loads(x)["request_id"] for x in spool.read_text().splitlines()]
+    assert "A" not in remaining                      # delivered → removed by identity
+    assert all(r.startswith("flood-") for r in remaining)  # every survivor is a real un-posted event
+    assert len(remaining) >= 1                        # NOT silently erased by a positional slice
 
 
 def test_lifespan_starts_and_stops_drainable_sink():
@@ -487,6 +562,36 @@ def test_lifespan_noop_for_nullsink():
     app = _app(snap, lambda req: (200, {}, None))
     with TestClient(app) as c:
         assert c.get("/health").status_code == 200
+
+
+# ==========================================================================
+# cli wiring — env → SpoolDrainSink (the real caller; no shelf-ware)
+# ==========================================================================
+def test_usage_sink_from_env_off_when_url_unset(monkeypatch):
+    from mesh.cli import _usage_sink_from_env
+    monkeypatch.delenv("SLANCHA_USAGE_SINK_URL", raising=False)
+    assert _usage_sink_from_env() is None
+
+
+def test_usage_sink_from_env_builds_sink_with_params(monkeypatch, tmp_path):
+    from mesh.cli import _usage_sink_from_env
+    spool = tmp_path / "u.jsonl"
+    monkeypatch.setenv("SLANCHA_USAGE_SINK_URL", "http://127.0.0.1:8977/v1/usage")
+    monkeypatch.setenv("SLANCHA_USAGE_SINK_TOKEN", "tok-xyz")
+    monkeypatch.setenv("SLANCHA_USAGE_SPOOL_PATH", str(spool))
+    monkeypatch.setenv("SLANCHA_USAGE_DRAIN_INTERVAL_S", "9")
+    sink = _usage_sink_from_env()
+    assert isinstance(sink, SpoolDrainSink)
+    assert sink.spool == spool and sink._url == "http://127.0.0.1:8977/v1/usage"
+    assert sink._token == "tok-xyz" and sink._interval == 9.0
+
+
+def test_usage_sink_from_env_bad_interval_falls_back(monkeypatch):
+    from mesh.cli import _usage_sink_from_env
+    monkeypatch.setenv("SLANCHA_USAGE_SINK_URL", "http://x/v1/usage")
+    monkeypatch.setenv("SLANCHA_USAGE_DRAIN_INTERVAL_S", "not-a-number")
+    sink = _usage_sink_from_env()
+    assert sink is not None and sink._interval == 5.0  # malformed → default, no crash
 
 
 # ==========================================================================
