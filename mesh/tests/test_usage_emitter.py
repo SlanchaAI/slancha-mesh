@@ -31,6 +31,7 @@ from mesh.usage import (
     NullSink,
     SpoolDrainSink,
     build_usage_event,
+    safe_emit,
 )
 
 USAGE = {"prompt_tokens": 230, "completion_tokens": 1247}
@@ -544,6 +545,34 @@ def test_concurrent_overflow_during_drain_loses_no_undelivered_event(tmp_path):
     assert "A" not in remaining                      # delivered → removed by identity
     assert all(r.startswith("flood-") for r in remaining)  # every survivor is a real un-posted event
     assert len(remaining) >= 1                        # NOT silently erased by a positional slice
+
+
+def test_spool_perms_0600_created_and_tightened(tmp_path):
+    import stat
+    spool = tmp_path / "s.jsonl"
+    sink = SpoolDrainSink(spool, "http://r/v1/usage")
+    ev = build_usage_event(specialist_id=SID, user_field=None, status_code=200,
+                           latency_ms=10, usage=USAGE)
+    sink.emit(ev)
+    assert stat.S_IMODE(spool.stat().st_mode) == 0o600  # created restrictive
+    spool.chmod(0o644)                                   # a pre-existing loose file...
+    sink.emit(ev)
+    assert stat.S_IMODE(spool.stat().st_mode) == 0o600  # ...is tightened on the next emit
+
+
+def test_emit_refuses_symlinked_spool_without_writing_target(tmp_path):
+    if not getattr(os, "O_NOFOLLOW", 0):
+        pytest.skip("O_NOFOLLOW unavailable on this platform")
+    target = tmp_path / "target.txt"
+    target.write_text("untouched\n")
+    spool = tmp_path / "s.jsonl"
+    spool.symlink_to(target)  # attacker plants a symlink at the spool path
+    sink = SpoolDrainSink(spool, "http://r/v1/usage")
+    ev = build_usage_event(specialist_id=SID, user_field=None, status_code=200,
+                           latency_ms=10, usage=USAGE)
+    safe_emit(sink, ev)  # the real call path — O_NOFOLLOW raises ELOOP, safe_emit swallows it
+    assert target.read_text() == "untouched\n"  # symlink target never written
+    assert sink.spooled == 0
 
 
 def test_lifespan_starts_and_stops_drainable_sink():

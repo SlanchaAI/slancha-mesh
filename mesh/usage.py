@@ -49,7 +49,7 @@ BATCH_MAX = 500                    # lines drained per pass (bounds memory + per
 DEFAULT_DRAIN_INTERVAL_S = 5.0
 MAX_BACKOFF_S = 60.0
 SOFT_CAP_BYTES = 8 * 1024 * 1024   # warn above this
-HARD_CAP_BYTES = 32 * 1024 * 1024  # drop oldest down to ~50% above this
+HARD_CAP_BYTES = 32 * 1024 * 1024  # refuse new events (drop newest) above this — bounded FIFO
 
 _ENDPOINT = "/v1/chat/completions"
 
