@@ -27,6 +27,7 @@ from mesh.models import (
     SpecialistCard,
 )
 from mesh.router_app import create_router_app
+from mesh.runtime_health import RouterRuntimeHealth, binding_key
 
 
 def _card(
@@ -103,15 +104,18 @@ class _FakeAutoRouter:
     def __init__(self, result: MeshSelectionResult) -> None:
         self.result = result
         self.calls: list[dict] = []
+        self.snapshots: list[RegistrySnapshot] = []
 
     def select(self, body: dict, snapshot: RegistrySnapshot) -> MeshSelectionResult:
         self.calls.append(body)
+        self.snapshots.append(snapshot)
         return self.result
 
 
 def _client(
     snapshot: RegistrySnapshot,
     auto_router: _FakeAutoRouter | None,
+    runtime_health: RouterRuntimeHealth | None = None,
 ) -> tuple[TestClient, list[httpx.Request]]:
     seen: list[httpx.Request] = []
 
@@ -124,6 +128,7 @@ def _client(
         snapshot_source=lambda: snapshot,
         http_client=upstream,
         auto_router=auto_router,
+        runtime_health=runtime_health,
     )
     return TestClient(app), seen
 
@@ -145,6 +150,59 @@ def test_auto_resolves_and_proxies_to_selected_specialist():
     import json
 
     assert json.loads(seen[0].content)["model"] == "qwen2.5-coder:7b"
+
+
+def test_auto_uses_the_selector_chosen_node_before_snapshot_order():
+    sid = "qwen2.5-coder-7b-q4-ollama"
+    snap = _snapshot(sid)
+    now = datetime.now(timezone.utc)
+    snap.specialists[sid].append(
+        NodeBinding(
+            node_id="node-b",
+            specialist_id=sid,
+            health="healthy",
+            queue_depth=0,
+            p95_latency_ms_60s=100.0,
+            node_url="http://10.0.0.6:11434",
+            last_seen=now,
+        )
+    )
+    chosen = _selection(sid).model_copy(
+        update={"node_id": "node-b", "node_url": "http://10.0.0.6:11434"}
+    )
+    client, seen = _client(snap, _FakeAutoRouter(chosen))
+
+    response = client.post("/v1/chat/completions", json=_BODY)
+
+    assert response.status_code == 200
+    assert str(seen[0].url).startswith("http://10.0.0.6:11434/")
+
+
+def test_auto_selector_never_sees_open_circuit_specialist():
+    sid_open = "qwen2.5-coder-7b-q4-ollama"
+    sid_ready = "phi-4-mini-q4-ollama"
+    snap = _snapshot(sid_open)
+    ready = _snapshot(sid_ready, domain="general")
+    snap.specialists.update(ready.specialists)
+    snap.catalog.update(ready.catalog)
+    snap.nodes.update(ready.nodes)
+    runtime = RouterRuntimeHealth(failure_threshold=1)
+    runtime.record_failure(binding_key(sid_open, "node-a"), "http_503")
+    fake = _FakeAutoRouter(
+        _selection(sid_ready).model_copy(
+            update={
+                "node_id": "node-a",
+                "node_url": "http://10.0.0.5:11434",
+            }
+        )
+    )
+    client, _ = _client(snap, fake, runtime)
+
+    response = client.post("/v1/chat/completions", json=_BODY)
+
+    assert response.status_code == 200
+    assert sid_open not in fake.snapshots[0].specialists
+    assert sid_ready in fake.snapshots[0].specialists
 
 
 def test_auto_never_leaks_auto_upstream_for_vllm_passthrough():

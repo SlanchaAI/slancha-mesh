@@ -198,6 +198,32 @@ def _reachable_bindings(
     return out
 
 
+def _runtime_ready_snapshot(
+    snapshot: RegistrySnapshot,
+    runtime_health: RouterRuntimeHealth,
+) -> RegistrySnapshot:
+    """Filter open bindings before automatic specialist/node selection."""
+
+    specialists = {
+        specialist_id: [
+            binding
+            for binding in _reachable_bindings(specialist_id, snapshot)
+            if runtime_health.peek_routable(
+                binding_key(specialist_id, binding.node_id)
+            )
+        ]
+        for specialist_id in snapshot.specialists
+    }
+    specialists = {
+        specialist_id: bindings
+        for specialist_id, bindings in specialists.items()
+        if bindings
+    }
+    return snapshot.model_copy(
+        update={"specialists": specialists, "ranked_routes": {}}
+    )
+
+
 # Statuses worth retrying on. 5xx = upstream service problem (worth trying
 # another node); 4xx = client error (retrying changes nothing — same body
 # would be rejected by the next node too). 2xx / 3xx obviously don't retry.
@@ -812,6 +838,7 @@ def create_router_app(
 
         snap = _snapshot()
 
+        preferred_node_id: str | None = None
         if specialist_id == AUTO_MODEL_ID:
             if auto_router is None:
                 raise HTTPException(
@@ -824,7 +851,10 @@ def create_router_app(
                 )
             # CPU-bound (embed + heads) → threadpool so the event loop
             # keeps serving concurrent requests.
-            selection = await run_in_threadpool(auto_router.select, body, snap)
+            ready_snapshot = _runtime_ready_snapshot(snap, resolved_runtime)
+            selection = await run_in_threadpool(
+                auto_router.select, body, ready_snapshot
+            )
             if selection.specialist_id is None:
                 resolved_runtime.record_punt()
                 return punt_response(
@@ -835,6 +865,7 @@ def create_router_app(
                     retryable=True,
                 )
             specialist_id = selection.specialist_id
+            preferred_node_id = selection.node_id
             # The upstream must see the resolved id, not "auto": the rewrite
             # below maps specialist_id → ollama_tag / served_model_name, and
             # vLLM specialists without an alias serve under the specialist_id
@@ -869,6 +900,10 @@ def create_router_app(
                 binding_key(specialist_id, binding.node_id)
             )
         ]
+        if preferred_node_id is not None:
+            bindings.sort(
+                key=lambda binding: binding.node_id != preferred_node_id
+            )
         if not bindings:
             resolved_runtime.record_punt()
             return punt_response(
