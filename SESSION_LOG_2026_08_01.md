@@ -128,10 +128,15 @@ Full OSS research and trust priors:
   `slancha-mesh-tune check` available.
 - GitHub workflow YAML parsed; cross-repo slancha-local gate parity passed
   `11 passed` against the new add-on path.
+- The first remote PR run exposed a wall-clock race in the live-socket circuit
+  test and invalid assumptions that `slancha-shared` and `slancha-local` were
+  public. The circuit test now advances an injected clock. Private integration
+  jobs now run only when maintainers configure `SLANCHA_CROSS_REPO_TOKEN`, so
+  public forks retain a green in-repo CI path without access to private repos.
 - Secret-pattern scan found no committed private key, Tailscale key, or common
   API-key pattern.
-- GitNexus compare-to-`origin/main` reports CRITICAL breadth: 47 files, 222
-  symbols, 32 flows. This is expected for the package split and request-path
+- GitNexus compare-to-`origin/main` reports CRITICAL breadth: 49 files, 251
+  symbols, 23 flows. This is expected for the package split and request-path
   change; focused blast-radius checks rated the service environment path LOW
   and the route path HIGH. Full and live gates above cover the affected flows.
 

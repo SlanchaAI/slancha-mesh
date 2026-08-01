@@ -51,6 +51,7 @@ def _serve_live_app(app: FastAPI) -> Iterator[str]:
 
 def test_live_socket_local_success_punt_suppression_and_recovery() -> None:
     specialist_id = "live-local"
+    now = [100.0]
     upstream_state = {"healthy": True, "calls": 0}
     upstream = FastAPI()
 
@@ -81,7 +82,11 @@ def test_live_socket_local_success_punt_suppression_and_recovery() -> None:
             }
         )
         snapshot = discovery_to_snapshot(discovery)
-        runtime = RouterRuntimeHealth(failure_threshold=2, cooldown_s=0.05)
+        runtime = RouterRuntimeHealth(
+            failure_threshold=2,
+            cooldown_s=30,
+            clock=lambda: now[0],
+        )
         upstream_client = httpx.AsyncClient(timeout=2)
         router = create_router_app(
             snapshot_source=lambda: snapshot,
@@ -117,7 +122,7 @@ def test_live_socket_local_success_punt_suppression_and_recovery() -> None:
             assert degraded["open_circuits"] == 1
 
             upstream_state["healthy"] = True
-            time.sleep(0.06)
+            now[0] += 31
             recovered = client.post(f"{router_url}/v1/chat/completions", json=request)
             assert recovered.status_code == 200
             assert recovered.json()["choices"][0]["message"]["content"] == "LOCAL-OK"
