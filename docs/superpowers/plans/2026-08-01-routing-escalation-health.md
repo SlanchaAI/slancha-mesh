@@ -1,5 +1,9 @@
 # Truthful Routing, Escalation, and Health Implementation Plan
 
+**Status:** Superseded on 2026-08-01 by
+`2026-08-01-oss-routing-integration.md`. The original in-process cloud proxy
+duplicated mature OSS gateway behavior and blurred Barkeep's spend boundary.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Make the core router distinguish discovery from request readiness, return a stable typed punt, and optionally proxy an explicitly authorized request to one configured OpenAI-compatible fallback.

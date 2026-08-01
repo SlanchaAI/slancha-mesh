@@ -8,8 +8,8 @@
 
 Slancha-Mesh will ship two Python distributions from one repository:
 
-- `slancha-mesh` owns model serving, discovery, routing, health, durable
-  services, and cloud escalation.
+- `slancha-mesh` owns model serving, discovery, local routing, health, durable
+  services, and a typed escalation handoff.
 - `slancha-mesh-tune` owns fine-tuning, corpus construction, replay-driven
   evaluation, promotion gates, and training coordination.
 
@@ -18,11 +18,29 @@ distribution will depend on a compatible core version and use public core
 models, files, and HTTP endpoints. This one-way dependency keeps serving usable
 when the tuning add-on is absent.
 
-Slancha-Mesh will choose local routes. It will not choose cloud vendors or
-manage a portfolio of paid providers. When local execution cannot satisfy a
-request, the router will return a typed punt or proxy to one operator-configured
-OpenAI-compatible upstream. Barkeep remains the outer quota, capability, and
-spend-policy layer.
+Slancha-Mesh will choose local routes. It will not choose cloud vendors,
+manage paid providers, or execute a cloud fallback. When local execution cannot
+satisfy a request, the router will return a typed punt. Barkeep remains the
+outer quota, capability, and spend-policy layer; an operator-selected open-source
+gateway may execute a caller-authorized punt.
+
+## 2026-08-01 OSS Routing Amendment
+
+The routing atlas in `docs/research/oss-routing-2026-08-01/ATLAS.md` supersedes
+the generic in-process proxy proposed in the first draft. Current open-source
+projects already provide the two layers Slancha lacks:
+
+- vLLM Semantic Router supplies optional semantic selection in front of the
+  mesh;
+- Inference Gateway, LiteLLM, or OpenZiti llm-gateway supplies optional cloud
+  provider translation and execution after a punt;
+- llama-swap supplies optional model-process lifecycle at a specialist node.
+
+Slancha will expose OpenAI-compatible model/chat endpoints, truthful route
+health, and a typed punt that these systems can compose around. Core gains no
+provider SDK, cloud credential reader, paid-call retry loop, or heavy router
+runtime. This is both the leanest base and the clearest OSS contribution:
+dynamic tailnet discovery and local transport remain Slancha's native layer.
 
 ## Evidence Behind the Decision
 
@@ -62,7 +80,7 @@ The 2026-08-01 audit found:
    tailnet.
 3. Route explicit model requests and optional `model: "auto"` requests across
    healthy nodes.
-4. Escalate requests through a typed punt or one explicit generic upstream.
+4. Escalate unsuitable or unavailable requests through a typed punt.
 5. Prevent request failures from leaving a broken node advertised as ready.
 6. Install node and router processes as durable systemd, launchd, or Windows
    services.
@@ -180,38 +198,19 @@ router returns 503 for this contract, preserving the current auto-route status
 while adding a stable error body. Existing OpenAI-compatible error fields
 remain present so generic clients can display the failure.
 
-### Optional generic upstream
+### External escalation executor
 
-An operator may configure one fallback target with:
+The typed punt is the only core escalation behavior. A caller or optional
+sidecar may translate the punt into a new request to Inference Gateway,
+LiteLLM, OpenZiti llm-gateway, or another OpenAI-compatible gateway. That
+component owns provider credentials, retries, model aliases, and response
+translation.
 
-- mode: `punt` or `proxy`;
-- base URL;
-- model alias;
-- credential environment variable name;
-- connect, read, and total timeouts;
-- fallback trigger: unroutable, unavailable, or both.
-
-`punt` is the default. `proxy` requires complete startup configuration and an
-explicit activation flag. The router fails startup on partial configuration.
-It never forwards the caller's authorization header to the fallback target.
-It sends only the configured fallback credential.
-
-Fallback permission has two gates. The server must configure and enable the
-target, and the request must include `X-Slancha-Allow-Fallback: proxy`. A
-standalone operator may set `--fallback-default proxy` at router startup to
-authorize requests that omit the header. The default remains `punt`. Paul's
-Barkeep-facing router will retain that default, so a request selected as a free
-mesh lane cannot spend through the fallback target. A caller may send
-`X-Slancha-Allow-Fallback: deny` to override a permissive server default.
-
-The router supports streaming and non-streaming fallback. It records
-`X-Slancha-Outcome: cloud_fallback`, the local failure reason, and the configured
-fallback alias. A failed cloud request returns a bounded 502 error containing
-local and fallback failure classes without secret values or response bodies.
-
-The server and request gates together authorize the configured network call.
-They do not authorize provider selection, account creation, key retrieval, or
-a change to Barkeep's spend policy.
+Slancha never forwards the original request to the internet. This makes a
+missing or misconfigured external executor fail closed and preserves Barkeep's
+`--no-spend` / `BARKEEP_NO_SPEND` veto. Compatibility examples may use a local
+stub or an OSS gateway without a paid provider; examples must not imply that
+installing Slancha enables cloud spend.
 
 ## Runtime Health
 
@@ -303,14 +302,11 @@ request.
 
 - Bound request bodies, response reads, fallback attempts, health history, and
   error text.
-- Resolve and validate fallback URLs at startup and before redirects. Disable
-  redirects unless the redirected target passes the same URL policy.
-- Keep node and fallback credentials separate.
-- Strip caller authorization before every node or fallback request.
+- Strip caller authorization before every node request.
 - Treat missing token counts as unavailable, never zero.
 - Log failure classes and targets without credentials, prompts, or completion
   bodies.
-- Require explicit configuration before any cloud request.
+- Make no cloud request from core.
 - Keep model downloads and heavy engine installation behind human approval.
 
 ## Implementation Slices
@@ -319,8 +315,8 @@ request.
 
 - Merge `origin/main` into the implementation branch.
 - Preserve LAN advertise-host behavior and the GB10 Qwen card.
-- Add typed punt, explicit generic fallback, runtime circuits, and richer
-  health.
+- Add typed punt, runtime circuits, richer health, and OSS-router compatibility
+  contracts.
 - Add focused and full tests.
 - Prove explicit local routing and fallback or punt through the real router.
 
@@ -359,8 +355,8 @@ The work is complete when all of these statements have direct evidence:
    dashboards, and tuning sources.
 4. An explicit local request succeeds through the real router.
 5. An unsuitable or failed local request produces the documented typed punt.
-6. With explicit proxy configuration, the same request reaches a controlled
-   OpenAI-compatible fallback without forwarding caller credentials.
+6. A controlled external OSS gateway can consume the punt in a separate,
+   caller-authorized step; core emits no cloud request.
 7. A repeatedly failing node opens its circuit and stops counting as routable;
    a successful half-open request restores it.
 8. Barkeep can distinguish discovered capacity from routable capacity and
@@ -379,6 +375,6 @@ The work is complete when all of these statements have direct evidence:
 
 Each slice lands in atomic commits. The old `specialists_reachable` field and
 explicit specialist routing remain throughout the migration. Operators can
-disable cloud proxying by selecting `punt`, stop using the add-on without
-changing core, and uninstall either service role through the existing service
-command. No slice requires a destructive data migration.
+stop using the external router or tuning add-on without changing core, and
+uninstall either service role through the existing service command. No slice
+requires a destructive data migration.
