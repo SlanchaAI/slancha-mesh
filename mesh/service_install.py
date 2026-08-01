@@ -92,7 +92,7 @@ def service_argv(kind: str, service_args: list[str] | None) -> list[str]:
         if kind == "node":
             return ["up", "--auto"]
         if kind == "semantic-router":
-            return ["semantic-router", "serve"]
+            return ["semantic-router", "supervise"]
         return ["router"]
     args = list(service_args)
     if args[0] in {"up", "router", "semantic-router"}:

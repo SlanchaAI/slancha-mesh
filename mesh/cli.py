@@ -905,7 +905,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     sr.add_argument(
         "action",
-        choices=["install", "validate", "serve", "status", "stop"],
+        choices=["install", "validate", "serve", "supervise", "status", "stop"],
     )
     sr.add_argument(
         "--state-dir",

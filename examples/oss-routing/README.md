@@ -16,17 +16,30 @@ slancha-mesh semantic-router validate
 slancha-mesh semantic-router serve
 ```
 
-The semantic router listens on `127.0.0.1:8888`. Its Docker runtime reaches the
-host Mesh router through `host.docker.internal:8080`; `localhost:8080` would
+The lifecycle command sets `VLLM_SR_STACK_NAME=slancha-mesh` and
+`VLLM_SR_PORT_OFFSET=100`; the config's internal listener `:8788` is therefore
+published on host `:8888`, while vLLM's own control API no longer collides
+with Mesh on `:8080`. Its Docker runtime reaches the host Mesh router through
+`host.docker.internal:8080`; `localhost:8080` would
 incorrectly refer to the router container. Send `model: MoM` to activate vLLM
 Semantic Router's decision path. It maps `slancha-auto` to `model: auto` at the
 Mesh boundary, where live fleet readiness makes the final node choice.
+
+This profile uses vLLM's supported static selector because it exposes one
+dynamic Mesh backend. vLLM's learned selectors apply when a decision contains
+multiple model candidates; duplicating Mesh's changing node/model catalog in a
+static vLLM config would make readiness stale. The profile also disables the
+unused semantic cache and tools index, avoiding their model and storage stack.
 
 Install it durably after the first successful foreground request:
 
 ```bash
 slancha-mesh service install --kind semantic-router
 ```
+
+The service runs a state-aware supervisor. Healthy containers stay untouched;
+missing router or Envoy containers are recreated after Docker becomes
+available.
 
 Rollback never touches a model node: stop the semantic layer and point the
 caller back to `http://127.0.0.1:8080`.

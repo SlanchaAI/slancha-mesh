@@ -157,6 +157,52 @@ All were reproduced and fixed before handoff:
 Seven focused regressions cover these findings. A real dashboard process then
 served Streamlit health `ok` and HTTP 200 on port 18983 before clean shutdown.
 
+## vLLM Semantic Router front-door cutover
+
+- Promoted pinned vLLM Semantic Router v0.3.0 from a composition example to
+  the supported caller-facing front door on host port 8888. Slancha Mesh stays
+  private on port 8080 and owns live fleet discovery, request readiness,
+  circuits, node transport, and typed punts.
+- Isolated the upstream runtime with stack name `slancha-mesh`, port offset
+  100, pinned router/Envoy/simulator images, and a dedicated Python 3.11 virtual
+  environment under `~/.local/state/slancha-mesh/vllm-semantic-router`.
+- Forced local Docker Desktop on macOS. The interactive shell's active Docker
+  context was `dellpromax`; without the override, the upstream CLI split pulls
+  and container creation across local and remote Docker engines.
+- Bound Envoy to the container interface. A loopback bind inside the container
+  made Docker's published host port reset every request.
+- Added a state-aware `semantic-router supervise` loop and made the service
+  installer use it. Upstream `serve` exits after provisioning containers and a
+  naive launchd `KeepAlive` repeatedly tears down healthy containers.
+- Added `/usr/local/bin` and `/opt/homebrew/bin` to the launchd runtime PATH.
+  The first service attempt otherwise restarted continuously because launchd
+  could not resolve Docker.
+- Configured vLLM's supported static selector for the single dynamic Mesh
+  backend and disabled model selection, semantic cache, and tools indexing.
+  Learned selectors only choose among multiple `modelRefs`; duplicating the
+  changing Mesh catalog in static vLLM YAML would create stale readiness.
+- vLLM v0.3 minimal mode still starts Redis, Postgres, and the fleet simulator,
+  and still initializes the default embedding runtime. This is upstream
+  behavior, not a Slancha dependency or hidden fallback. A previously partial
+  Hugging Face snapshot was completed so startup no longer fails model-file
+  loading, though the disabled selector reports `embedding_ready=false`.
+
+### Live cutover proof
+
+- `POST :8888/v1/chat/completions` returned `VLLM-MESH-LIVE-OK` from
+  `qwen3:14b` on Spark. Response headers named Envoy, vLLM decision
+  `local-mesh`, vLLM model `slancha-auto`, Slancha specialist
+  `qwen3-14b-q4-ollama`, and node `spark-472e`.
+- Stopping vLLM left direct Mesh `:8080` available and returned
+  `DIRECT-MESH-ROLLBACK-OK`.
+- Killing Envoy under the foreground supervisor recreated the router pair and
+  returned `SUPERVISOR-RECOVERY-OK`.
+- The installed launchd job `ai.slancha.mesh.semantic-router` then survived a
+  killed Envoy container with one stable supervisor PID/run, recreated Envoy,
+  and returned another `VLLM-MESH-LIVE-OK` request.
+- Current caller path: client → vLLM Semantic Router `:8888` → Slancha Mesh
+  `:8080` → Spark Ollama `qwen3:14b`. Rollback path: client → Mesh `:8080`.
+
 ## Publication status and remaining work
 
 This is an OSS-ready candidate, not a published release. The root README,
@@ -179,6 +225,12 @@ actions require an explicit integration decision:
 - `mesh/tests/test_router_live_socket.py` — real-TCP routing/recovery proof.
 - `packages/slancha-mesh-tune/` — independently packaged tuning add-on.
 - `examples/oss-routing/` — validated OSS composition examples.
+- `mesh/vllm_semantic_router.py` — pinned upstream lifecycle and durable
+  supervisor for the caller-facing front door.
+- `docs/superpowers/specs/2026-08-01-vllm-semantic-router-front-door-design.md`
+  — front-door ownership and rollback contract.
+- `docs/superpowers/plans/2026-08-01-vllm-semantic-router-front-door.md` —
+  cutover and verification plan.
 - `docs/research/oss-routing-2026-08-01/` — primary-source candidate atlas and
   dossiers.
 - `docs/superpowers/specs/2026-08-01-oss-core-and-tuning-split-design.md` —

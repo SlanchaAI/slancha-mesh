@@ -2,8 +2,10 @@ version: v0.3
 
 listeners:
   - name: slancha-semantic-router
-    address: 127.0.0.1
-    port: 8888
+    # Listen on the container interface so Docker's published port can reach Envoy.
+    address: 0.0.0.0
+    # VLLM_SR_PORT_OFFSET=100 publishes this internal listener on host :8888.
+    port: 8788
     timeout: 300s
 
 providers:
@@ -35,3 +37,18 @@ routing:
       modelRefs:
         - model: slancha-auto
           use_reasoning: false
+      # Mesh presents one dynamic virtual backend, so static selection avoids
+      # duplicating Mesh's live fleet choice inside vLLM Semantic Router.
+      algorithm:
+        type: static
+
+global:
+  router:
+    model_selection:
+      enabled: false
+  stores:
+    semantic_cache:
+      enabled: false
+  integrations:
+    tools:
+      enabled: false

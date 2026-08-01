@@ -50,7 +50,7 @@ def test_service_argv_prefixes_role_command_and_preserves_old_full_argv():
         "8080",
     ]
     assert service_argv("node", ["up", "--auto"]) == ["up", "--auto"]
-    assert service_argv("semantic-router", None) == ["semantic-router", "serve"]
+    assert service_argv("semantic-router", None) == ["semantic-router", "supervise"]
     assert service_argv("semantic-router", ["serve", "--state-dir", "/tmp/sr"]) == [
         "semantic-router",
         "serve",
@@ -151,6 +151,17 @@ def test_launchd_plist_can_keep_vllm_semantic_router_alive():
     assert "<string>semantic-router</string>" in plist
     assert "<string>serve</string>" in plist
     assert "<string>/tmp/sr</string>" in plist
+
+
+def test_launchd_plist_defaults_vllm_semantic_router_to_supervisor():
+    plist = render_launchd_plist(
+        EXEC,
+        None,
+        role="semantic-router",
+        kind="semantic-router",
+    )
+    assert "<string>semantic-router</string>" in plist
+    assert "<string>supervise</string>" in plist
 
 
 def test_launchd_plist_persists_non_secret_environment():
