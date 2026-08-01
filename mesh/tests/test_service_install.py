@@ -204,6 +204,20 @@ def test_service_subcommand_parses_action_and_flags():
     assert args.func is cmd_service
 
 
+def test_router_kind_defaults_service_role_to_router(monkeypatch, capsys, tmp_path):
+    monkeypatch.setattr("mesh.service_install.platform.system", lambda: "Linux")
+    monkeypatch.setattr("pathlib.Path.home", lambda: tmp_path)
+    monkeypatch.setattr("mesh.cli._resolve_exec_path", lambda: EXEC)
+
+    rc = main(["service", "install", "--kind", "router", "--dry-run"])
+
+    assert rc == 0
+    output = capsys.readouterr().out
+    assert "label=ai.slancha.mesh.router" in output
+    assert "ai.slancha.mesh.router.service" in output
+    assert "ai.slancha.mesh.node.service" not in output
+
+
 def test_service_passthrough_after_double_dash_routes_to_up_args(monkeypatch):
     """`service install -- --specialist x` forwards the post-`--` tokens to
     `slancha-mesh up` without colliding with `service`'s own flags. main()
@@ -279,6 +293,29 @@ def test_service_install_dry_run_renders_but_does_not_install(monkeypatch, capsy
     assert "<string>--specialist</string>" in out
     # No plist actually written.
     assert not (tmp_path / "Library/LaunchAgents/ai.slancha.mesh.node.plist").exists()
+
+
+def test_service_install_fails_when_registration_command_fails(
+    monkeypatch, capsys, tmp_path
+):
+    monkeypatch.setattr("mesh.service_install.platform.system", lambda: "Linux")
+    monkeypatch.setattr("pathlib.Path.home", lambda: tmp_path)
+    monkeypatch.setattr("mesh.cli._resolve_exec_path", lambda: EXEC)
+    calls = []
+
+    def fail(command):
+        calls.append(command)
+        return 9
+
+    monkeypatch.setattr("subprocess.call", fail)
+
+    rc = main(["service", "install"])
+
+    assert rc == 9
+    assert len(calls) == 1
+    output = capsys.readouterr().out
+    assert "registration failed" in output
+    assert "installed. The node will start on boot" not in output
 
 
 def test_service_unsupported_os_prints_message_and_exits_clean(monkeypatch, capsys):

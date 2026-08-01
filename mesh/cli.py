@@ -587,6 +587,7 @@ def cmd_service(args: argparse.Namespace) -> int:
     os_name = current_os()
     exec_path = _resolve_exec_path()
     service_args = args.up_args or None
+    role = args.role or args.kind
 
     try:
         environment = parse_service_environment(args.environment)
@@ -594,7 +595,7 @@ def cmd_service(args: argparse.Namespace) -> int:
             os_name,
             exec_path,
             up_args=service_args,
-            role=args.role,
+            role=role,
             kind=args.kind,
             environment=environment,
         )
@@ -646,10 +647,21 @@ def cmd_service(args: argparse.Namespace) -> int:
         plan.path.parent.mkdir(parents=True, exist_ok=True)
         plan.path.write_text(plan.text)
         _print(f"[service] wrote: {plan.path}")
-    for cmd in plan.install_cmds:
+    for index, cmd in enumerate(plan.install_cmds):
         # launchd's pre-unload (idempotency) is allowed to fail on a fresh
         # install; the subsequent load is the one that matters.
-        subprocess.call(cmd)
+        rc = subprocess.call(cmd)
+        tolerated_pre_unload = (
+            plan.os_name == "Darwin"
+            and index == 0
+            and len(cmd) > 1
+            and cmd[1] == "unload"
+        )
+        if rc != 0 and not tolerated_pre_unload:
+            _print(
+                f"[service] registration failed (exit {rc}): {' '.join(cmd)}"
+            )
+            return rc if rc > 0 else 1
     _print(f"[service] installed. The {args.kind} will start on boot.")
     return 0
 
@@ -871,8 +883,14 @@ def build_parser() -> argparse.ArgumentParser:
     )
     svc.add_argument("action", choices=["install", "uninstall", "status"],
                      help="install (default happy path), uninstall, or status.")
-    svc.add_argument("--role", default="node",
-                     help="Service role suffix → label ai.slancha.mesh.<role> (default 'node').")
+    svc.add_argument(
+        "--role",
+        default=None,
+        help=(
+            "Service label suffix ai.slancha.mesh.<role> "
+            "(default: selected --kind)."
+        ),
+    )
     svc.add_argument(
         "--kind",
         choices=["node", "router"],
