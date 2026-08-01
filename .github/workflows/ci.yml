@@ -90,6 +90,8 @@ jobs:
 
       - name: Prove add-on composes with core
         run: |
+          unzip -Z1 dist/tune/*.whl | grep -qx LICENSE
+          unzip -Z1 dist/tune/*.whl | grep -qx NOTICE
           /tmp/slancha-core/bin/pip install --no-deps dist/tune/*.whl
           /tmp/slancha-core/bin/slancha-mesh-tune check
           /tmp/slancha-core/bin/python -c 'import mesh.training, mesh.eval.gate'

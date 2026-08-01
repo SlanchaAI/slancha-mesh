@@ -120,7 +120,8 @@ Full OSS research and trust priors:
 - Barkeep: `156 passed`; focused mesh tap and Ruff checks clean.
 - Clean artifact boundary: core wheel contains no tests, training, or eval
   modules; add-on wheel contains training and promotion modules; core source
-  distribution contains the public policy files and no add-on/tests.
+  distribution contains the public policy files and no add-on/tests. Both
+  add-on artifacts include the Apache `LICENSE` and `NOTICE`.
 - Clean core-only virtual environment imported `mesh.serve`, could not find
   `mesh.training`, and exposed no `loop` command. Installing the add-on into
   that environment made `mesh.training`, `mesh.eval.gate`, and
