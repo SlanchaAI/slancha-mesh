@@ -50,6 +50,13 @@ def test_service_argv_prefixes_role_command_and_preserves_old_full_argv():
         "8080",
     ]
     assert service_argv("node", ["up", "--auto"]) == ["up", "--auto"]
+    assert service_argv("semantic-router", None) == ["semantic-router", "serve"]
+    assert service_argv("semantic-router", ["serve", "--state-dir", "/tmp/sr"]) == [
+        "semantic-router",
+        "serve",
+        "--state-dir",
+        "/tmp/sr",
+    ]
 
 
 def test_service_label_reverse_dns():
@@ -133,6 +140,19 @@ def test_launchd_plist_can_keep_router_alive():
     assert "<string>spark</string>" in plist
 
 
+def test_launchd_plist_can_keep_vllm_semantic_router_alive():
+    plist = render_launchd_plist(
+        EXEC,
+        ["serve", "--state-dir", "/tmp/sr"],
+        role="semantic-router",
+        kind="semantic-router",
+    )
+    assert "<string>ai.slancha.mesh.semantic-router</string>" in plist
+    assert "<string>semantic-router</string>" in plist
+    assert "<string>serve</string>" in plist
+    assert "<string>/tmp/sr</string>" in plist
+
+
 def test_launchd_plist_persists_non_secret_environment():
     plist = render_launchd_plist(
         EXEC,
@@ -202,6 +222,13 @@ def test_service_subcommand_parses_action_and_flags():
     assert args.role == "gb10"
     assert args.dry_run is True
     assert args.func is cmd_service
+
+
+def test_service_subcommand_accepts_semantic_router_kind():
+    args = build_parser().parse_args(
+        ["service", "install", "--kind", "semantic-router", "--dry-run"]
+    )
+    assert args.kind == "semantic-router"
 
 
 def test_router_kind_defaults_service_role_to_router(monkeypatch, capsys, tmp_path):

@@ -726,6 +726,29 @@ def cmd_node(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_semantic_router(args: argparse.Namespace) -> int:
+    """Manage the pinned vLLM Semantic Router front door."""
+
+    from mesh.vllm_semantic_router import (
+        DEFAULT_STATE_ROOT,
+        VllmSemanticRouterPaths,
+        run_action,
+    )
+
+    state_root = Path(args.state_dir) if args.state_dir else DEFAULT_STATE_ROOT
+    source_config = Path(args.config) if args.config else None
+    try:
+        return run_action(
+            args.action,
+            VllmSemanticRouterPaths.from_root(state_root),
+            source_config=source_config,
+            dry_run=args.dry_run,
+        )
+    except (OSError, RuntimeError, ValueError) as exc:
+        _print(f"[semantic-router] {exc}")
+        return 2
+
+
 def _sibling_tools_epilog() -> str:
     lines = ["related operator commands (installed as their own scripts):"]
     width = max(len(name) for name, _ in SIBLING_TOOLS)
@@ -872,6 +895,38 @@ def build_parser() -> argparse.ArgumentParser:
                          "(requires the [classifier] extra).")
     rt.set_defaults(func=cmd_router)
 
+    # semantic-router — supported vLLM Semantic Router front door
+    sr = sub.add_parser(
+        "semantic-router",
+        help=(
+            "Install and run pinned vLLM Semantic Router as the caller-facing "
+            "front door over the local mesh."
+        ),
+    )
+    sr.add_argument(
+        "action",
+        choices=["install", "validate", "serve", "status", "stop"],
+    )
+    sr.add_argument(
+        "--state-dir",
+        default=None,
+        help=(
+            "Runtime root (default ~/.local/state/slancha-mesh/"
+            "vllm-semantic-router)."
+        ),
+    )
+    sr.add_argument(
+        "--config",
+        default=None,
+        help="Config copied into the runtime root during install.",
+    )
+    sr.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Print exact paths and commands without changing runtime state.",
+    )
+    sr.set_defaults(func=cmd_semantic_router)
+
     # service — boot-persistent OS service (systemd / launchd / schtasks)
     svc = sub.add_parser(
         "service",
@@ -893,9 +948,12 @@ def build_parser() -> argparse.ArgumentParser:
     )
     svc.add_argument(
         "--kind",
-        choices=["node", "router"],
+        choices=["node", "router", "semantic-router"],
         default="node",
-        help="Persistent process to run: node (`up`) or router (default node).",
+        help=(
+            "Persistent process: node (`up`), internal mesh router, or "
+            "vLLM semantic-router front door (default node)."
+        ),
     )
     svc.add_argument("--dry-run", action="store_true",
                      help="Render the unit/plist/task + print the commands; touch nothing.")

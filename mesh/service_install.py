@@ -77,15 +77,25 @@ def service_label(role: str = DEFAULT_ROLE) -> str:
 
 
 def service_argv(kind: str, service_args: list[str] | None) -> list[str]:
-    """Build the exact node or router command for a persistent service."""
+    """Build the exact mesh or semantic-router command for a service."""
 
-    command = {"node": "up", "router": "router"}.get(kind)
+    command = {
+        "node": "up",
+        "router": "router",
+        "semantic-router": "semantic-router",
+    }.get(kind)
     if command is None:
-        raise ValueError(f"unknown service kind {kind!r}; expected node or router")
+        raise ValueError(
+            f"unknown service kind {kind!r}; expected node, router, or semantic-router"
+        )
     if not service_args:
-        return ["up", "--auto"] if kind == "node" else ["router"]
+        if kind == "node":
+            return ["up", "--auto"]
+        if kind == "semantic-router":
+            return ["semantic-router", "serve"]
+        return ["router"]
     args = list(service_args)
-    if args[0] in {"up", "router"}:
+    if args[0] in {"up", "router", "semantic-router"}:
         if args[0] != command:
             raise ValueError(
                 f"service kind {kind!r} cannot run {args[0]!r}; expected {command!r}"
