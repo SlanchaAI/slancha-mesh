@@ -399,7 +399,6 @@ def test_cmd_router_uses_explicit_peers_when_set(monkeypatch):
 EXPECTED_CONSOLE_SCRIPTS = {
     "slancha-mesh": ("mesh.cli", "main"),
     "slancha-mesh-validate": ("mesh.validate_card", "main"),
-    "slancha-mesh-gate": ("mesh.eval.gate", "main"),
     "mesh-gpu": ("mesh.gpu.cli", "main"),
     "mesh-doctor": ("mesh.scripts.mesh_doctor", "main"),
 }
@@ -466,7 +465,8 @@ def test_slancha_mesh_help_lists_every_operator_tool(capsys):
     # Subcommands covering install/diagnostics/routing/serve.
     for sub in ("up", "discover", "status", "doctor", "serve", "router", "gpu", "plan"):
         assert sub in help_text, f"subcommand {sub!r} missing from --help"
-    # Sibling console scripts (validation, eval gate, gpu, doctor) surfaced in
-    # the epilog so module-path-only tools are discoverable.
-    for tool in ("mesh-gpu", "mesh-doctor", "slancha-mesh-validate", "slancha-mesh-gate"):
+    # Core sibling scripts surface here. The promotion gate moved to the
+    # separately installed slancha-mesh-tune add-on.
+    for tool in ("mesh-gpu", "mesh-doctor", "slancha-mesh-validate"):
         assert tool in help_text, f"sibling tool {tool!r} missing from --help epilog"
+    assert "slancha-mesh-gate" not in help_text

@@ -308,7 +308,8 @@ def _default_cluster_fn(
         except ImportError as e:  # pragma: no cover - exercised only sans extra
             raise RuntimeError(
                 "the traffic-cluster generator needs the slancha-local substrate. "
-                'Install the loop extra:  pip install -e ".[loop]"  (bundles the '
+                'Install the loop extra: pip install "slancha-mesh-tune[loop]" '
+                '(bundles the '
                 "public slancha-local package — issue #87 decision).  Original "
                 f"import error: {e}"
             ) from e
