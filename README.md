@@ -107,6 +107,35 @@ To inspect the routing table instead of sending a prompt:
 slancha-mesh discover --peer 127.0.0.1
 ```
 
+### Usage telemetry (optional)
+
+The router can emit a neutral **usage event** per completed inference — token
+counts + routing metadata only, **never prompt or completion bodies** — to a
+receiver you run. It's **off by default**; set `SLANCHA_USAGE_SINK_URL` to turn
+it on. Events are written to a local append-only JSONL spool (off the request
+path, so telemetry never blocks or fails a completion) and a background task
+drains them at-least-once with retry/backoff; the receiver dedups on
+`request_id`.
+
+```bash
+SLANCHA_USAGE_SINK_URL=http://127.0.0.1:8977/v1/usage \
+  slancha-mesh router --peer 127.0.0.1 --port 8080
+```
+
+| Env var | Default | Meaning |
+|---|---|---|
+| `SLANCHA_USAGE_SINK_URL` | *(unset → off)* | Receiver URL. Unset = no telemetry (no spool, no drain). |
+| `SLANCHA_USAGE_SINK_TOKEN` | *(none)* | Optional bearer, sent **only** to that URL. |
+| `SLANCHA_USAGE_SPOOL_PATH` | `~/.slancha/usage-spool.jsonl` | Local spool file (mode `0600`). |
+| `SLANCHA_USAGE_DRAIN_INTERVAL_S` | `5` | Seconds between drain passes. |
+
+The event carries token **counts**, not cost — the receiver prices them (mesh
+has no pricing). The router has no per-user principal (auth is a shared node
+token), so `user_id` is the caller-asserted OpenAI `user` field when present,
+else `"unattributed"`. **If the receiver scopes this emitter's token to a fixed
+set of actors, include `"unattributed"` in it (or don't scope it)** — otherwise
+that share of usage is refused and silently dropped by the receiver.
+
 ### Which backend runs on your hardware?
 
 The planner recommends an engine per OS. The table below is what actually

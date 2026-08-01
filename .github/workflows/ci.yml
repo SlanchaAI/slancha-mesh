@@ -22,6 +22,10 @@ permissions:
 jobs:
   test:
     runs-on: ubuntu-latest
+    # Bound a hung leg: a lock-across-await regression in the spool drain would DEADLOCK
+    # the single-threaded event loop synchronously (an in-test `asyncio.wait_for` can't
+    # fire — its callback never runs), so cap the job rather than let it hang for hours.
+    timeout-minutes: 15
     strategy:
       fail-fast: false
       matrix:
@@ -42,6 +46,18 @@ jobs:
 
       - name: Lint (ruff)
         run: uv run --python ${{ matrix.python-version }} ruff check mesh/
+
+      - name: OSS boundary (no proprietary symbol in mesh source)
+        # The usage-telemetry seam (mesh/usage.py) must stay metering-NEUTRAL — a
+        # downstream consumer prices + attributes; mesh only counts. This fails the PR
+        # if a private-consumer symbol leaks into Apache-2.0 mesh production source.
+        # Word-boundary + `.py` + exclude-dir=tests avoids the tokenizer vocab
+        # ("prostate") and the boundary-guard test's own explanatory references.
+        run: |
+          if grep -rnwiI prost mesh/ --include='*.py' --exclude-dir=tests; then
+            echo "::error::proprietary symbol leaked into Apache-2.0 mesh source"; exit 1
+          fi
+          echo "OSS boundary clean"
 
       - name: Unit + integration tests
         run: uv run --python ${{ matrix.python-version }} pytest -q --tb=short
