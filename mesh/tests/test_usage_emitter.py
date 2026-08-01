@@ -312,7 +312,8 @@ def test_no_emit_when_all_bindings_fail():
     sink = _RecordSink()
     app = _app(snap, lambda req: (503, {"error": "down"}, None), usage_sink=sink)
     r = _post(TestClient(app))
-    assert r.status_code == 502 and sink.events == []  # never reached a winning completion
+    assert r.status_code == 503 and sink.events == []  # typed punt; no winning completion
+    assert r.headers["X-Slancha-Outcome"] == "punt"
 
 
 def test_no_emit_on_oversized_413(monkeypatch):

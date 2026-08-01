@@ -30,6 +30,7 @@ from mesh.models import (
     SpecialistCard,
 )
 from mesh.router_app import NODE_TOKEN_ENV, create_router_app
+from mesh.runtime_health import RouterRuntimeHealth
 
 
 # ---------------------------------------------------------------------------
@@ -109,7 +110,12 @@ def _snapshot(
     )
 
 
-def _client(snapshot: RegistrySnapshot, handler) -> TestClient:
+def _client(
+    snapshot: RegistrySnapshot,
+    handler,
+    *,
+    runtime_health: RouterRuntimeHealth | None = None,
+) -> TestClient:
     """Build a TestClient over a router app whose http_client is an AsyncMockTransport.
 
     `handler` is called per upstream request and returns either:
@@ -128,7 +134,11 @@ def _client(snapshot: RegistrySnapshot, handler) -> TestClient:
         return httpx.Response(status_code, content=payload, headers=headers or {})
 
     upstream = httpx.AsyncClient(transport=httpx.MockTransport(transport_handler))
-    app = create_router_app(snapshot_source=lambda: snapshot, http_client=upstream)
+    app = create_router_app(
+        snapshot_source=lambda: snapshot,
+        http_client=upstream,
+        runtime_health=runtime_health,
+    )
     return TestClient(app)
 
 
@@ -958,6 +968,78 @@ def test_health_is_unauthenticated_and_reports_auth_required(monkeypatch):
     assert payload["status"] == "ok"
     assert payload["auth_required"] is True
     assert payload["specialists_reachable"] == 1
+    assert payload["specialists_routable"] == 1
+
+
+def test_failed_binding_stays_discovered_but_becomes_unroutable():
+    sid = "qwen2.5-coder-7b-q4-ollama"
+    snap = _snapshot(
+        cards=[_card(specialist_id=sid)],
+        bindings={sid: [_binding(specialist_id=sid, queue_depth=3)]},
+    )
+    runtime = RouterRuntimeHealth(failure_threshold=1, cooldown_s=60)
+    upstream_calls = 0
+
+    def handler(request: httpx.Request):
+        nonlocal upstream_calls
+        upstream_calls += 1
+        return httpx.Response(503, json={"error": "busy"})
+
+    client = _client(snap, handler, runtime_health=runtime)
+    body = {"model": sid, "messages": [{"role": "user", "content": "secret"}]}
+
+    first = client.post("/v1/chat/completions", json=body)
+    second = client.post("/v1/chat/completions", json=body)
+    health = client.get("/health").json()
+
+    assert first.json()["error"]["details"]["local_attempts"] == 1
+    assert second.json()["error"]["details"]["local_attempts"] == 0
+    assert upstream_calls == 1
+    assert health["status"] == "degraded"
+    assert health["specialists_reachable"] == 1
+    assert health["specialists_routable"] == 0
+    assert health["bindings_routable"] == 0
+    assert health["queue_depth"] == 0
+    assert health["open_circuits"] == 1
+    assert health["requests_failed"] == 1
+    assert health["punts"] == 2
+    assert "secret" not in repr(health)
+
+
+def test_successful_half_open_request_restores_routable_capacity():
+    class Clock:
+        now = 10.0
+
+        def __call__(self) -> float:
+            return self.now
+
+    clock = Clock()
+    sid = "qwen2.5-coder-7b-q4-ollama"
+    snap = _snapshot(
+        cards=[_card(specialist_id=sid)],
+        bindings={sid: [_binding(specialist_id=sid)]},
+    )
+    runtime = RouterRuntimeHealth(
+        failure_threshold=1,
+        cooldown_s=5,
+        clock=clock,
+    )
+    status_codes = iter((503, 200))
+
+    def handler(request: httpx.Request):
+        return httpx.Response(next(status_codes), json={"id": "ok"})
+
+    client = _client(snap, handler, runtime_health=runtime)
+    body = {"model": sid, "messages": []}
+
+    assert client.post("/v1/chat/completions", json=body).status_code == 503
+    clock.now += 5
+    assert client.post("/v1/chat/completions", json=body).status_code == 200
+
+    health = client.get("/health").json()
+    assert health["specialists_routable"] == 1
+    assert health["open_circuits"] == 0
+    assert health["requests_succeeded"] == 1
 
 
 def test_upstream_content_type_is_allowlisted(monkeypatch):

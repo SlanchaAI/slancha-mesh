@@ -76,6 +76,7 @@ from mesh.models import (
     SpecialistCard,
 )
 from mesh.registry import MeshRegistry
+from mesh.runtime_health import RouterRuntimeHealth, binding_key
 from mesh.usage import (
     MAX_TAIL_BYTES,
     NullSink,
@@ -118,6 +119,15 @@ class AutoRouterLike(Protocol):
         self, body: dict, snapshot: RegistrySnapshot
     ) -> MeshSelectionResult:  # pragma: no cover - protocol
         ...
+
+
+class LocalRoutesExhausted(Exception):
+    """Every request-ready local binding failed before response bytes."""
+
+    def __init__(self, *, attempts: int, detail: str) -> None:
+        super().__init__(detail)
+        self.attempts = attempts
+        self.detail = detail
 
 
 # ---------------------------------------------------------------------------
@@ -492,6 +502,7 @@ async def _proxy_stream_with_fallback(
     specialist_id: str,
     upstream_body: dict,
     sink: UsageSink,
+    runtime_health: RouterRuntimeHealth,
     user_field: Any = None,
 ) -> StreamingResponse:
     """Open a streaming request, falling through the binding chain on failure.
@@ -518,7 +529,12 @@ async def _proxy_stream_with_fallback(
     """
     last_status: int | None = None
     last_detail: str | None = None
+    attempts = 0
     for idx, binding in enumerate(bindings):
+        key = binding_key(specialist_id, binding.node_id)
+        if not runtime_health.is_routable(key):
+            continue
+        attempts += 1
         upstream_url = f"{binding.node_url.rstrip('/')}/v1/chat/completions"  # type: ignore[union-attr]
         stream_ctx = client.stream(
             "POST",
@@ -531,6 +547,7 @@ async def _proxy_stream_with_fallback(
             response = await stream_ctx.__aenter__()
         except (httpx.HTTPError, OSError) as exc:
             last_detail = f"{exc.__class__.__name__} at {upstream_url}"
+            runtime_health.record_failure(key, exc.__class__.__name__)
             _log.warning(
                 "[router] stream connect to %s for %s failed: %s; trying next",
                 binding.node_id,
@@ -540,6 +557,7 @@ async def _proxy_stream_with_fallback(
             continue
         if _is_retriable_status(response.status_code):
             last_status = response.status_code
+            runtime_health.record_failure(key, f"http_{response.status_code}")
             _log.warning(
                 "[router] stream upstream %s for %s returned %d; trying next",
                 binding.node_id,
@@ -553,6 +571,10 @@ async def _proxy_stream_with_fallback(
         # stream context open until the upstream closes.
         media_type = _safe_media_type(response.headers.get("content-type"), "text/event-stream")
         upstream_status = response.status_code
+        if upstream_status >= 500:
+            runtime_health.record_failure(key, f"http_{upstream_status}")
+        elif upstream_status >= 400:
+            runtime_health.record_client_error()
         fallback_fired = idx > 0
         slancha_headers = {
             "X-Slancha-Specialist": specialist_id,
@@ -569,6 +591,7 @@ async def _proxy_stream_with_fallback(
             _t0=t0,
             _status=upstream_status,
             _fallback=fallback_fired,
+            _key=key,
         ):
             # Observe-only usage tap: the bytes yielded to the client are NEVER gated on
             # it, and every tap/emit line is guarded — a tap failure can't corrupt or
@@ -576,6 +599,7 @@ async def _proxy_stream_with_fallback(
             # caller didn't request `stream_options.include_usage`).
             first_byte_at: float | None = None
             tail = bytearray()
+            completed = False
             try:
                 async for chunk in _resp.aiter_bytes():
                     if chunk:
@@ -588,8 +612,16 @@ async def _proxy_stream_with_fallback(
                         except Exception:  # noqa: BLE001 — tap must never affect the yield
                             pass
                         yield chunk
+                completed = True
             finally:
                 await _ctx.__aexit__(None, None, None)
+                if completed and _status < 400:
+                    runtime_health.record_success(
+                        _key,
+                        latency_ms=int((time.perf_counter() - _t0) * 1000),
+                    )
+                elif not completed:
+                    runtime_health.record_failure(_key, "stream_interrupted")
                 try:
                     latency_ms = int((time.perf_counter() - _t0) * 1000)
                     ttft_ms = int((first_byte_at - _t0) * 1000) if first_byte_at else None
@@ -618,7 +650,7 @@ async def _proxy_stream_with_fallback(
         f"all {len(bindings)} reachable node(s) failed to open a stream for "
         f"{specialist_id!r}: last_status={last_status} last_error={last_detail}"
     )
-    raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=detail)
+    raise LocalRoutesExhausted(attempts=attempts, detail=detail)
 
 
 # ---------------------------------------------------------------------------
@@ -633,6 +665,7 @@ def create_router_app(
     http_client: httpx.AsyncClient | None = None,
     auto_router: AutoRouterLike | None = None,
     usage_sink: UsageSink | None = None,
+    runtime_health: RouterRuntimeHealth | None = None,
 ) -> FastAPI:
     """Build the OpenAI-compatible router app.
 
@@ -681,6 +714,7 @@ def create_router_app(
     # cli.py) is duck-typed drainable: the lifespan starts its background drain task on
     # startup and closes it on shutdown. NullSink has no start/aclose → nothing runs.
     resolved_sink: UsageSink = usage_sink or NullSink()
+    resolved_runtime = runtime_health or RouterRuntimeHealth()
 
     @asynccontextmanager
     async def _lifespan(app: FastAPI):
@@ -711,6 +745,7 @@ def create_router_app(
     app.state.snapshot_source = _snapshot
     app.state.http_client = client
     app.state.usage_sink = resolved_sink
+    app.state.runtime_health = resolved_runtime
 
     @app.get("/v1/models", summary="OpenAI-compatible list of mesh specialists")
     def list_models(
@@ -791,6 +826,7 @@ def create_router_app(
             # keeps serving concurrent requests.
             selection = await run_in_threadpool(auto_router.select, body, snap)
             if selection.specialist_id is None:
+                resolved_runtime.record_punt()
                 return punt_response(
                     code=PuntCode.NO_SUITABLE_LOCAL_ROUTE,
                     message="No healthy local specialist satisfies this request.",
@@ -807,6 +843,7 @@ def create_router_app(
             _log.info("[router] auto → %s (%s)", specialist_id, selection.reason)
 
         if specialist_id not in snap.specialists:
+            resolved_runtime.record_client_error()
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail=(
@@ -815,12 +852,29 @@ def create_router_app(
                 ),
             )
 
-        bindings = _reachable_bindings(specialist_id, snap)
-        if not bindings:
+        discovered_bindings = _reachable_bindings(specialist_id, snap)
+        if not discovered_bindings:
+            resolved_runtime.record_punt()
             return punt_response(
                 code=PuntCode.LOCAL_ROUTE_UNAVAILABLE,
                 message="The requested local specialist has no healthy binding.",
                 reason=f"no reachable node for specialist {specialist_id!r}",
+                local_attempts=0,
+                retryable=True,
+            )
+        bindings = [
+            binding
+            for binding in discovered_bindings
+            if resolved_runtime.peek_routable(
+                binding_key(specialist_id, binding.node_id)
+            )
+        ]
+        if not bindings:
+            resolved_runtime.record_punt()
+            return punt_response(
+                code=PuntCode.LOCAL_ROUTE_UNAVAILABLE,
+                message="The requested local specialist is temporarily unavailable.",
+                reason=f"all runtime circuits open for specialist {specialist_id!r}",
                 local_attempts=0,
                 retryable=True,
             )
@@ -841,16 +895,16 @@ def create_router_app(
                     specialist_id=specialist_id,
                     upstream_body=upstream_body,
                     sink=app.state.usage_sink,
+                    runtime_health=resolved_runtime,
                     user_field=user_field,
                 )
-            except HTTPException as exc:
-                if exc.status_code != status.HTTP_502_BAD_GATEWAY:
-                    raise
+            except LocalRoutesExhausted as exc:
+                resolved_runtime.record_punt()
                 return punt_response(
                     code=PuntCode.LOCAL_ROUTE_UNAVAILABLE,
                     message="Every local streaming route failed before response bytes.",
-                    reason=str(exc.detail),
-                    local_attempts=len(bindings),
+                    reason=exc.detail,
+                    local_attempts=exc.attempts,
                     retryable=True,
                 )
 
@@ -858,7 +912,12 @@ def create_router_app(
         # success wins; retriable failures fall through to the next.
         last_status: int | None = None
         last_detail: str | None = None
+        attempts = 0
         for idx, binding in enumerate(bindings):
+            key = binding_key(specialist_id, binding.node_id)
+            if not resolved_runtime.is_routable(key):
+                continue
+            attempts += 1
             upstream_url = f"{binding.node_url.rstrip('/')}/v1/chat/completions"  # type: ignore[union-attr]
             t0 = time.perf_counter()  # per-attempt; latency_ms measures the WINNING call only
             try:
@@ -869,6 +928,7 @@ def create_router_app(
                 )
             except (httpx.HTTPError, OSError) as exc:
                 last_detail = f"{exc.__class__.__name__} at {upstream_url}"
+                resolved_runtime.record_failure(key, exc.__class__.__name__)
                 _log.warning(
                     "[router] upstream %s for %s unreachable: %s; trying next",
                     binding.node_id,
@@ -878,6 +938,7 @@ def create_router_app(
                 continue
             if _is_retriable_status(upstream.status_code):
                 last_status = upstream.status_code
+                resolved_runtime.record_failure(key, f"http_{upstream.status_code}")
                 _log.warning(
                     "[router] upstream %s for %s returned %d; trying next",
                     binding.node_id,
@@ -887,6 +948,12 @@ def create_router_app(
                 continue
             # Win — forward as-is.
             latency_ms = int((time.perf_counter() - t0) * 1000)
+            if upstream.status_code >= 500:
+                resolved_runtime.record_failure(key, f"http_{upstream.status_code}")
+            elif upstream.status_code >= 400:
+                resolved_runtime.record_client_error()
+            else:
+                resolved_runtime.record_success(key, latency_ms)
             position = "primary" if idx == 0 else f"fallback#{idx}"
             slancha_headers = {
                 "X-Slancha-Specialist": specialist_id,
@@ -924,6 +991,7 @@ def create_router_app(
             return response
 
         # All bindings exhausted.
+        resolved_runtime.record_punt()
         return punt_response(
             code=PuntCode.LOCAL_ROUTE_UNAVAILABLE,
             message="Every attempted local route failed.",
@@ -932,7 +1000,7 @@ def create_router_app(
                 f"{specialist_id!r}: last_status={last_status} "
                 f"last_error={last_detail}"
             ),
-            local_attempts=len(bindings),
+            local_attempts=attempts,
             retryable=True,
         )
 
@@ -940,15 +1008,54 @@ def create_router_app(
     def health() -> JSONResponse:
         """Liveness — the one open endpoint, mirrors registry_app's posture."""
         snap = _snapshot()
+        reachable = {
+            sid: [
+                binding
+                for binding in bindings
+                if binding.health != "unreachable" and binding.node_url
+            ]
+            for sid, bindings in snap.specialists.items()
+        }
+        routable = {
+            sid: [
+                binding
+                for binding in bindings
+                if resolved_runtime.peek_routable(binding_key(sid, binding.node_id))
+            ]
+            for sid, bindings in reachable.items()
+        }
+        runtime_snapshot = resolved_runtime.snapshot()
+        specialists_reachable = sum(bool(bindings) for bindings in reachable.values())
+        specialists_routable = sum(bool(bindings) for bindings in routable.values())
+        open_circuits = int(runtime_snapshot["open_circuits"])
+        degraded_reasons: list[str] = []
+        if open_circuits:
+            degraded_reasons.append("open_circuits")
+        if specialists_routable < specialists_reachable:
+            degraded_reasons.append("bindings_not_request_ready")
         return JSONResponse(
             {
-                "status": "ok",
+                "status": "degraded" if degraded_reasons else "ok",
                 "auth_required": _expected_token() is not None,
-                "specialists_reachable": sum(
-                    1
-                    for bindings in snap.specialists.values()
-                    if any(b.health != "unreachable" and b.node_url for b in bindings)
+                "specialists_reachable": specialists_reachable,
+                "specialists_routable": specialists_routable,
+                "bindings_routable": sum(len(bindings) for bindings in routable.values()),
+                "queue_depth": sum(
+                    max(0, binding.queue_depth)
+                    for bindings in routable.values()
+                    for binding in bindings
                 ),
+                "snapshot_age_s": max(
+                    0.0,
+                    (datetime.now(timezone.utc) - snap.snapshot_ts).total_seconds(),
+                ),
+                "degraded_reasons": degraded_reasons,
+                **{
+                    key: value
+                    for key, value in runtime_snapshot.items()
+                    if key != "bindings"
+                },
+                "runtime_bindings": runtime_snapshot["bindings"],
             }
         )
 
