@@ -24,13 +24,13 @@ on:
       - "mesh/catalog/**"
       # Promotion-gate source of truth — slancha-local mirrors these; the
       # gate-parity job below fails when a change here drifts from the mirror.
-      - "mesh/eval/gate.py"
-      - "mesh/eval/runner.py"
+      - "packages/slancha-mesh-tune/mesh/eval/gate.py"
+      - "packages/slancha-mesh-tune/mesh/eval/runner.py"
       # Signing/identity sources are ALSO a cross-repo contract (slancha-local +
       # kanpai mirror their shapes). Without these a signing-only PR skipped the
       # parity workflow entirely (#128).
-      - "mesh/eval/row_sign.py"
-      - "mesh/eval/seed_verify.py"
+      - "packages/slancha-mesh-tune/mesh/eval/row_sign.py"
+      - "packages/slancha-mesh-tune/mesh/eval/seed_verify.py"
       - "mesh/identity.py"
       - ".github/workflows/cross-repo-schema-pin.yml"
   push:
@@ -88,7 +88,7 @@ jobs:
     # Validates that slancha-local's mirror of the promotion gate
     # (slancha_local.train.gate) stays in sync with the source of truth here:
     # mesh.eval.gate (GateThresholds / PromotionVerdict / append_verdict) and
-    # mesh.eval.runner.EvalPass.to_row().
+    # mesh.eval.runner.EvalPass.to_row() from the optional tune distribution.
     #
     # The guard lives in slancha-local (tests/test_gate_cross_repo_compat.py)
     # and SKIPS when slancha-mesh isn't on disk — so slancha-local's own CI,
@@ -97,10 +97,9 @@ jobs:
     # mesh PR that introduces it instead of silently passing on both sides.
     #
     # slancha-local is PUBLIC → the default GITHUB_TOKEN checks it out (no PAT).
-    # No mesh install needed: the guard AST-parses mesh's source for structural
-    # parity and imports mesh.eval.gate via sys.path for behavior parity —
-    # mesh.eval.gate is stdlib-only and mesh.models needs only pydantic, which
-    # slancha-local already pulls in (via fastapi).
+    # The guard AST-parses the tune source for structural parity. Installing
+    # core also lets the split namespace import mesh.eval.gate for behavior
+    # parity; slancha-local already supplies pydantic through fastapi.
     runs-on: ubuntu-latest
     steps:
       - name: Checkout slancha-mesh (gate source under test)
@@ -124,15 +123,16 @@ jobs:
         run: |
           pip install --upgrade pip
           pip install -e .[dev]
+          pip install -e "${{ github.workspace }}/slancha-mesh"
 
-      - name: Sanity — mesh gate source present (guard must not silently skip)
+      - name: Sanity — tune gate source present (guard must not silently skip)
         # The guard skipif's on mesh-not-on-disk; a wrong/missing checkout would
         # turn every parity test into a no-op green. Fail loud here instead.
-        run: test -f "${{ github.workspace }}/slancha-mesh/mesh/eval/gate.py"
+        run: test -f "${{ github.workspace }}/slancha-mesh/packages/slancha-mesh-tune/mesh/eval/gate.py"
 
       - name: Run gate/verdict cross-repo parity guard
         working-directory: slancha-local
         env:
-          SLANCHA_MESH_PATH: ${{ github.workspace }}/slancha-mesh
+          SLANCHA_MESH_PATH: ${{ github.workspace }}/slancha-mesh/packages/slancha-mesh-tune
         run: |
           pytest -q tests/test_gate_cross_repo_compat.py

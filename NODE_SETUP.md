@@ -95,20 +95,26 @@ wraps `slancha-mesh up`. Pass args for `up` after a literal `--`; with none it
 defaults to `up --auto`.
 
 ```bash
-slancha-mesh service install                       # up --auto, default 'node' role
-slancha-mesh service install --role gb10 -- --specialist code-7b
+slancha-mesh service install --kind node            # up --auto, default kind
+slancha-mesh service install --kind node --role gb10 -- --specialist code-7b
+slancha-mesh service install --kind router --role router -- --peer spark.example.ts.net --auto-route
+slancha-mesh service install --kind node --env SLANCHA_AUTH_REQUIRED=false -- --specialist code-7b
 slancha-mesh service install --dry-run             # print the unit/plist/task, touch nothing
 slancha-mesh service status
 slancha-mesh service uninstall
 ```
 
 The `--role` suffix names the artifact (`ai.slancha.mesh.<role>`) so one box
-can host several node services.
+can host several node services. Repeat `--env NAME=VALUE` for non-secret
+settings that must survive reboot. It is supported by systemd and launchd,
+not Windows Scheduled Tasks. Never put a token in `--env`: the rendered
+service definition is stored on disk.
 
 ### Linux — systemd `--user` unit
 
 `install` writes `~/.config/systemd/user/ai.slancha.mesh.<role>.service` and
-runs `systemctl --user enable --now`. Equivalent to the hand-written unit:
+runs `systemctl --user enable --now`. `--kind node` wraps `up`; `--kind
+router` wraps `router`. Equivalent to the hand-written node unit:
 
 ```ini
 # ~/.config/systemd/user/ai.slancha.mesh.node.service

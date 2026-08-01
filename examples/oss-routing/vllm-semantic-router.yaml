@@ -1,0 +1,36 @@
+version: v0.3
+
+listeners:
+  - name: slancha-semantic-router
+    address: 127.0.0.1
+    port: 8899
+    timeout: 300s
+
+providers:
+  defaults:
+    default_model: slancha-auto
+  models:
+    - name: slancha-auto
+      provider_model_id: auto
+      backend_refs:
+        - name: slancha-local-mesh
+          endpoint: 127.0.0.1:8080
+          protocol: http
+          weight: 100
+
+routing:
+  modelCards:
+    - name: slancha-auto
+      description: Request-ready models discovered across the local Slancha mesh.
+      capabilities: [chat, reasoning, tools]
+      tags: [local, private-fleet]
+  decisions:
+    - name: local-mesh
+      description: Send requests to the local mesh; the mesh returns a typed punt when unsuitable.
+      priority: 100
+      rules:
+        operator: AND
+        conditions: []
+      modelRefs:
+        - model: slancha-auto
+          use_reasoning: false

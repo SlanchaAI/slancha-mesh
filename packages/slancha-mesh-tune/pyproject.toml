@@ -22,8 +22,10 @@ classifiers = [
 dependencies = ["slancha-mesh==0.0.6"]
 
 [project.urls]
+Homepage = "https://github.com/SlanchaAi/slancha-mesh"
 Repository = "https://github.com/SlanchaAi/slancha-mesh"
 "Bug Tracker" = "https://github.com/SlanchaAi/slancha-mesh/issues"
+Documentation = "https://github.com/SlanchaAi/slancha-mesh/tree/main/packages/slancha-mesh-tune"
 
 [project.scripts]
 slancha-mesh-tune = "mesh.tune_cli:main"

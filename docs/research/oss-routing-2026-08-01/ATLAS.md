@@ -140,15 +140,28 @@ keeps paid execution observable. This is an architecture inference from the
 reviewed projects and local system boundaries. **Trust:** [S, cross-project
 synthesis plus local source, 88/100].
 
-## Follow-through — STATUS: ⛔ PENDING
+## Follow-through — STATUS: ✅ SHIPPED
 
 | Rank | Finding | Delivery target | Acceptance criterion | Status |
 |---:|---|---|---|---|
-| 1 | F5 typed punt | core router | real HTTP request returns stable punt body + headers; no upstream call | pending |
-| 2 | F2 passive health | core router `/health` | failed live binding becomes unroutable and later recovers | pending |
-| 3 | F1 router compatibility | docs + contract tests | vLLM SR-compatible OpenAI model list/chat flow passes | pending |
-| 4 | F3 gateway composition | example + live probe | punt consumer reaches a local OSS gateway without provider spend | pending |
-| 5 | F4 node adapter | node docs | llama-swap endpoint is represented without core dependency | pending |
+| 1 | F5 typed punt | core router | real HTTP request returns stable punt body + headers; no upstream call | shipped — real-TCP test |
+| 2 | F2 passive health | core router `/health` | failed live binding becomes unroutable and later recovers | shipped — open/suppress/half-open proof |
+| 3 | F1 router compatibility | docs + contract tests | vLLM SR-compatible OpenAI model list/chat flow passes | shipped — v0.3 config validated by released CLI |
+| 4 | F3 gateway composition | example + live probe | punt consumer reaches a local OSS gateway without provider spend | shipped — released Inference Gateway binary reached local stub |
+| 5 | F4 node adapter | node docs | llama-swap endpoint is represented without core dependency | shipped — documented OpenAI endpoint seam |
+
+Evidence on 2026-08-01:
+
+- `mesh/tests/test_router_live_socket.py` opened real TCP listeners, returned a
+  local completion, opened the circuit after two upstream 503s, suppressed the
+  next call with `local_attempts=0`, then recovered through one half-open probe.
+- `vllm-sr validate --config
+  examples/oss-routing/vllm-semantic-router.yaml` passed against vLLM Semantic
+  Router v0.3.
+- Inference Gateway's released binary, configured only with a local
+  `OLLAMA_API_URL`, listed `ollama/test-large` and returned `GATEWAY-OK` from a
+  local OpenAI-compatible stub. No provider credential or external request was
+  used.
 
 ## Primary Sources
 
@@ -159,4 +172,3 @@ synthesis plus local source, 88/100].
 - [llama-swap](https://github.com/mostlygeek/llama-swap)
 - [Kubernetes Gateway API Inference Extension](https://github.com/kubernetes-sigs/gateway-api-inference-extension)
 - [llm-d](https://github.com/llm-d/llm-d)
-

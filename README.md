@@ -2,13 +2,15 @@
 
 **Federate your local LLM nodes — Macs, GPU boxes, small homelab rigs —
 into one OpenAI-compatible endpoint with hardware-aware routing across
-specialists.**
+specialists, with a typed handoff when the local fleet cannot serve a
+request.**
 
 You probably already run Ollama or vLLM on one box. Slancha-Mesh is the
 layer on top: it discovers every node on your LAN or tailnet, learns what
 each one is good at (code / reasoning / multilingual / small-and-fast),
-and routes each prompt to the right one. No central server required (one
-is optional), and no data leaves your hardware. Apache-2.0.
+and routes each prompt to the right one. No central server is required. The
+base router never calls a cloud provider: callers may handle its explicit
+`punt` response with a gateway they control. Apache-2.0.
 
 **Status:** the discovery, routing, and heartbeat substrate is stable and
 well-tested (~1,000 unit tests plus live demos on GB10 hardware). The
@@ -42,9 +44,9 @@ existing Ollama, and routes a real prompt through the mesh.
 #    uv:  curl -LsSf https://astral.sh/uv/install.sh | sh
 git clone https://github.com/SlanchaAi/slancha-mesh.git
 cd slancha-mesh
-uv venv && source .venv/bin/activate && uv pip install -e ".[dev]"
+uv venv && source .venv/bin/activate && uv pip install -e .
 # pip-only alternative (no uv):
-# python -m venv .venv && source .venv/bin/activate && pip install -e ".[dev]"
+# python -m venv .venv && source .venv/bin/activate && pip install -e .
 
 # 2. Pull a model your hardware can serve, through your existing Ollama:
 ollama pull qwen2.5-coder:7b-instruct-q4_K_M
@@ -86,7 +88,7 @@ prompt, fully local — the model weights ship in the wheel, so this
 works air-gapped):
 
 ```bash
-pip install "slancha-mesh[classifier]"
+pip install -e ".[classifier]"  # source install; PyPI publishing is not live yet
 slancha-mesh router --peer 127.0.0.1 --port 8080 --auto-route
 
 curl -s http://localhost:8080/v1/chat/completions \
@@ -190,6 +192,29 @@ and box B is good at code. The router takes a classifier verdict and
 picks the right node from `domain` + `difficulty_tiers` + live queue
 depth + measured p95 latency.
 
+### Local-first escalation
+
+Slancha-Mesh owns local discovery and execution. It does not choose a paid
+provider or hold cloud credentials. When no suitable local route exists, or
+all eligible local bindings are temporarily unavailable, it returns HTTP 503
+with a stable machine-readable contract:
+
+```http
+X-Slancha-Outcome: punt
+X-Slancha-Reason: local_route_unavailable
+Content-Type: application/json
+
+{"error":{"type":"slancha_punt","code":"local_route_unavailable",
+"details":{"local_attempts":2,"suggested_class":"cloud","retryable":true}}}
+```
+
+The calling policy layer can queue the request, ask for consent, or make a
+new request through an external gateway. This keeps provider choice, budget,
+and credentials outside the mesh. See
+[`examples/oss-routing/`](examples/oss-routing/) for validated composition
+with vLLM Semantic Router and operational seams for Inference Gateway and
+llama-swap.
+
 See [`docs/HOMELAB.md`](docs/HOMELAB.md) for the longer walkthrough
 (2-GPU rigs, mixed Mac+Linux, fault-tolerant routing).
 
@@ -200,7 +225,8 @@ See [`docs/HOMELAB.md`](docs/HOMELAB.md) for the longer walkthrough
 | **Ollama / LM Studio** | Easy single-box model serving; great UX. | Federating *N* such boxes into one routed endpoint with hardware-aware specialist allocation. Ollama is a first-class backend here. |
 | **exo / petals** | Splits *one* model's layers across nodes for memory-bound inference. | The opposite topology: route *different models* to *different nodes*. Complementary — use exo to run one 70B split across 4 Macs; use Slancha-Mesh to size each box for a specialist and route which specialist answers. |
 | **vLLM / llama.cpp directly** | Best-in-class single-engine throughput. | The mesh treats them as backends behind one `/v1/chat/completions` seam; the engine choice happens behind that seam. |
-| **LiteLLM / OpenRouter** | Unified API across N hosted providers. | The same OpenAI-compatible surface, but every node is yours on your hardware — no third-party billing, no data egress. |
+| **Inference Gateway / LiteLLM / OpenRouter** | Unified API across hosted providers. | Private-fleet discovery and request-ready local routing. Use one as a separate, caller-authorized executor after a typed punt. |
+| **vLLM Semantic Router** | Semantic request classification and policy-driven model selection. | Tailnet/LAN discovery, backend lifecycle, and node failover. Put Semantic Router in front when its richer selector fits your workload. |
 | **llama-swap** | OpenAI-compatible proxy that hot-swaps which local model process runs on one box — good for VRAM-constrained model-juggling. | Cross-node discovery and federation: the router picks *which node* answers, not just which model is loaded on the one box. Complementary if you already run llama-swap on a node. |
 | **SGLang** | High-performance serving engine (RadixAttention prefix caching, structured output, strong tool-call throughput). | It's an engine, not an orchestrator. Backends are a pluggable seam here; SGLang is a natural fit for that seam and is on the roadmap, not yet wired. |
 
@@ -214,7 +240,9 @@ See [`docs/HOMELAB.md`](docs/HOMELAB.md) for the longer walkthrough
 | `mesh/registry.py` | Event-sourced, thread-safe, deterministic replay. |
 | `mesh/backends.py` | `VLLMBackend`, `OllamaBackend`, `LlamaCppBackend`, `MLXBackend`, `NullBackend`. The `BaseBackend` protocol is the seam — one class per engine. |
 | `mesh/serve.py` | `ServeDaemon` boots backends and runs the heartbeat loop. |
-| `mesh/select.py` | `select_mesh_route` — classifier verdict + snapshot → ranked routes with cloud fallback. |
+| `mesh/select.py` | `select_mesh_route` — classifier verdict + snapshot → ranked local routes or an escalation terminus. |
+| `mesh/escalation.py` | Stable typed-punt contract for an external policy layer or gateway. |
+| `mesh/runtime_health.py` | Bounded per-binding circuits and request-readiness counters. |
 | `mesh/allocator.py` | `model_fit_score` plus three cluster-allocation strategies. |
 | `mesh/probe.py` | Hardware/network probe with GB10 unified-memory detection. |
 | `mesh/catalog/*.toml` | 11 specialist cards (1 validated + 10 draft). |
@@ -265,7 +293,10 @@ slancha-mesh plan
 slancha-mesh doctor
 
 # Run the node boot-persistent (systemd / launchd / Windows task) — see NODE_SETUP.md
-slancha-mesh service install   # defaults to `up --auto`
+slancha-mesh service install --kind node    # defaults to `up --auto`
+slancha-mesh service install --kind router -- --peer spark.example.ts.net --auto-route
+# Trusted-LAN discovery must persist its explicit acknowledgement:
+slancha-mesh service install --kind node --env SLANCHA_AUTH_REQUIRED=false -- --specialist <id> --node-info-host 0.0.0.0
 
 # Bring up a Spark node end-to-end (probe → vLLM serve → smoke test).
 # --trust-remote-code and HF-revision pinning are opt-in (supply-chain safe by default):
@@ -398,6 +429,27 @@ slancha-api at `/mesh/v1`.
 extends slancha-api's `SelectionResult`. Call it before falling through to
 `select_model_lmarena`; on `cluster_coverage_used=False`, defer to the
 existing cloud selector.
+
+### Optional tuning add-on
+
+Fine-tuning, replay evaluation, promotion gates, and the dashboard ship as a
+separate distribution. The base daemon never imports or starts them.
+
+```bash
+pip install -e ./packages/slancha-mesh-tune
+slancha-mesh-tune check
+
+# Only on a machine intended to train:
+pip install -e "./packages/slancha-mesh-tune[train]"
+```
+
+See [`packages/slancha-mesh-tune/README.md`](packages/slancha-mesh-tune/README.md).
+
+## Project policies
+
+- [`CONTRIBUTING.md`](CONTRIBUTING.md) — development and verification
+- [`SECURITY.md`](SECURITY.md) — trust boundary and private reporting
+- [`CHANGELOG.md`](CHANGELOG.md) — release-facing changes
 
 ## License
 

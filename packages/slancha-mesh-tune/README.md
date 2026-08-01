@@ -7,7 +7,8 @@ Install this distribution only on machines that build or evaluate model
 artifacts:
 
 ```bash
-pip install "slancha-mesh-tune[train]"
+# Source install until the distribution is published to PyPI:
+pip install -e "./packages/slancha-mesh-tune[train]"
 ```
 
 The base `slancha-mesh` distribution serves, discovers, and routes models
@@ -25,4 +26,3 @@ slancha-mesh-tune dashboard -- --help
 
 `TrainingPass` still refuses its deterministic stub unless explicitly enabled.
 The base serving daemon never starts training automatically.
-

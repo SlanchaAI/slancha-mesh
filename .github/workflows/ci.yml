@@ -38,14 +38,14 @@ jobs:
         with:
           enable-cache: true
 
-      - name: Install (locked — reproducible from uv.lock)
+      - name: Install core + optional add-on (locked — reproducible from uv.lock)
         # --extra signing pulls PyNaCl so the node-identity (#102), eval-row/seed
         # signature (#104), and peer-challenge (#108) tests RUN in CI. Without it
         # they importorskip and 15 security tests silently pass-by-skipping (#125).
-        run: uv sync --extra dev --extra signing --frozen --python ${{ matrix.python-version }}
+        run: uv sync --all-packages --extra dev --extra signing --frozen --python ${{ matrix.python-version }}
 
       - name: Lint (ruff)
-        run: uv run --python ${{ matrix.python-version }} ruff check mesh/
+        run: uv run --python ${{ matrix.python-version }} ruff check mesh/ packages/slancha-mesh-tune/mesh/
 
       - name: OSS boundary (no proprietary symbol in mesh source)
         # The usage-telemetry seam (mesh/usage.py) must stay metering-NEUTRAL — a
@@ -64,6 +64,35 @@ jobs:
 
       - name: Validate catalog (substrate sanity)
         run: uv run --python ${{ matrix.python-version }} python -m mesh.validate_card --strict
+
+      - name: Add-on command smoke
+        run: uv run --python ${{ matrix.python-version }} slancha-mesh-tune check
+
+  package-boundary:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Setup uv
+        uses: astral-sh/setup-uv@v5
+
+      - name: Build both distributions
+        run: |
+          uv build --package slancha-mesh --wheel --out-dir dist/core
+          uv build --package slancha-mesh-tune --wheel --out-dir dist/tune
+
+      - name: Prove core has no tuning harness
+        run: |
+          python -m venv /tmp/slancha-core
+          /tmp/slancha-core/bin/pip install dist/core/*.whl
+          /tmp/slancha-core/bin/python -c 'import mesh.serve; import importlib.util; assert importlib.util.find_spec("mesh.training") is None'
+          ! /tmp/slancha-core/bin/slancha-mesh --help | grep -q loop
+
+      - name: Prove add-on composes with core
+        run: |
+          /tmp/slancha-core/bin/pip install --no-deps dist/tune/*.whl
+          /tmp/slancha-core/bin/slancha-mesh-tune check
+          /tmp/slancha-core/bin/python -c 'import mesh.training, mesh.eval.gate'
 
   # The docker/ registry image (the push/central-registry control plane) had
   # no CI coverage — it could bit-rot silently. Build it + smoke the live

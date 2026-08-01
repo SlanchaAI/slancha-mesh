@@ -38,6 +38,8 @@ dependencies = [
 Homepage = "https://slancha.ai"
 Repository = "https://github.com/SlanchaAi/slancha-mesh"
 "Bug Tracker" = "https://github.com/SlanchaAi/slancha-mesh/issues"
+Documentation = "https://github.com/SlanchaAi/slancha-mesh#readme"
+Changelog = "https://github.com/SlanchaAi/slancha-mesh/blob/main/CHANGELOG.md"
 
 [project.scripts]
 slancha-mesh = "mesh.cli:main"
@@ -80,7 +82,16 @@ packages = ["mesh"]
 exclude = ["mesh/tests/**", "mesh/__pycache__/**", "mesh/.runtime/**"]
 
 [tool.hatch.build.targets.sdist]
-include = ["mesh", "README.md", "LICENSE", "NOTICE", "pyproject.toml"]
+include = [
+  "mesh",
+  "README.md",
+  "LICENSE",
+  "NOTICE",
+  "CHANGELOG.md",
+  "CONTRIBUTING.md",
+  "SECURITY.md",
+  "pyproject.toml",
+]
 exclude = [
   "mesh/tests/**",
   "mesh/__pycache__/**",
