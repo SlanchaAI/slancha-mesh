@@ -447,11 +447,11 @@ def test_chat_completions_404_when_no_specialist_known():
         json={"model": "nope-7b", "messages": []},
     )
     assert r.status_code == 404
-    assert "no reachable node" in r.json()["detail"]
+    assert "unknown specialist" in r.json()["detail"]
 
 
 def test_chat_completions_404_when_only_unreachable_bindings():
-    """All bindings marked `unreachable` = same as no specialist."""
+    """A known specialist with no reachable binding punts to outer policy."""
     snap = _snapshot(
         cards=[_card(specialist_id="qwen2.5-coder-7b-q4-ollama")],
         bindings={
@@ -468,7 +468,10 @@ def test_chat_completions_404_when_only_unreachable_bindings():
         "/v1/chat/completions",
         json={"model": "qwen2.5-coder-7b-q4-ollama", "messages": []},
     )
-    assert r.status_code == 404
+    assert r.status_code == 503
+    assert r.headers["X-Slancha-Outcome"] == "punt"
+    assert r.json()["error"]["code"] == "local_route_unavailable"
+    assert r.json()["error"]["details"]["local_attempts"] == 0
 
 
 def test_chat_completions_skips_unreachable_picks_healthy_next():
@@ -499,8 +502,8 @@ def test_chat_completions_skips_unreachable_picks_healthy_next():
     assert r.headers["X-Slancha-Node"] == "live-node"
 
 
-def test_chat_completions_502_on_upstream_connect_failure():
-    """Upstream death must turn into 502, not a 5xx FastAPI traceback."""
+def test_chat_completions_punts_on_upstream_connect_failure():
+    """Exhausted local transport punts without executing a cloud request."""
     snap = _snapshot(
         cards=[_card(specialist_id="qwen2.5-coder-7b-q4-ollama")],
         bindings={
@@ -518,11 +521,11 @@ def test_chat_completions_502_on_upstream_connect_failure():
         "/v1/chat/completions",
         json={"model": "qwen2.5-coder-7b-q4-ollama", "messages": []},
     )
-    assert r.status_code == 502
-    detail = r.json()["detail"]
-    # New fallback-chain message shape ("all N reachable node(s) failed");
-    # still surfaces the underlying error class.
-    assert "failed" in detail and "ConnectError" in detail
+    assert r.status_code == 503
+    assert r.headers["X-Slancha-Outcome"] == "punt"
+    assert r.json()["error"]["code"] == "local_route_unavailable"
+    assert r.json()["error"]["details"]["local_attempts"] == 1
+    assert "ConnectError" in r.headers["X-Slancha-Reason"]
 
 
 def test_chat_completions_forwards_upstream_non_200_verbatim():
@@ -611,8 +614,8 @@ def test_chat_completions_stream_true_passes_through_sse_chunks():
     assert r.content == sse_body
 
 
-def test_chat_completions_stream_502_on_upstream_connect_failure():
-    """Streaming connect failure → same 502 contract as the non-streaming path."""
+def test_chat_completions_stream_punts_on_upstream_connect_failure():
+    """Streaming failure before response bytes uses the same typed punt."""
     snap = _snapshot(
         cards=[_card(specialist_id="qwen2.5-coder-7b-q4-ollama")],
         bindings={
@@ -634,11 +637,10 @@ def test_chat_completions_stream_502_on_upstream_connect_failure():
             "stream": True,
         },
     )
-    assert r.status_code == 502
-    detail = r.json()["detail"]
-    # New fallback-chain message shape ("all N reachable node(s) failed");
-    # still surfaces the underlying error class.
-    assert "failed" in detail and "ConnectError" in detail
+    assert r.status_code == 503
+    assert r.headers["X-Slancha-Outcome"] == "punt"
+    assert r.json()["error"]["code"] == "local_route_unavailable"
+    assert r.json()["error"]["details"]["local_attempts"] == 1
 
 
 # ---------------------------------------------------------------------------
@@ -753,9 +755,8 @@ def test_chat_completions_does_not_retry_on_4xx_client_error():
     assert upstream_calls == ["10.0.0.5"]  # NOT retried on the next node
 
 
-def test_chat_completions_502_when_all_bindings_fail():
-    """All reachable bindings 5xx / connect-fail → 502 with the last cause
-    surfaced. Detail names how many were tried."""
+def test_chat_completions_punts_when_all_bindings_fail():
+    """All local bindings fail before a response; caller gets one typed punt."""
     snap = _snapshot(
         cards=[_card(specialist_id="qwen2.5-coder-7b-q4-ollama")],
         bindings={
@@ -780,12 +781,13 @@ def test_chat_completions_502_when_all_bindings_fail():
         "/v1/chat/completions",
         json={"model": "qwen2.5-coder-7b-q4-ollama", "messages": []},
     )
-    assert r.status_code == 502
+    assert r.status_code == 503
     # All three bindings must have been tried before giving up.
     assert calls == ["10.0.0.1", "10.0.0.2", "10.0.0.3"]
-    detail = r.json()["detail"]
-    assert "all 3" in detail
-    assert "last_status=503" in detail
+    assert r.headers["X-Slancha-Outcome"] == "punt"
+    assert r.json()["error"]["code"] == "local_route_unavailable"
+    assert r.json()["error"]["details"]["local_attempts"] == 3
+    assert "last_status=503" in r.headers["X-Slancha-Reason"]
 
 
 def test_chat_completions_stream_falls_through_on_upstream_502():
@@ -1013,5 +1015,5 @@ def test_fallback_is_capped(monkeypatch):
     client = _client(snap, handler)
     r = client.post("/v1/chat/completions",
                     json={"model": "qwen2.5-coder-7b-q4-ollama", "messages": []})
-    assert r.status_code == 502          # all (capped) attempts failed
+    assert r.status_code == 503          # all (capped) local attempts punt
     assert hits["n"] == 2                # NOT 5 — fan-out capped

@@ -67,6 +67,7 @@ from fastapi.responses import JSONResponse, StreamingResponse
 from starlette.concurrency import run_in_threadpool
 
 from mesh.discovery import DiscoveryResult
+from mesh.escalation import PuntCode, punt_response
 from mesh.models import (
     MeshSelectionResult,
     NodeBinding,
@@ -790,9 +791,12 @@ def create_router_app(
             # keeps serving concurrent requests.
             selection = await run_in_threadpool(auto_router.select, body, snap)
             if selection.specialist_id is None:
-                raise HTTPException(
-                    status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-                    detail=f"auto-route found no mesh route: {selection.reason}",
+                return punt_response(
+                    code=PuntCode.NO_SUITABLE_LOCAL_ROUTE,
+                    message="No healthy local specialist satisfies this request.",
+                    reason=selection.reason,
+                    local_attempts=0,
+                    retryable=True,
                 )
             specialist_id = selection.specialist_id
             # The upstream must see the resolved id, not "auto": the rewrite
@@ -802,14 +806,23 @@ def create_router_app(
             body = {**body, "model": specialist_id}
             _log.info("[router] auto → %s (%s)", specialist_id, selection.reason)
 
-        bindings = _reachable_bindings(specialist_id, snap)
-        if not bindings:
+        if specialist_id not in snap.specialists:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail=(
-                    f"no reachable node for specialist {specialist_id!r}; "
-                    f"check `GET /v1/models` for what's currently routable."
+                    f"unknown specialist {specialist_id!r}; "
+                    "check `GET /v1/models` for available model ids."
                 ),
+            )
+
+        bindings = _reachable_bindings(specialist_id, snap)
+        if not bindings:
+            return punt_response(
+                code=PuntCode.LOCAL_ROUTE_UNAVAILABLE,
+                message="The requested local specialist has no healthy binding.",
+                reason=f"no reachable node for specialist {specialist_id!r}",
+                local_attempts=0,
+                retryable=True,
             )
         # Bound fan-out (#101): one client request retries at most this many nodes.
         bindings = bindings[:MAX_FALLBACK_ATTEMPTS]
@@ -821,14 +834,25 @@ def create_router_app(
         user_field = body.get("user")
 
         if body.get("stream") is True:
-            return await _proxy_stream_with_fallback(
-                client,
-                bindings=bindings,
-                specialist_id=specialist_id,
-                upstream_body=upstream_body,
-                sink=app.state.usage_sink,
-                user_field=user_field,
-            )
+            try:
+                return await _proxy_stream_with_fallback(
+                    client,
+                    bindings=bindings,
+                    specialist_id=specialist_id,
+                    upstream_body=upstream_body,
+                    sink=app.state.usage_sink,
+                    user_field=user_field,
+                )
+            except HTTPException as exc:
+                if exc.status_code != status.HTTP_502_BAD_GATEWAY:
+                    raise
+                return punt_response(
+                    code=PuntCode.LOCAL_ROUTE_UNAVAILABLE,
+                    message="Every local streaming route failed before response bytes.",
+                    reason=str(exc.detail),
+                    local_attempts=len(bindings),
+                    retryable=True,
+                )
 
         # Non-streaming fallback chain: try each binding in order; first
         # success wins; retriable failures fall through to the next.
@@ -900,13 +924,16 @@ def create_router_app(
             return response
 
         # All bindings exhausted.
-        raise HTTPException(
-            status_code=status.HTTP_502_BAD_GATEWAY,
-            detail=(
+        return punt_response(
+            code=PuntCode.LOCAL_ROUTE_UNAVAILABLE,
+            message="Every attempted local route failed.",
+            reason=(
                 f"all {len(bindings)} reachable node(s) failed for "
                 f"{specialist_id!r}: last_status={last_status} "
                 f"last_error={last_detail}"
             ),
+            local_attempts=len(bindings),
+            retryable=True,
         )
 
     @app.get("/health")

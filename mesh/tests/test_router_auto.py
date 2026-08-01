@@ -221,7 +221,15 @@ def test_auto_cloud_fallthrough_is_503_with_reason():
     resp = client.post("/v1/chat/completions", json=_BODY)
 
     assert resp.status_code == 503
-    assert "no mesh route" in resp.json()["detail"]
+    assert resp.headers["X-Slancha-Outcome"] == "punt"
+    assert resp.json()["error"]["type"] == "slancha_punt"
+    assert resp.json()["error"]["code"] == "no_suitable_local_route"
+    assert "no mesh route" in resp.headers["X-Slancha-Reason"]
+    assert resp.json()["error"]["details"] == {
+        "local_attempts": 0,
+        "suggested_class": "cloud",
+        "retryable": True,
+    }
     assert seen == []
 
 
