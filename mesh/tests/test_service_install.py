@@ -21,6 +21,7 @@ from mesh.service_install import (
     render_launchd_plist,
     render_systemd_unit,
     render_windows_task_command,
+    service_argv,
     service_label,
     up_argv,
 )
@@ -36,6 +37,18 @@ EXEC = "/home/u/.local/bin/slancha-mesh"
 def test_up_argv_defaults_to_auto_and_passes_through():
     assert up_argv(None) == ["up", "--auto"]
     assert up_argv(["up", "--specialist", "x"]) == ["up", "--specialist", "x"]
+
+
+def test_service_argv_prefixes_role_command_and_preserves_old_full_argv():
+    assert service_argv("node", ["--specialist", "x"]) == ["up", "--specialist", "x"]
+    assert service_argv("router", ["--peer", "spark", "--port", "8080"]) == [
+        "router",
+        "--peer",
+        "spark",
+        "--port",
+        "8080",
+    ]
+    assert service_argv("node", ["up", "--auto"]) == ["up", "--auto"]
 
 
 def test_service_label_reverse_dns():
@@ -54,6 +67,17 @@ def test_systemd_unit_has_execstart_with_exec_and_args():
 def test_systemd_unit_defaults_to_up_auto():
     unit = render_systemd_unit(EXEC, None)
     assert f"ExecStart={EXEC} up --auto" in unit
+
+
+def test_systemd_unit_can_run_router_role():
+    unit = render_systemd_unit(
+        EXEC,
+        ["--peer", "spark", "--port", "8080"],
+        role="router",
+        kind="router",
+    )
+    assert f"ExecStart={EXEC} router --peer spark --port 8080" in unit
+    assert "Description=slancha-mesh router (router)" in unit
 
 
 def test_launchd_plist_has_program_arguments_vector():
@@ -75,6 +99,18 @@ def test_launchd_plist_is_xml_parseable():
 
     plist = render_launchd_plist(EXEC, None, role="node")
     minidom.parseString(plist)  # raises on malformed XML
+
+
+def test_launchd_plist_can_keep_router_alive():
+    plist = render_launchd_plist(
+        EXEC,
+        ["--peer", "spark", "--port", "8080"],
+        role="router",
+        kind="router",
+    )
+    assert "<string>router</string>" in plist
+    assert "<string>--peer</string>" in plist
+    assert "<string>spark</string>" in plist
 
 
 def test_windows_task_command_has_onstart_and_tr_with_args():
@@ -127,8 +163,11 @@ def test_unknown_os_raises_unsupported_not_crash():
 
 
 def test_service_subcommand_parses_action_and_flags():
-    args = build_parser().parse_args(["service", "install", "--role", "gb10", "--dry-run"])
+    args = build_parser().parse_args(
+        ["service", "install", "--kind", "router", "--role", "gb10", "--dry-run"]
+    )
     assert args.action == "install"
+    assert args.kind == "router"
     assert args.role == "gb10"
     assert args.dry_run is True
     assert args.func is cmd_service
@@ -142,9 +181,17 @@ def test_service_passthrough_after_double_dash_routes_to_up_args(monkeypatch):
     monkeypatch.setattr("mesh.cli._resolve_exec_path", lambda: EXEC)
     seen = {}
 
-    def fake_build(os_name, exec_path, up_args=None, role="node", home=None):
+    def fake_build(
+        os_name,
+        exec_path,
+        up_args=None,
+        role="node",
+        home=None,
+        kind="node",
+    ):
         seen["up_args"] = up_args
         seen["role"] = role
+        seen["kind"] = kind
         raise UnsupportedOSError("stop before side effects")
 
     monkeypatch.setattr("mesh.cli.build_service_plan", fake_build, raising=False)
@@ -155,7 +202,8 @@ def test_service_passthrough_after_double_dash_routes_to_up_args(monkeypatch):
     rc = main(["service", "install", "--role", "gb10", "--", "--specialist", "code-7b"])
     assert rc == 2  # UnsupportedOSError → clean exit
     assert seen["role"] == "gb10"
-    assert seen["up_args"] == ["up", "--specialist", "code-7b"]
+    assert seen["kind"] == "node"
+    assert seen["up_args"] == ["--specialist", "code-7b"]
 
 
 def test_service_install_dry_run_renders_but_does_not_install(monkeypatch, capsys, tmp_path):

@@ -567,7 +567,7 @@ def _resolve_exec_path() -> str:
 
 
 def cmd_service(args: argparse.Namespace) -> int:
-    """Install / uninstall / status of a boot-persistent node service.
+    """Install / uninstall / status of a boot-persistent node or router.
 
     THIN wrapper: renders the OS-specific unit/plist/task for
     `slancha-mesh up <pass-through args>` via mesh.service_install (pure
@@ -585,12 +585,17 @@ def cmd_service(args: argparse.Namespace) -> int:
 
     os_name = current_os()
     exec_path = _resolve_exec_path()
-    # Trailing args (after the action) are forwarded to `slancha-mesh up`.
-    up_args = ["up", *args.up_args] if args.up_args else None
+    service_args = args.up_args or None
 
     try:
-        plan = build_service_plan(os_name, exec_path, up_args=up_args, role=args.role)
-    except UnsupportedOSError as exc:
+        plan = build_service_plan(
+            os_name,
+            exec_path,
+            up_args=service_args,
+            role=args.role,
+            kind=args.kind,
+        )
+    except (UnsupportedOSError, ValueError) as exc:
         _print(f"[service] {exc}")
         return 2
 
@@ -642,7 +647,7 @@ def cmd_service(args: argparse.Namespace) -> int:
         # launchd's pre-unload (idempotency) is allowed to fail on a fresh
         # install; the subsequent load is the one that matters.
         subprocess.call(cmd)
-    _print("[service] installed. The node will start on boot.")
+    _print(f"[service] installed. The {args.kind} will start on boot.")
     return 0
 
 
@@ -865,14 +870,19 @@ def build_parser() -> argparse.ArgumentParser:
                      help="install (default happy path), uninstall, or status.")
     svc.add_argument("--role", default="node",
                      help="Service role suffix → label ai.slancha.mesh.<role> (default 'node').")
+    svc.add_argument(
+        "--kind",
+        choices=["node", "router"],
+        default="node",
+        help="Persistent process to run: node (`up`) or router (default node).",
+    )
     svc.add_argument("--dry-run", action="store_true",
                      help="Render the unit/plist/task + print the commands; touch nothing.")
-    # Args forwarded to `slancha-mesh up` go after a literal `--` so they
+    # Args forwarded to the selected `slancha-mesh` command go after `--` so they
     # don't collide with `service`'s own flags, e.g.
-    #   slancha-mesh service install --role gb10 -- --specialist code-7b
+    #   slancha-mesh service install --kind router --role router -- --port 8080
     # main() splits argv on the first `--` and stashes the tail in `up_args`
-    # before argparse runs (argparse can't reliably route a flag-bearing
-    # passthrough past a preceding optional). Default empty = `up --auto`.
+    # before argparse runs. Default node args = `up --auto`; router = `router`.
     svc.set_defaults(func=cmd_service, up_args=[])
 
     return ap
@@ -881,7 +891,7 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     if argv is None:
         argv = sys.argv[1:]
-    # `service` forwards everything after a literal `--` to `slancha-mesh up`.
+    # `service` forwards everything after `--` to its selected mesh command.
     # Split it out before argparse so a flag-bearing passthrough (e.g.
     # `service install -- --specialist x`) can't collide with `service`'s own
     # flags or get swallowed by a REMAINDER positional.
