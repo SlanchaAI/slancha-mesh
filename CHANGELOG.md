@@ -22,3 +22,9 @@ and intends to use semantic versioning after the alpha interface settles.
 
 - Service pass-through arguments now retain the required `up` or `router`
   subcommand.
+- Automatic routing filters open circuits before specialist selection and
+  preserves the selector's chosen node as the primary binding.
+- Router services default to their own artifact name, and service installation
+  returns nonzero when registration or startup fails.
+- `slancha-mesh-tune dashboard` now launches a real Streamlit server and exits
+  cleanly on interruption.

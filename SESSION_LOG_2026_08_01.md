@@ -113,7 +113,7 @@ Full OSS research and trust priors:
 
 ## Verification
 
-- Combined suite: `1118 passed, 16 skipped`; six expected warnings exercise
+- Combined suite: `1125 passed, 16 skipped`; six expected warnings exercise
   the optional tuning stub and label it as non-training.
 - Ruff: core and add-on clean.
 - Strict catalog: 17 cards clean.
@@ -134,6 +134,23 @@ Full OSS research and trust priors:
   symbols, 32 flows. This is expected for the package split and request-path
   change; focused blast-radius checks rated the service environment path LOW
   and the route path HIGH. Full and live gates above cover the affected flows.
+
+## Fresh-eyes review closure
+
+An independent semantic reviewer found five majors after the first green gate.
+All were reproduced and fixed before handoff:
+
+- automatic routing now filters open circuits before choosing a specialist;
+- the router preserves the selector's chosen node ahead of snapshot order;
+- router services default to `ai.slancha.mesh.router` instead of overwriting the
+  node unit;
+- failed systemd, launchd, or Scheduled Task registration returns nonzero and
+  does not print a false success message;
+- `slancha-mesh-tune dashboard` launches Streamlit through its supported entry
+  path and reports a missing dashboard extra without a traceback.
+
+Seven focused regressions cover these findings. A real dashboard process then
+served Streamlit health `ok` and HTTP 200 on port 18983 before clean shutdown.
 
 ## Publication status and remaining work
 
