@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import argparse
 import importlib.util
+import subprocess
 import sys
+from pathlib import Path
 
 
 def _check() -> int:
@@ -35,20 +37,30 @@ def main(argv: list[str] | None = None) -> int:
             parser.error("check accepts no additional arguments")
         return _check()
 
-    try:
-        from mesh.dashboard.streamlit_app import render
-    except ImportError as exc:
+    if importlib.util.find_spec("streamlit") is None:
         print(
-            "dashboard needs slancha-mesh-tune[dashboard]: " + str(exc),
+            "dashboard needs slancha-mesh-tune[dashboard]",
             file=sys.stderr,
         )
         return 1
     if remainder[:1] == ["--"]:
         remainder = remainder[1:]
-    render(remainder)
-    return 0
+    app_path = Path(__file__).with_name("dashboard") / "streamlit_app.py"
+    try:
+        return subprocess.call(
+            [
+                sys.executable,
+                "-m",
+                "streamlit",
+                "run",
+                str(app_path),
+                "--",
+                *remainder,
+            ]
+        )
+    except KeyboardInterrupt:
+        return 130
 
 
 if __name__ == "__main__":
     raise SystemExit(main())
-

@@ -21,7 +21,9 @@ Useful commands:
 ```bash
 slancha-mesh-tune check
 slancha-mesh-gate --help
-slancha-mesh-tune dashboard -- --help
+
+pip install -e "./packages/slancha-mesh-tune[dashboard]"
+slancha-mesh-tune dashboard -- --operator ./dashboard
 ```
 
 `TrainingPass` still refuses its deterministic stub unless explicitly enabled.

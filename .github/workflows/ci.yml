@@ -66,7 +66,12 @@ jobs:
         run: uv run --python ${{ matrix.python-version }} python -m mesh.validate_card --strict
 
       - name: Add-on command smoke
-        run: uv run --python ${{ matrix.python-version }} slancha-mesh-tune check
+        run: |
+          uv run --python ${{ matrix.python-version }} slancha-mesh-tune check
+          if uv run --python ${{ matrix.python-version }} slancha-mesh-tune dashboard 2>dashboard.err; then
+            echo "::error::dashboard started without its optional extra"; exit 1
+          fi
+          grep -q 'slancha-mesh-tune\[dashboard\]' dashboard.err
 
   package-boundary:
     runs-on: ubuntu-latest
