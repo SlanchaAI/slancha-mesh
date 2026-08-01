@@ -3,7 +3,7 @@ version: v0.3
 listeners:
   - name: slancha-semantic-router
     address: 127.0.0.1
-    port: 8899
+    port: 8888
     timeout: 300s
 
 providers:
@@ -12,9 +12,10 @@ providers:
   models:
     - name: slancha-auto
       provider_model_id: auto
+      api_format: openai
       backend_refs:
         - name: slancha-local-mesh
-          endpoint: 127.0.0.1:8080
+          endpoint: host.docker.internal:8080
           protocol: http
           weight: 100
 

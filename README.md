@@ -1,16 +1,17 @@
 # Slancha-Mesh
 
 **Federate your local LLM nodes — Macs, GPU boxes, small homelab rigs —
-into one OpenAI-compatible endpoint with hardware-aware routing across
-specialists, with a typed handoff when the local fleet cannot serve a
-request.**
+into one OpenAI-compatible endpoint behind vLLM Semantic Router, with
+request-ready fleet routing and a typed handoff when local models cannot serve
+a request.**
 
 You probably already run Ollama or vLLM on one box. Slancha-Mesh is the
-layer on top: it discovers every node on your LAN or tailnet, learns what
+fleet layer underneath: it discovers every node on your LAN or tailnet, learns what
 each one is good at (code / reasoning / multilingual / small-and-fast),
-and routes each prompt to the right one. No central server is required. The
-base router never calls a cloud provider: callers may handle its explicit
-`punt` response with a gateway they control. Apache-2.0.
+and routes each selected model to a request-ready node. vLLM Semantic Router
+owns caller-facing semantic policy. No central registry is required. The base
+mesh never calls a cloud provider: callers may handle its explicit `punt`
+response with a gateway they control. Apache-2.0.
 
 **Status:** the discovery, routing, and heartbeat substrate is stable and
 well-tested (~1,000 unit tests plus live demos on GB10 hardware). The
@@ -21,7 +22,7 @@ validation status.
 
 ## How it works
 
-Slancha-Mesh has three pieces:
+The supported stack has four pieces:
 
 - **Nodes** run your models on your hardware (through Ollama, vLLM,
   llama.cpp, or MLX) and expose both an OpenAI-compatible endpoint and a
@@ -29,10 +30,12 @@ Slancha-Mesh has three pieces:
 - **Discovery** builds a routing table by pulling each node's
   self-description — over your LAN (an explicit `--peer` list) or a
   Tailscale / Headscale tailnet.
-- **The router** presents one OpenAI `/v1` endpoint. For each request it
+- **The Mesh router** is the internal OpenAI backend. For each request it
   looks up the target specialist, picks the best reachable node — using
   live queue depth and measured p95 latency to break ties — and proxies
   the call, falling through to the next node on failure.
+- **vLLM Semantic Router** presents the caller-facing OpenAI endpoint and owns
+  semantic signals, decisions, model cards, and policy.
 
 ## Quickstart — one box, Ollama already installed
 
@@ -54,14 +57,20 @@ ollama pull qwen2.5-coder:7b-instruct-q4_K_M
 # 3. Start the node — adopts your running Ollama daemon, serves node-info on :8088.
 slancha-mesh up --specialist qwen2.5-coder-7b-q4-ollama
 
-# 4. In another terminal: a drop-in OpenAI /v1 endpoint over your mesh.
+# 4. In another terminal: internal OpenAI backend over your mesh.
 slancha-mesh router --peer 127.0.0.1 --port 8080
 
-# 5. In a third terminal: ask a question — same shape as api.openai.com /v1.
-curl -s http://localhost:8080/v1/chat/completions \
+# 5. Install the pinned vLLM Semantic Router v0.3.0 front door.
+#    Its supported macOS/Linux local runtime uses Docker.
+slancha-mesh semantic-router install
+slancha-mesh semantic-router validate
+slancha-mesh semantic-router serve
+
+# 6. Ask through the caller-facing router — same shape as api.openai.com /v1.
+curl -s http://localhost:8888/v1/chat/completions \
   -H 'Content-Type: application/json' \
   -d '{
-    "model": "qwen2.5-coder-7b-q4-ollama",
+    "model": "MoM",
     "messages": [{"role":"user","content":"reverse a string in python"}]
   }' | jq -r '.choices[0].message.content'
 ```
@@ -75,17 +84,15 @@ You can reverse a string in Python with a slice:
     print(s[::-1])   # 'olleh'
 ```
 
-That response came back from `localhost:8080` — your local router
-discovered the node and proxied the prompt to the model on your own
-Ollama daemon. No cloud, no API key, one box.
+That response came back from `localhost:8888`: vLLM Semantic Router selected
+the mesh model, then the internal Mesh router discovered the node and proxied
+the prompt to Ollama. No cloud, no API key, one box.
 
-### Let the router pick the model
+### Direct Mesh mode without Docker
 
-Install the classifier extra and start the router with `--auto-route`;
-then `model: "auto"` routes each prompt by classified domain and
-difficulty (a built-in mmBERT-small + treelite classifier, ~ms per
-prompt, fully local — the model weights ship in the wheel, so this
-works air-gapped):
+The built-in classifier remains available for air-gapped or minimal installs
+that cannot run vLLM Semantic Router's Docker runtime. It is a compatibility
+path, not the recommended semantic policy layer:
 
 ```bash
 pip install -e ".[classifier]"  # source install; PyPI publishing is not live yet
@@ -212,7 +219,7 @@ The calling policy layer can queue the request, ask for consent, or make a
 new request through an external gateway. This keeps provider choice, budget,
 and credentials outside the mesh. See
 [`examples/oss-routing/`](examples/oss-routing/) for validated composition
-with vLLM Semantic Router and operational seams for Inference Gateway and
+with the supported vLLM Semantic Router front door and operational seams for Inference Gateway and
 llama-swap.
 
 See [`docs/HOMELAB.md`](docs/HOMELAB.md) for the longer walkthrough
@@ -226,7 +233,7 @@ See [`docs/HOMELAB.md`](docs/HOMELAB.md) for the longer walkthrough
 | **exo / petals** | Splits *one* model's layers across nodes for memory-bound inference. | The opposite topology: route *different models* to *different nodes*. Complementary — use exo to run one 70B split across 4 Macs; use Slancha-Mesh to size each box for a specialist and route which specialist answers. |
 | **vLLM / llama.cpp directly** | Best-in-class single-engine throughput. | The mesh treats them as backends behind one `/v1/chat/completions` seam; the engine choice happens behind that seam. |
 | **Inference Gateway / LiteLLM / OpenRouter** | Unified API across hosted providers. | Private-fleet discovery and request-ready local routing. Use one as a separate, caller-authorized executor after a typed punt. |
-| **vLLM Semantic Router** | Semantic request classification and policy-driven model selection. | Tailnet/LAN discovery, backend lifecycle, and node failover. Put Semantic Router in front when its richer selector fits your workload. |
+| **vLLM Semantic Router** | The supported front door: semantic request classification and policy-driven model selection. | Tailnet/LAN discovery, backend lifecycle, and node failover behind that front door. |
 | **llama-swap** | OpenAI-compatible proxy that hot-swaps which local model process runs on one box — good for VRAM-constrained model-juggling. | Cross-node discovery and federation: the router picks *which node* answers, not just which model is loaded on the one box. Complementary if you already run llama-swap on a node. |
 | **SGLang** | High-performance serving engine (RadixAttention prefix caching, structured output, strong tool-call throughput). | It's an engine, not an orchestrator. Backends are a pluggable seam here; SGLang is a natural fit for that seam and is on the roadmap, not yet wired. |
 
@@ -243,6 +250,7 @@ See [`docs/HOMELAB.md`](docs/HOMELAB.md) for the longer walkthrough
 | `mesh/select.py` | `select_mesh_route` — classifier verdict + snapshot → ranked local routes or an escalation terminus. |
 | `mesh/escalation.py` | Stable typed-punt contract for an external policy layer or gateway. |
 | `mesh/runtime_health.py` | Bounded per-binding circuits and request-readiness counters. |
+| `mesh/vllm_semantic_router.py` | Pinned vLLM Semantic Router install, validation, lifecycle, and rollback tooling. |
 | `mesh/allocator.py` | `model_fit_score` plus three cluster-allocation strategies. |
 | `mesh/probe.py` | Hardware/network probe with GB10 unified-memory detection. |
 | `mesh/catalog/*.toml` | 11 specialist cards (1 validated + 10 draft). |
