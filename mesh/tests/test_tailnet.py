@@ -165,3 +165,33 @@ def test_from_env_reads_overrides(monkeypatch):
     assert cfg.control_plane == "headscale"
     assert cfg.login_server == "https://hs.example"
     assert cfg.tags == ["tag:specialist", "tag:gpu"]
+
+
+def test_advertise_host_alone_stays_lan_mode(monkeypatch):
+    # --advertise-host without --key/--tailnet must NOT enable tailnet:
+    # a LAN node (explicit --peer discovery) advertises its LAN hostname
+    # without being forced through ensure_joined.
+    import argparse
+
+    from mesh.cli import _tailnet_from_args
+
+    import os as _os
+    for k in list(_os.environ):
+        if k.startswith("SLANCHA_TAILNET_"):
+            monkeypatch.delenv(k, raising=False)
+    args = argparse.Namespace(key=None, tailnet=False,
+                              advertise_host="spark-472e",
+                              control_plane=None, login_server=None)
+    cfg = _tailnet_from_args(args)
+    assert cfg.enabled is False
+    assert cfg.advertise_host == "spark-472e"
+
+
+def test_build_daemon_lan_advertise(monkeypatch):
+    # Disabled tailnet + explicit advertise_host -> backends bind wide and
+    # the daemon advertises the LAN name (build_daemon LAN branch).
+    from mesh.serve import build_daemon
+
+    cfg = TailnetConfig(enabled=False, advertise_host="spark-472e")
+    daemon = build_daemon(specialist_ids=[], tailnet=cfg)
+    assert daemon.advertise_host == "spark-472e"

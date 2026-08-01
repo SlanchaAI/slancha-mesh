@@ -50,17 +50,21 @@ NODE_TOKEN_ENV = "SLANCHA_NODE_TOKEN"
 def _tailnet_from_args(args: argparse.Namespace) -> TailnetConfig:
     """Build a TailnetConfig from env defaults + CLI overrides.
 
-    Tailnet is enabled when any tailnet-shaped flag is present (a key, an
-    explicit advertise host, or --tailnet), else falls back to the
-    SLANCHA_TAILNET_* env defaults.
+    Tailnet is enabled when a tailnet-shaped flag is present (a key or
+    --tailnet), else falls back to the SLANCHA_TAILNET_* env defaults.
+    --advertise-host alone does NOT enable tailnet: a LAN node (explicit
+    --peer discovery, no tailscale) must be able to advertise its LAN
+    hostname without being forced through ensure_joined.
     """
     cfg = TailnetConfig.from_env()
-    want = bool(getattr(args, "key", None) or getattr(args, "advertise_host", None) or getattr(args, "tailnet", False))
+    advertise = getattr(args, "advertise_host", None)
+    if advertise:
+        cfg = replace(cfg, advertise_host=advertise)
+    want = bool(getattr(args, "key", None) or getattr(args, "tailnet", False))
     if want:
         cfg = replace(
             cfg,
             enabled=True,
-            advertise_host=getattr(args, "advertise_host", None) or cfg.advertise_host,
             control_plane=getattr(args, "control_plane", None) or cfg.control_plane,
             login_server=getattr(args, "login_server", None) or cfg.login_server,
         )

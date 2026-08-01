@@ -555,6 +555,12 @@ def build_daemon(
     if tailnet is not None and tailnet.enabled:
         bind_host = tailnet.bind_host
         advertise_host = resolve_advertise_host(tailnet)
+    elif tailnet is not None and tailnet.advertise_host:
+        # LAN mode: an explicit advertise host without tailnet membership.
+        # Bind wide so LAN peers can dial, and advertise the given name —
+        # the operator owns reachability (hosts file / LAN DNS / .local).
+        bind_host = tailnet.bind_host
+        advertise_host = tailnet.advertise_host
 
     backends: list[BaseBackend] = []
     port = base_port
