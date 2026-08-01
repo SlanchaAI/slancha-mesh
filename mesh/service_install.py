@@ -28,6 +28,7 @@ Windows mechanism choice — `schtasks` ONSTART scheduled task:
 from __future__ import annotations
 
 import platform
+import re
 import shlex
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -36,6 +37,7 @@ from xml.sax.saxutils import escape as _xml_escape
 # Reverse-DNS prefix for launchd labels and the Windows task path.
 LABEL_PREFIX = "ai.slancha.mesh"
 DEFAULT_ROLE = "node"
+_ENV_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
 
 @dataclass(frozen=True)
@@ -92,6 +94,24 @@ def service_argv(kind: str, service_args: list[str] | None) -> list[str]:
     return [command, *args]
 
 
+def parse_service_environment(assignments: list[str] | None) -> dict[str, str]:
+    """Parse repeatable non-secret ``NAME=VALUE`` service settings."""
+
+    environment: dict[str, str] = {}
+    for assignment in assignments or []:
+        name, separator, value = assignment.partition("=")
+        if not separator:
+            raise ValueError(f"service environment must use NAME=VALUE: {assignment!r}")
+        if not _ENV_NAME.fullmatch(name):
+            raise ValueError(f"invalid environment name {name!r}")
+        if "\x00" in value or "\n" in value or "\r" in value:
+            raise ValueError(
+                f"service environment value for {name!r} contains a newline or NUL"
+            )
+        environment[name] = value
+    return environment
+
+
 def up_argv(up_args: list[str] | None) -> list[str]:
     """The mesh subcommand the service runs. Defaults to `up --auto` (the
     same happy-path NODE_SETUP.md documents). A non-empty `up_args` replaces
@@ -110,6 +130,7 @@ def render_systemd_unit(
     role: str = DEFAULT_ROLE,
     *,
     kind: str = "node",
+    environment: dict[str, str] | None = None,
 ) -> str:
     """Render a systemd --user unit running `<exec_path> up <args>`.
 
@@ -119,6 +140,10 @@ def render_systemd_unit(
     """
     argv = service_argv(kind, up_args)
     exec_start = " ".join([shlex.quote(exec_path), *(shlex.quote(a) for a in argv)])
+    environment_lines = ""
+    for name, value in sorted((environment or {}).items()):
+        escaped = value.replace("\\", "\\\\").replace('"', '\\"').replace("%", "%%")
+        environment_lines += f'Environment="{name}={escaped}"\n'
     return (
         "[Unit]\n"
         f"Description=slancha-mesh {kind} ({role})\n"
@@ -128,6 +153,7 @@ def render_systemd_unit(
         "\n"
         "[Service]\n"
         "Type=simple\n"
+        f"{environment_lines}"
         f"ExecStart={exec_start}\n"
         "Restart=on-failure\n"
         "RestartSec=15\n"
@@ -143,6 +169,7 @@ def _plan_linux(
     role: str,
     home: Path,
     kind: str,
+    environment: dict[str, str],
 ) -> ServicePlan:
     label = service_label(role)
     unit_name = f"{label}.service"
@@ -151,7 +178,9 @@ def _plan_linux(
     return ServicePlan(
         os_name="Linux",
         label=label,
-        text=render_systemd_unit(exec_path, up_args, role, kind=kind),
+        text=render_systemd_unit(
+            exec_path, up_args, role, kind=kind, environment=environment
+        ),
         path=path,
         install_cmds=[
             ["systemctl", "--user", "daemon-reload"],
@@ -176,6 +205,7 @@ def render_launchd_plist(
     role: str = DEFAULT_ROLE,
     *,
     kind: str = "node",
+    environment: dict[str, str] | None = None,
 ) -> str:
     """Render a launchd LaunchAgent plist running `<exec_path> up <args>`.
 
@@ -186,6 +216,19 @@ def render_launchd_plist(
     label = service_label(role)
     argv = [exec_path, *service_argv(kind, up_args)]
     args_xml = "\n".join(f"        <string>{_xml_escape(a)}</string>" for a in argv)
+    environment_xml = ""
+    if environment:
+        pairs = "\n".join(
+            f"        <key>{_xml_escape(name)}</key>\n"
+            f"        <string>{_xml_escape(value)}</string>"
+            for name, value in sorted(environment.items())
+        )
+        environment_xml = (
+            "    <key>EnvironmentVariables</key>\n"
+            "    <dict>\n"
+            f"{pairs}\n"
+            "    </dict>\n"
+        )
     return (
         '<?xml version="1.0" encoding="UTF-8"?>\n'
         '<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" '
@@ -198,6 +241,7 @@ def render_launchd_plist(
         "    <array>\n"
         f"{args_xml}\n"
         "    </array>\n"
+        f"{environment_xml}"
         "    <key>RunAtLoad</key>\n"
         "    <true/>\n"
         "    <key>KeepAlive</key>\n"
@@ -215,13 +259,16 @@ def _plan_macos(
     role: str,
     home: Path,
     kind: str,
+    environment: dict[str, str],
 ) -> ServicePlan:
     label = service_label(role)
     path = home / "Library" / "LaunchAgents" / f"{label}.plist"
     return ServicePlan(
         os_name="Darwin",
         label=label,
-        text=render_launchd_plist(exec_path, up_args, role, kind=kind),
+        text=render_launchd_plist(
+            exec_path, up_args, role, kind=kind, environment=environment
+        ),
         path=path,
         # `launchctl unload` first makes install idempotent (load fails if
         # already loaded). The handler tolerates the unload failing on a
@@ -279,7 +326,13 @@ def _plan_windows(
     role: str,
     home: Path,
     kind: str,
+    environment: dict[str, str],
 ) -> ServicePlan:
+    if environment:
+        raise ValueError(
+            "--env is not supported for Windows Scheduled Tasks; configure "
+            "machine environment variables before installing the task"
+        )
     label = service_label(role)
     tr = " ".join(
         [_win_quote(exec_path), *(_win_quote(a) for a in service_argv(kind, up_args))]
@@ -310,6 +363,7 @@ def build_service_plan(
     role: str = DEFAULT_ROLE,
     home: Path | None = None,
     kind: str = "node",
+    environment: dict[str, str] | None = None,
 ) -> ServicePlan:
     """Pure dispatcher: pick the renderer for `os_name` and return a ServicePlan.
 
@@ -318,13 +372,14 @@ def build_service_plan(
     Unknown OS → UnsupportedOSError (the CLI turns this into a clean message).
     """
     home = home or Path.home()
+    resolved_environment = environment or {}
     key = (os_name or "").strip().lower()
     if key == "linux":
-        return _plan_linux(exec_path, up_args, role, home, kind)
+        return _plan_linux(exec_path, up_args, role, home, kind, resolved_environment)
     if key == "darwin":
-        return _plan_macos(exec_path, up_args, role, home, kind)
+        return _plan_macos(exec_path, up_args, role, home, kind, resolved_environment)
     if key == "windows":
-        return _plan_windows(exec_path, up_args, role, home, kind)
+        return _plan_windows(exec_path, up_args, role, home, kind, resolved_environment)
     raise UnsupportedOSError(
         f"no service-install path for OS {os_name!r}. "
         "Supported: Linux (systemd), Darwin (launchd), Windows (schtasks). "

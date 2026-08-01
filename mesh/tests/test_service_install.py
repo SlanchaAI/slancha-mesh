@@ -18,6 +18,7 @@ from mesh.cli import build_parser, cmd_service, main
 from mesh.service_install import (
     UnsupportedOSError,
     build_service_plan,
+    parse_service_environment,
     render_launchd_plist,
     render_systemd_unit,
     render_windows_task_command,
@@ -80,6 +81,25 @@ def test_systemd_unit_can_run_router_role():
     assert "Description=slancha-mesh router (router)" in unit
 
 
+def test_systemd_unit_persists_non_secret_environment():
+    unit = render_systemd_unit(
+        EXEC,
+        ["--specialist", "code-7b"],
+        environment={"SLANCHA_AUTH_REQUIRED": "false"},
+    )
+    assert 'Environment="SLANCHA_AUTH_REQUIRED=false"' in unit
+
+
+def test_service_environment_parser_rejects_malformed_assignments():
+    assert parse_service_environment(["SLANCHA_AUTH_REQUIRED=false"]) == {
+        "SLANCHA_AUTH_REQUIRED": "false"
+    }
+    with pytest.raises(ValueError, match="NAME=VALUE"):
+        parse_service_environment(["SLANCHA_AUTH_REQUIRED"])
+    with pytest.raises(ValueError, match="invalid environment name"):
+        parse_service_environment(["BAD-NAME=value"])
+
+
 def test_launchd_plist_has_program_arguments_vector():
     plist = render_launchd_plist(EXEC, ["up", "--specialist", "code-7b"], role="node")
     assert "<key>Label</key>" in plist
@@ -111,6 +131,17 @@ def test_launchd_plist_can_keep_router_alive():
     assert "<string>router</string>" in plist
     assert "<string>--peer</string>" in plist
     assert "<string>spark</string>" in plist
+
+
+def test_launchd_plist_persists_non_secret_environment():
+    plist = render_launchd_plist(
+        EXEC,
+        None,
+        environment={"SLANCHA_AUTH_REQUIRED": "false"},
+    )
+    assert "<key>EnvironmentVariables</key>" in plist
+    assert "<key>SLANCHA_AUTH_REQUIRED</key>" in plist
+    assert "<string>false</string>" in plist
 
 
 def test_windows_task_command_has_onstart_and_tr_with_args():
@@ -188,10 +219,12 @@ def test_service_passthrough_after_double_dash_routes_to_up_args(monkeypatch):
         role="node",
         home=None,
         kind="node",
+        environment=None,
     ):
         seen["up_args"] = up_args
         seen["role"] = role
         seen["kind"] = kind
+        seen["environment"] = environment
         raise UnsupportedOSError("stop before side effects")
 
     monkeypatch.setattr("mesh.cli.build_service_plan", fake_build, raising=False)
@@ -204,6 +237,31 @@ def test_service_passthrough_after_double_dash_routes_to_up_args(monkeypatch):
     assert seen["role"] == "gb10"
     assert seen["kind"] == "node"
     assert seen["up_args"] == ["--specialist", "code-7b"]
+
+
+def test_service_cli_forwards_environment_to_plan(monkeypatch):
+    monkeypatch.setattr("mesh.service_install.platform.system", lambda: "Linux")
+    monkeypatch.setattr("mesh.cli._resolve_exec_path", lambda: EXEC)
+    seen = {}
+
+    def fake_build(*args, **kwargs):
+        seen.update(kwargs)
+        raise UnsupportedOSError("stop before side effects")
+
+    monkeypatch.setattr("mesh.service_install.build_service_plan", fake_build)
+    rc = main(
+        [
+            "service",
+            "install",
+            "--env",
+            "SLANCHA_AUTH_REQUIRED=false",
+            "--",
+            "--specialist",
+            "code-7b",
+        ]
+    )
+    assert rc == 2
+    assert seen["environment"] == {"SLANCHA_AUTH_REQUIRED": "false"}
 
 
 def test_service_install_dry_run_renders_but_does_not_install(monkeypatch, capsys, tmp_path):

@@ -581,6 +581,7 @@ def cmd_service(args: argparse.Namespace) -> int:
         UnsupportedOSError,
         build_service_plan,
         current_os,
+        parse_service_environment,
     )
 
     os_name = current_os()
@@ -588,12 +589,14 @@ def cmd_service(args: argparse.Namespace) -> int:
     service_args = args.up_args or None
 
     try:
+        environment = parse_service_environment(args.environment)
         plan = build_service_plan(
             os_name,
             exec_path,
             up_args=service_args,
             role=args.role,
             kind=args.kind,
+            environment=environment,
         )
     except (UnsupportedOSError, ValueError) as exc:
         _print(f"[service] {exc}")
@@ -878,6 +881,17 @@ def build_parser() -> argparse.ArgumentParser:
     )
     svc.add_argument("--dry-run", action="store_true",
                      help="Render the unit/plist/task + print the commands; touch nothing.")
+    svc.add_argument(
+        "--env",
+        dest="environment",
+        action="append",
+        default=[],
+        metavar="NAME=VALUE",
+        help=(
+            "Persist a non-secret environment setting in systemd/launchd "
+            "(repeatable; unsupported by Windows Scheduled Tasks)."
+        ),
+    )
     # Args forwarded to the selected `slancha-mesh` command go after `--` so they
     # don't collide with `service`'s own flags, e.g.
     #   slancha-mesh service install --kind router --role router -- --port 8080
