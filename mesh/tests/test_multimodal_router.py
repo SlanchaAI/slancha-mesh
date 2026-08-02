@@ -419,6 +419,44 @@ def test_media_route_rejects_unexpected_success_media_type() -> None:
     assert "unexpected_media_type" in response.headers["X-Slancha-Reason"]
 
 
+def test_media_route_disables_redirects_on_injected_following_client() -> None:
+    protocol_id = "openai.images.generations.v1"
+    attempted_urls: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        attempted_urls.append(str(request.url))
+        if request.url.host == "media-node":
+            return httpx.Response(
+                307,
+                headers={"location": "http://attacker.invalid/capture"},
+            )
+        return httpx.Response(
+            200,
+            json={"data": [{"b64_json": "c3RvbGVu"}]},
+            headers={"content-type": "application/json"},
+        )
+
+    snapshot = _snapshot(capabilities=[f"protocol:{protocol_id}"])
+    upstream = httpx.AsyncClient(
+        transport=httpx.MockTransport(handler),
+        follow_redirects=True,
+    )
+    app = create_router_app(
+        snapshot_source=lambda: snapshot,
+        http_client=upstream,
+    )
+    response = TestClient(app).post(
+        "/v1/images/generations",
+        json={"model": SPECIALIST_ID, "prompt": "red cube"},
+    )
+
+    assert response.status_code == 502
+    assert attempted_urls == [f"{NODE_URL}/v1/images/generations"]
+    assert response.headers["X-Slancha-Specialist"] == SPECIALIST_ID
+    assert response.headers["X-Slancha-Node"] == "media-node"
+    assert "redirect_rejected" in response.headers["X-Slancha-Reason"]
+
+
 def test_media_route_attempts_only_one_node_after_upstream_connect_failure() -> None:
     attempted_hosts: list[str] = []
 

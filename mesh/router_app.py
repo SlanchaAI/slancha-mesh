@@ -422,6 +422,7 @@ async def _proxy_json_media(
             upstream_url,
             json=upstream_body,
             headers=_upstream_headers(),
+            follow_redirects=False,
         ) as upstream:
             if 300 <= upstream.status_code < 400:
                 runtime_health.record_failure(key, f"http_{upstream.status_code}")
