@@ -678,6 +678,8 @@ def test_each_multipart_protocol_preserves_safe_parts_and_rewrites_model(
     captured: dict[str, Any] = {}
 
     def handler(request: httpx.Request) -> httpx.Response:
+        captured["method"] = request.method
+        captured["path"] = request.url.path
         captured["authorization"] = request.headers.get("authorization")
         captured["cookie"] = request.headers.get("cookie")
         captured["content_type"] = request.headers["content-type"]
@@ -702,6 +704,8 @@ def test_each_multipart_protocol_preserves_safe_parts_and_rewrites_model(
 
     assert response.status_code == 200, response.text
     assert response.content == upstream_body
+    assert captured["method"] == "POST"
+    assert captured["path"] == public_path
     assert captured["authorization"] == "Bearer node-only-secret"
     assert captured["cookie"] is None
     assert "multipart/form-data; boundary=" in captured["content_type"]
@@ -728,6 +732,43 @@ def test_each_multipart_protocol_preserves_safe_parts_and_rewrites_model(
     assert response.headers["X-Slancha-Specialist"] == SPECIALIST_ID
     assert response.headers["X-Slancha-Node"] == "media-node"
     assert f"protocol={protocol_id}" in response.headers["X-Slancha-Reason"]
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [("stream", "true"), ("partial_images", "2")],
+)
+def test_image_edit_rejects_streaming_controls_before_upstream(
+    field: str,
+    value: str,
+) -> None:
+    calls = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        return httpx.Response(
+            200,
+            json={"data": [{"b64_json": "aW1hZ2U="}]},
+            headers={"content-type": "application/json"},
+        )
+
+    protocol = MULTIPART_PROTOCOLS_BY_PATH["/v1/images/edits"]
+    response = _client(
+        _snapshot(capabilities=[protocol.capability]),
+        handler,
+    ).post(
+        protocol.public_path,
+        files=[
+            ("model", (None, SPECIALIST_ID)),
+            (field, (None, value)),
+            ("image", ("input.png", b"image", "image/png")),
+        ],
+    )
+
+    assert response.status_code == 400
+    assert "unsupported multipart field" in response.json()["detail"]
+    assert calls == 0
 
 
 @pytest.mark.parametrize("model_parts", [[], [SPECIALIST_ID, SPECIALIST_ID]])
