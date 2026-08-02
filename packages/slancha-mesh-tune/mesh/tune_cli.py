@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import importlib.metadata
 import importlib.util
 import subprocess
 import sys
@@ -15,7 +16,8 @@ def _check() -> int:
     if missing:
         print(f"slancha-mesh-tune incomplete: missing {', '.join(missing)}", file=sys.stderr)
         return 1
-    print("slancha-mesh-tune 0.0.6: training and evaluation modules available")
+    version = importlib.metadata.version("slancha-mesh-tune")
+    print(f"slancha-mesh-tune {version}: training and evaluation modules available")
     return 0
 
 
