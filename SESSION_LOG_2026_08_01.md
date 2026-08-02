@@ -20,7 +20,9 @@ provider.
 - Core returns a stable typed HTTP punt when no suitable local route exists or
   every local attempt fails. It does not choose providers, read cloud keys, or
   execute paid calls. Barkeep or another caller owns spend and egress policy.
-- vLLM Semantic Router is an optional semantic selector in front of the mesh.
+- vLLM Semantic Router is the supported caller-facing router and remains an
+  optional install for Docker-free hosts. Mesh stays behind it as the dynamic
+  private-fleet router.
   Inference Gateway is the preferred lean external provider executor after a
   caller-authorized punt. llama-swap is an optional per-node process manager.
 - Fine-tuning, replay evaluation, promotion gates, corpus scripts, and the
@@ -171,6 +173,15 @@ served Streamlit health `ok` and HTTP 200 on port 18983 before clean shutdown.
   and container creation across local and remote Docker engines.
 - Bound Envoy to the container interface. A loopback bind inside the container
   made Docker's published host port reset every request.
+- Added an isolated Python shim around the pinned upstream CLI that rewrites
+  every Docker/Podman `run` or `create` published port to host loopback. It
+  intercepts both `subprocess.run` and `Popen`, including `sudo docker` and
+  `docker container create` forms. This covers Envoy, router control ports,
+  Redis, Postgres, and the simulator rather than hardening only the caller port.
+- Added a post-start fail-closed inspection of every container attached to the
+  dedicated `slancha-mesh-vllm-sr-network`. Any non-loopback host binding stops
+  that network's containers; internal-only containers with no published ports
+  remain valid.
 - Added a state-aware `semantic-router supervise` loop and made the service
   installer use it. Upstream `serve` exits after provisioning containers and a
   naive launchd `KeepAlive` repeatedly tears down healthy containers.
@@ -199,9 +210,49 @@ served Streamlit health `ok` and HTTP 200 on port 18983 before clean shutdown.
   returned `SUPERVISOR-RECOVERY-OK`.
 - The installed launchd job `ai.slancha.mesh.semantic-router` then survived a
   killed Envoy container with one stable supervisor PID/run, recreated Envoy,
-  and returned another `VLLM-MESH-LIVE-OK` request.
+  and returned `VLLM-MESH-LOOPBACK-OK`. One cold-ish recovery took about two
+  minutes; the hardened warm recovery completed in under 30 seconds.
+- Live `docker ps` showed every upstream host publish on `127.0.0.1`: Envoy
+  `8888`, router `8180`/`9290`/`50151`, simulator `8910`, Postgres `5532`, and
+  Redis `6479`.
 - Current caller path: client → vLLM Semantic Router `:8888` → Slancha Mesh
   `:8080` → Spark Ollama `qwen3:14b`. Rollback path: client → Mesh `:8080`.
+
+### Front-door security review
+
+- Fresh-eyes review found a MAJOR LAN-exposure regression: upstream Docker
+  published the container listener declared as `0.0.0.0:8788` on every host
+  interface.
+- A Docker network default-bind option and a narrow upstream port-helper patch
+  both failed live because Docker Desktop ignored the former and upstream
+  constructs some `-p` arguments outside that helper. After the second failure,
+  primary-source tracing identified `subprocess.run` as the common command
+  boundary. The isolated runtime shim now enforces loopback there.
+- Focused tests execute the shim against both `-p` and `--publish` forms. The
+  later review cycles expanded this to bare, host-qualified, inline, `Popen`,
+  `sudo docker`, and `docker container create` forms, plus null/internal-only
+  Docker port maps.
+- The final backstop enumerates the dedicated Docker network instead of relying
+  on a container-name substring. Live membership contained exactly Envoy,
+  router, simulator, Postgres, and Redis; the all-port inspection and launchd
+  recovery prove the same path in situ.
+- The final exact-code recovery returned `VLLM-FINAL-LIVE-OK` from Spark
+  `qwen3:14b`; vLLM selected `local-mesh` / `slancha-auto`, and all five Docker
+  network members remained loopback-only.
+
+### Final gates and retrospective
+
+- Final combined suite: `1137 passed, 16 skipped`; six expected warnings cover
+  the clearly labeled tuning stub. Ruff lint passed across core and add-on;
+  changed vLLM files pass the formatter check. Both wheels built, with the vLLM
+  lifecycle in core and training/tuning modules only in the add-on.
+- vLLM's own v0.3 validator and the final live launchd recovery passed after
+  the last security changes.
+- Skill retrospective disposition: `none`. The failed Docker network option
+  and narrow helper patch exposed a project-specific mechanical invariant, now
+  enforced by executable wrapper tests plus live Docker-network inspection.
+  Existing research discipline correctly forced a primary-source spike after
+  two failures, so no reusable skill or global policy change is proposed.
 
 ## Publication status and remaining work
 

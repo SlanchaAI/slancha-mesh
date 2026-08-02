@@ -7,6 +7,7 @@ installs and supervises the upstream CLI; it does not embed or fork the router.
 
 from __future__ import annotations
 
+import json
 import os
 import platform
 import shutil
@@ -17,9 +18,7 @@ from pathlib import Path
 from typing import Callable
 
 VLLM_SR_VERSION = "0.3.0"
-VLLM_SR_IMAGE = (
-    "ghcr.io/vllm-project/semantic-router/vllm-sr:v0.3.0"
-)
+VLLM_SR_IMAGE = "ghcr.io/vllm-project/semantic-router/vllm-sr:v0.3.0"
 VLLM_SR_ENVOY_IMAGE = (
     "envoyproxy/envoy@sha256:"
     "cfc0678bc03cca19cbb031688acb31d510bff501ff97e163026a375fe0515d69"
@@ -30,9 +29,82 @@ VLLM_SR_SIM_IMAGE = (
 )
 VLLM_SR_STACK_NAME = "slancha-mesh"
 VLLM_SR_PORT_OFFSET = "100"
-DEFAULT_STATE_ROOT = (
-    Path.home() / ".local/state/slancha-mesh/vllm-semantic-router"
-)
+VLLM_SR_NETWORK = f"{VLLM_SR_STACK_NAME}-vllm-sr-network"
+LOOPBACK_WRAPPER = '''\
+"""Pinned vLLM SR shim: publish every container port on host loopback."""
+
+import os
+import subprocess
+
+from cli.main import main
+
+
+_real_run = subprocess.run
+_real_popen = subprocess.Popen
+
+
+def loopback_mapping(mapping):
+    parts = mapping.rsplit(":", 2)
+    if len(parts) == 1:
+        return f"127.0.0.1::{mapping}"
+    if len(parts) == 2:
+        return f"127.0.0.1:{mapping}"
+    return f"127.0.0.1:{parts[-2]}:{parts[-1]}"
+
+
+def rewrite_command(command):
+    rewritten = list(command) if isinstance(command, (list, tuple)) else command
+    if isinstance(rewritten, list):
+        runtime_index = next(
+            (
+                index
+                for index, token in enumerate(rewritten)
+                if isinstance(token, str)
+                and os.path.basename(token) in {"docker", "podman"}
+            ),
+            None,
+        )
+        action_index = runtime_index + 1 if runtime_index is not None else None
+        if (
+            action_index is not None
+            and action_index < len(rewritten)
+            and rewritten[action_index] == "container"
+        ):
+            action_index += 1
+        if (
+            action_index is None
+            or action_index >= len(rewritten)
+            or rewritten[action_index] not in {"run", "create"}
+        ):
+            return rewritten
+        for index, token in enumerate(rewritten[action_index + 1 :], action_index + 1):
+            if token in {"-p", "--publish"}:
+                if index + 1 >= len(rewritten):
+                    continue
+                mapping = rewritten[index + 1]
+                if isinstance(mapping, str):
+                    rewritten[index + 1] = loopback_mapping(mapping)
+            elif isinstance(token, str) and token.startswith(("-p=", "--publish=")):
+                option, mapping = token.split("=", 1)
+                rewritten[index] = f"{option}={loopback_mapping(mapping)}"
+            elif isinstance(token, str) and token.startswith("-p") and len(token) > 2:
+                rewritten[index] = f"-p{loopback_mapping(token[2:])}"
+    return rewritten
+
+
+def run_with_loopback_ports(command, *args, **kwargs):
+    return _real_run(rewrite_command(command), *args, **kwargs)
+
+
+def popen_with_loopback_ports(command, *args, **kwargs):
+    return _real_popen(rewrite_command(command), *args, **kwargs)
+
+
+subprocess.run = run_with_loopback_ports
+subprocess.Popen = popen_with_loopback_ports
+main(prog_name="vllm-sr")
+'''
+DEFAULT_STATE_ROOT = Path.home() / ".local/state/slancha-mesh/vllm-semantic-router"
 
 DEFAULT_CONFIG = """\
 version: v0.3
@@ -97,6 +169,7 @@ class VllmSemanticRouterPaths:
     python: Path
     executable: Path
     config: Path
+    wrapper: Path
 
     @classmethod
     def from_root(cls, root: Path | str) -> "VllmSemanticRouterPaths":
@@ -108,6 +181,7 @@ class VllmSemanticRouterPaths:
             python=venv / "bin/python",
             executable=venv / "bin/vllm-sr",
             config=resolved / "config.yaml",
+            wrapper=resolved / "vllm-sr-loopback.py",
         )
 
 
@@ -129,12 +203,11 @@ def build_vllm_sr_commands(
                 f"vllm-sr=={VLLM_SR_VERSION}",
             ],
         ],
-        "validate": [
-            [executable, "validate", "--config", str(paths.config)]
-        ],
+        "validate": [[executable, "validate", "--config", str(paths.config)]],
         "serve": [
             [
-                executable,
+                str(paths.python),
+                str(paths.wrapper),
                 "serve",
                 "--config",
                 str(paths.config),
@@ -194,7 +267,101 @@ def write_runtime_config(
     paths.root.mkdir(parents=True, exist_ok=True)
     content = source.read_text() if source is not None else DEFAULT_CONFIG
     paths.config.write_text(content)
+    paths.wrapper.write_text(LOOPBACK_WRAPPER)
     return paths.config
+
+
+def start_runtime(
+    paths: VllmSemanticRouterPaths,
+    *,
+    runner: Callable[..., subprocess.CompletedProcess[str]] = subprocess.run,
+) -> int:
+    """Start every command in the pinned, loopback-wrapped upstream action."""
+
+    environment = build_vllm_sr_environment()
+    for command in build_vllm_sr_commands(paths)["serve"]:
+        started = runner(command, check=False, env=environment)
+        if started.returncode != 0:
+            return started.returncode
+    return 0 if verify_loopback_bindings(runner=runner, environment=environment) else 1
+
+
+def verify_loopback_bindings(
+    *,
+    runner: Callable[..., subprocess.CompletedProcess[str]] = subprocess.run,
+    environment: dict[str, str] | None = None,
+) -> bool:
+    """Fail closed if a running upstream container publishes off loopback."""
+
+    if environment is None:
+        environment = build_vllm_sr_environment()
+    listed = runner(
+        [
+            "docker",
+            "network",
+            "inspect",
+            "--format",
+            "{{json .Containers}}",
+            VLLM_SR_NETWORK,
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+        env=environment,
+    )
+    try:
+        decoded = json.loads(listed.stdout) if listed.returncode == 0 else {}
+    except json.JSONDecodeError:
+        decoded = {}
+    members = decoded if isinstance(decoded, dict) else {}
+    names = sorted(
+        member["Name"]
+        for member in members.values()
+        if isinstance(member, dict) and member.get("Name")
+    )
+    if not names:
+        print("[semantic-router] no running stack containers found after serve")
+        return False
+
+    inspected = runner(
+        [
+            "docker",
+            "inspect",
+            "--format",
+            "{{json .NetworkSettings.Ports}}",
+            *names,
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+        env=environment,
+    )
+    violations: list[str] = []
+    try:
+        port_maps = [json.loads(line) for line in inspected.stdout.splitlines()]
+    except json.JSONDecodeError:
+        port_maps = []
+    if inspected.returncode != 0 or len(port_maps) != len(names):
+        violations.append("unable to inspect published port bindings")
+    else:
+        for name, port_map in zip(names, port_maps, strict=True):
+            if port_map is None:
+                continue
+            if not isinstance(port_map, dict):
+                violations.append(f"{name} returned no port map")
+                continue
+            for container_port, bindings in port_map.items():
+                for binding in bindings or []:
+                    host_ip = binding.get("HostIp")
+                    if host_ip not in {"127.0.0.1", "::1"}:
+                        violations.append(f"{name} {container_port} on {host_ip}")
+
+    if not violations:
+        return True
+
+    print("[semantic-router] unsafe published ports: " + ", ".join(violations))
+    runner(["docker", "stop", *names], check=False, env=environment)
+    return False
 
 
 def supervise_runtime(
@@ -212,7 +379,6 @@ def supervise_runtime(
         f"{VLLM_SR_STACK_NAME}-vllm-sr-envoy-container",
     ]
     environment = build_vllm_sr_environment()
-    serve_command = build_vllm_sr_commands(paths)["serve"][0]
     cycles = 0
     try:
         while max_cycles is None or cycles < max_cycles:
@@ -231,8 +397,7 @@ def supervise_runtime(
             )
             states = inspected.stdout.splitlines() if inspected.returncode == 0 else []
             if states != ["true", "true"]:
-                started = runner(serve_command, check=False, env=environment)
-                if started.returncode != 0:
+                if start_runtime(paths, runner=runner) != 0:
                     print(
                         "[semantic-router] runtime unavailable; "
                         f"retrying in {poll_seconds:g}s"
@@ -286,6 +451,8 @@ def run_action(
 
     if action == "supervise":
         return supervise_runtime(paths)
+    if action == "serve":
+        return start_runtime(paths)
 
     environment = build_vllm_sr_environment()
     for command in commands[action]:
@@ -298,8 +465,10 @@ def run_action(
 __all__ = [
     "DEFAULT_CONFIG",
     "DEFAULT_STATE_ROOT",
+    "LOOPBACK_WRAPPER",
     "VLLM_SR_IMAGE",
     "VLLM_SR_ENVOY_IMAGE",
+    "VLLM_SR_NETWORK",
     "VLLM_SR_PORT_OFFSET",
     "VLLM_SR_SIM_IMAGE",
     "VLLM_SR_STACK_NAME",
@@ -309,6 +478,8 @@ __all__ = [
     "build_vllm_sr_environment",
     "check_prerequisites",
     "run_action",
+    "start_runtime",
     "supervise_runtime",
+    "verify_loopback_bindings",
     "write_runtime_config",
 ]

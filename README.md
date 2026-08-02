@@ -62,6 +62,7 @@ slancha-mesh router --peer 127.0.0.1 --port 8080
 
 # 5. Install the pinned vLLM Semantic Router v0.3.0 front door.
 #    Its supported macOS/Linux local runtime uses Docker.
+#    Slancha's wrapper publishes every upstream container port on host loopback.
 slancha-mesh semantic-router install
 slancha-mesh semantic-router validate
 slancha-mesh semantic-router serve

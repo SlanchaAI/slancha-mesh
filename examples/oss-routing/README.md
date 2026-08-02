@@ -25,6 +25,12 @@ incorrectly refer to the router container. Send `model: MoM` to activate vLLM
 Semantic Router's decision path. It maps `slancha-auto` to `model: auto` at the
 Mesh boundary, where live fleet readiness makes the final node choice.
 
+The lifecycle shim forces every port published by the upstream local runtime
+onto host `127.0.0.1`, including Envoy, the router control ports, Redis,
+Postgres, and the simulator. Container listeners still bind their container
+interfaces so Docker can forward traffic; no vLLM runtime port is exposed on
+the LAN merely because the canonical config listens on `0.0.0.0` internally.
+
 This profile uses vLLM's supported static selector because it exposes one
 dynamic Mesh backend. vLLM's learned selectors apply when a decision contains
 multiple model candidates; duplicating Mesh's changing node/model catalog in a
@@ -39,7 +45,8 @@ slancha-mesh service install --kind semantic-router
 
 The service runs a state-aware supervisor. Healthy containers stay untouched;
 missing router or Envoy containers are recreated after Docker becomes
-available.
+available. Full recreation can take roughly two minutes on this Mac because
+the upstream runtime reprovisions both request-path containers.
 
 Rollback never touches a model node: stop the semantic layer and point the
 caller back to `http://127.0.0.1:8080`.
