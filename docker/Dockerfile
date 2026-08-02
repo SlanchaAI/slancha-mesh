@@ -27,7 +27,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /build
-COPY pyproject.toml uv.lock README.md /build/
+COPY pyproject.toml uv.lock README.md LICENSE NOTICE /build/
 COPY mesh /build/mesh
 
 # Frozen, hash-locked dependency list resolved from uv.lock (#144) — NOT a
