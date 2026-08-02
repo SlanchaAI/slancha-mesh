@@ -36,8 +36,14 @@ publicly or use Funnel.
 ### Verification
 
 - Full suite after adding the GB10 card: 1,137 passed, 16 skipped.
-- Dell and GB10 run enabled user-systemd units with linger enabled; both pass
-  node-info and tailnet-readiness doctor checks.
+- Dell, GB10, and Spark run enabled user-systemd units with linger enabled;
+  current `systemctl --user is-active` / `is-enabled` checks returned
+  `active` / `enabled` for all three node units and the GB10 `:8003 -> :8901`
+  forward. `loginctl show-user` returned `Linger=yes` on every Linux node.
+- The Mac router and semantic-router LaunchAgents are running and restart at
+  user login. Docker Desktop, which supplies the semantic-router containers,
+  is also a macOS login item. This is login persistence, not a pre-login
+  machine service.
 - Mac Mesh router discovers three routable specialists.
 - Tailscale Serve exposes raw TCP `:8888` to loopback `:8888`; HTTPS Serve is
   unavailable until the tailnet-wide HTTPS certificate toggle is enabled.
@@ -70,18 +76,27 @@ advertises convention port `:8003`, preserving the vLLM loopback bind and ACL.
 From Orin (`tag:paul-host`), through Tailscale TCP `100.96.234.16:8888` and
 the production `MoM` endpoint:
 
-- easy returned HTTP 200 from `qwen3-14b-q4-ollama` on Spark;
-- medium returned HTTP 200 from `qwen3-vl-8b-fp8-gb10` on GB10 `:8003`;
-- hard returned HTTP 200 from `qwen3.6-27b-fp8-dot` on Dell `:8011`.
+- easy: `HTTP/1.1 200 OK`, `x-slancha-specialist:
+  qwen3-14b-q4-ollama`, `x-slancha-node:
+  spark-472e.taila93596.ts.net:11434`;
+- medium: `HTTP/1.1 200 OK`, `x-slancha-specialist:
+  qwen3-vl-8b-fp8-gb10`, `x-slancha-node:
+  promaxgb10-d325.taila93596.ts.net:8003`;
+- hard: `HTTP/1.1 200 OK`, `x-slancha-specialist:
+  qwen3.6-27b-fp8-dot`, `x-slancha-node:
+  dellpromax.taila93596.ts.net:8011`.
 
 Router health reported three reachable/routable specialists, three closed
 runtime circuits, three successes, zero failures, and zero punts. Tailscale
 Serve retained the pre-existing `:8772` listener and added only private TCP
 `:8888 -> 127.0.0.1:8888`.
 
-Remaining seams: HTTPS needs the tailnet-wide certificate toggle; raw TCP is
-still WireGuard-encrypted and ACL-filtered. Spark's Ollama URL remains `:11434`,
-which works for the personal `tag:paul-host` front door but remains outside the
-documented `tag:gateway` convention-port grant. Cloud-punt consumption is also
-not configured in the deployed vLLM policy; a local exhaustion still returns
-the typed punt for an upstream cloud executor to consume.
+Live ACL retrieval confirmed both `tag:paul-host` and `tag:gateway` can reach
+`tag:specialist` on `8003`, `8011`, `8088`, and `11434`; the gateway grant also
+has deny-by-default self-tests. `tagOwners` restricts `tag:specialist` and
+`tag:gateway` to Paul's admin identity. No ACL edit was needed.
+
+Remaining seams: HTTPS needs the tailnet-wide certificate toggle; the current
+TCP proxy remains WireGuard-encrypted, ACL-filtered, and tailnet-only. Cloud
+punt consumption is not configured in the deployed vLLM policy; local
+exhaustion returns the typed punt for an upstream cloud executor to consume.
