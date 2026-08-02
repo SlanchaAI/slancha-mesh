@@ -64,3 +64,24 @@ binds loopback `:8901`; discovery host-pinned that unreachable port. Reused the
 box's existing root-owned `mesh-forward@8003` tailnet listener and added a
 durable user-systemd inner hop from loopback `:8003` to `:8901`. The card now
 advertises convention port `:8003`, preserving the vLLM loopback bind and ACL.
+
+### Final live gate
+
+From Orin (`tag:paul-host`), through Tailscale TCP `100.96.234.16:8888` and
+the production `MoM` endpoint:
+
+- easy returned HTTP 200 from `qwen3-14b-q4-ollama` on Spark;
+- medium returned HTTP 200 from `qwen3-vl-8b-fp8-gb10` on GB10 `:8003`;
+- hard returned HTTP 200 from `qwen3.6-27b-fp8-dot` on Dell `:8011`.
+
+Router health reported three reachable/routable specialists, three closed
+runtime circuits, three successes, zero failures, and zero punts. Tailscale
+Serve retained the pre-existing `:8772` listener and added only private TCP
+`:8888 -> 127.0.0.1:8888`.
+
+Remaining seams: HTTPS needs the tailnet-wide certificate toggle; raw TCP is
+still WireGuard-encrypted and ACL-filtered. Spark's Ollama URL remains `:11434`,
+which works for the personal `tag:paul-host` front door but remains outside the
+documented `tag:gateway` convention-port grant. Cloud-punt consumption is also
+not configured in the deployed vLLM policy; a local exhaustion still returns
+the typed punt for an upstream cloud executor to consume.
