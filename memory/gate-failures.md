@@ -1,0 +1,1 @@
+2026-08-02 — BLOCKER: JSON media routing concatenated a node-supplied URL path/query with a trusted protocol path, allowing node metadata to alter the upstream request target (Task 2 review, fixed before merge).
