@@ -35,4 +35,26 @@ publicly or use Funnel.
 
 ### Verification
 
-Pending deployment and end-to-end tailnet probes.
+- Full suite after adding the GB10 card: 1,137 passed, 16 skipped.
+- Dell and GB10 run enabled user-systemd units with linger enabled; both pass
+  node-info and tailnet-readiness doctor checks.
+- Mac Mesh router discovers three routable specialists.
+- Tailscale Serve exposes raw TCP `:8888` to loopback `:8888`; HTTPS Serve is
+  unavailable until the tailnet-wide HTTPS certificate toggle is enabled.
+- An Orin (`tag:paul-host`) request reached the front door through Tailscale,
+  then vLLM Semantic Router, Mesh, and Spark. Response headers named the
+  selected specialist and node. Spark's cold load took 29 seconds because
+  Ollama requested a 262K context and evicted a resident model; the warm call
+  returned HTTP 200.
+- The original hand-written Mac router unit pointed at a virtual environment
+  that had later been recreated without classifier dependencies. Replaced it
+  with the generated router service backed by a validated Python 3.11
+  classifier environment.
+
+### Routing correction
+
+Discovery alone did not balance medium work: Spark and GB10 both claimed the
+medium tier, neither reported p95, and stable tie order kept choosing Spark.
+Split the general lane explicitly: Spark easy, GB10 medium, Dell hard. Deploy
+the same commit to Spark so its node-advertised card metadata carries the
+policy; the Mac router does not override remote claims.

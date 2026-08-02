@@ -8,7 +8,11 @@
 model_id = "Qwen/Qwen3-14B"
 specialist_id = "qwen3-14b-q4-ollama"
 domain = "general"
-difficulty_tiers = ["easy", "medium"]
+# Fleet split: Spark handles the cheap/easy lane; the standing GB10 vLLM
+# endpoint owns medium and Dell's larger shared endpoint owns hard. Keeping
+# overlapping zero-telemetry external routes here would make stable tie order
+# send medium traffic back to Spark instead of balancing the fleet.
+difficulty_tiers = ["easy"]
 languages = ["en", "zh", "es", "fr", "de", "ja", "ko"]
 required_backend = "ollama"
 ollama_tag = "qwen3:14b"
