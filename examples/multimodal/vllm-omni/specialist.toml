@@ -1,0 +1,23 @@
+# TEMPLATE: replace model identity, immutable revision, license, and measured
+# capacity before installing. This sample advertises async video jobs only.
+model_id = "REPLACE_WITH_VLLM_OMNI_MODEL"
+specialist_id = "vllm-omni-video-example"
+domain = "general"
+difficulty_tiers = ["hard"]
+languages = ["en"]
+required_backend = "external"
+static_base_url = "http://127.0.0.1:8091"
+served_model_name = "REPLACE_WITH_VLLM_OMNI_MODEL"
+storage_gb = 1.0 # REPLACE with measured on-disk model size
+runtime_gb = 2.0 # REPLACE with measured resident memory
+min_vram_gb = 1.0 # REPLACE with the model's real accelerator floor
+context_window = 4096 # REPLACE when the model exposes another input limit
+n_layers = 1 # REPLACE with model metadata; allocator compatibility field
+capabilities = ["protocol:vllm_omni.video.jobs.v1"]
+supports_lora_finetune = false
+revision = "REPLACE_WITH_IMMUTABLE_REVISION"
+license = "REPLACE_WITH_SPDX_LICENSE"
+coverage_tier = 3
+
+[estimated_tps_at]
+example = 1.0 # REPLACE with a measured task-specific capacity signal

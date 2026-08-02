@@ -134,10 +134,141 @@ def test_live_socket_local_success_punt_suppression_and_recovery() -> None:
             assert healthy["open_circuits"] == 0
 
 
+def test_live_socket_runtime_shaped_json_multipart_and_binary_routes(
+    monkeypatch,
+) -> None:
+    specialist_id = "live-media"
+    upstream_model = "upstream-media-model"
+    observed: dict[str, dict[str, object]] = {}
+    upstream = FastAPI()
+
+    def request_metadata(request: Request) -> dict[str, object]:
+        return {
+            "method": request.method,
+            "path": request.url.path,
+            "authorization": request.headers.get("authorization"),
+            "content_type": request.headers.get("content-type"),
+        }
+
+    @upstream.post("/v1/images/generations")
+    async def generate_image(request: Request):
+        observed["image"] = {
+            **request_metadata(request),
+            "body": await request.json(),
+        }
+        return {"created": 1, "data": [{"b64_json": "aW1hZ2U="}]}
+
+    @upstream.post("/v1/audio/speech")
+    async def synthesize_speech(request: Request):
+        observed["speech"] = {
+            **request_metadata(request),
+            "body": await request.json(),
+        }
+        return Response(content=b"RIFF-live-speech", media_type="audio/wav")
+
+    @upstream.post("/v1/audio/transcriptions")
+    async def transcribe_audio(request: Request):
+        form = await request.form()
+        upload = form["file"]
+        observed["transcription"] = {
+            **request_metadata(request),
+            "model": form["model"],
+            "filename": upload.filename,
+            "file_content_type": upload.content_type,
+            "file_bytes": await upload.read(),
+        }
+        return {"text": "runtime-shaped-stub"}
+
+    with _serve_live_app(upstream) as upstream_url:
+        discovery = DiscoveryResult(
+            specialists={
+                specialist_id: DiscoveredSpecialist(
+                    specialist_id=specialist_id,
+                    node_urls=(upstream_url,),
+                )
+            }
+        )
+        card = SpecialistCard(
+            model_id="example/media",
+            specialist_id=specialist_id,
+            domain="general",
+            difficulty_tiers=["medium"],
+            required_backend="external",
+            served_model_name=upstream_model,
+            storage_gb=1,
+            runtime_gb=1,
+            min_vram_gb=1,
+            context_window=4096,
+            n_layers=1,
+            estimated_tps_at={"test": 1},
+            capabilities=[
+                "protocol:openai.images.generations.v1",
+                "protocol:openai.audio.speech.v1",
+                "protocol:openai.audio.transcriptions.v1",
+            ],
+        )
+        snapshot = discovery_to_snapshot(discovery, catalog=[card])
+        monkeypatch.setenv("SLANCHA_UPSTREAM_TOKEN", "upstream-only")
+        router = create_router_app(snapshot_source=lambda: snapshot)
+
+        with _serve_live_app(router) as router_url, httpx.Client(timeout=2) as client:
+            caller_headers = {"Authorization": "Bearer caller-secret"}
+            image = client.post(
+                f"{router_url}/v1/images/generations",
+                headers=caller_headers,
+                json={"model": specialist_id, "prompt": "red cube"},
+            )
+            speech = client.post(
+                f"{router_url}/v1/audio/speech",
+                headers=caller_headers,
+                json={"model": specialist_id, "input": "hello"},
+            )
+            transcription = client.post(
+                f"{router_url}/v1/audio/transcriptions",
+                headers=caller_headers,
+                files={
+                    "model": (None, specialist_id),
+                    "file": ("sample.wav", b"RIFF-live-input", "audio/wav"),
+                },
+            )
+
+    assert image.status_code == 200
+    assert speech.status_code == 200
+    assert speech.headers["content-type"].startswith("audio/wav")
+    assert speech.content == b"RIFF-live-speech"
+    assert transcription.status_code == 200
+    assert {
+        image.headers["X-Slancha-Specialist"],
+        speech.headers["X-Slancha-Specialist"],
+        transcription.headers["X-Slancha-Specialist"],
+    } == {specialist_id}
+
+    for route in observed.values():
+        assert route["method"] == "POST"
+        assert route["authorization"] == "Bearer upstream-only"
+        assert route["authorization"] != "Bearer caller-secret"
+    assert observed["image"]["path"] == "/v1/images/generations"
+    assert observed["image"]["content_type"] == "application/json"
+    assert observed["image"]["body"]["model"] == upstream_model
+    assert observed["speech"]["path"] == "/v1/audio/speech"
+    assert observed["speech"]["content_type"] == "application/json"
+    assert observed["speech"]["body"]["model"] == upstream_model
+    assert observed["transcription"]["path"] == "/v1/audio/transcriptions"
+    assert str(observed["transcription"]["content_type"]).startswith(
+        "multipart/form-data; boundary="
+    )
+    assert observed["transcription"]["model"] == upstream_model
+    assert observed["transcription"]["filename"] == "sample.wav"
+    assert observed["transcription"]["file_content_type"] == "audio/wav"
+    assert observed["transcription"]["file_bytes"] == b"RIFF-live-input"
+
+
 def test_live_socket_video_owner_survives_router_restart(tmp_path) -> None:
     specialist_id = "live-video"
     upstream = FastAPI()
+    decoy = FastAPI()
     upstream_calls: list[tuple[str, str]] = []
+    decoy_calls: list[tuple[str, str]] = []
 
     @upstream.post("/v1/videos")
     async def create_video(request: Request):
@@ -177,12 +308,35 @@ def test_live_socket_video_owner_survives_router_restart(tmp_path) -> None:
             "object": "video.deleted",
         }
 
-    with _serve_live_app(upstream) as upstream_url:
-        discovery = DiscoveryResult(
+    @decoy.api_route(
+        "/v1/videos",
+        methods=["POST"],
+    )
+    @decoy.api_route(
+        "/v1/videos/{remainder:path}",
+        methods=["GET", "DELETE"],
+    )
+    async def decoy_video(request: Request):
+        decoy_calls.append((request.method, request.url.path))
+        return Response(status_code=500)
+
+    with (
+        _serve_live_app(upstream) as upstream_url,
+        _serve_live_app(decoy) as decoy_url,
+    ):
+        initial_discovery = DiscoveryResult(
             specialists={
                 specialist_id: DiscoveredSpecialist(
                     specialist_id=specialist_id,
-                    node_urls=(upstream_url,),
+                    node_urls=(upstream_url, decoy_url),
+                )
+            }
+        )
+        reordered_discovery = DiscoveryResult(
+            specialists={
+                specialist_id: DiscoveredSpecialist(
+                    specialist_id=specialist_id,
+                    node_urls=(decoy_url, upstream_url),
                 )
             }
         )
@@ -201,11 +355,12 @@ def test_live_socket_video_owner_survives_router_restart(tmp_path) -> None:
             estimated_tps_at={"test": 1},
             capabilities=["protocol:vllm_omni.video.jobs.v1"],
         )
-        snapshot = discovery_to_snapshot(discovery, catalog=[card])
+        initial_snapshot = discovery_to_snapshot(initial_discovery, catalog=[card])
+        reordered_snapshot = discovery_to_snapshot(reordered_discovery, catalog=[card])
         db_path = tmp_path / "router" / "video-jobs.sqlite3"
 
         first_router = create_router_app(
-            snapshot_source=lambda: snapshot,
+            snapshot_source=lambda: initial_snapshot,
             video_job_db_path=db_path,
         )
         with _serve_live_app(first_router) as router_url, httpx.Client(timeout=2) as client:
@@ -218,8 +373,9 @@ def test_live_socket_video_owner_survives_router_restart(tmp_path) -> None:
             )
             assert created.status_code == 200, created.text
             public_id = created.json()["id"]
+            owner_node = created.headers["X-Slancha-Node"]
         restarted_router = create_router_app(
-            snapshot_source=lambda: snapshot,
+            snapshot_source=lambda: reordered_snapshot,
             video_job_db_path=db_path,
         )
         with _serve_live_app(restarted_router) as router_url, httpx.Client(timeout=2) as client:
@@ -229,6 +385,7 @@ def test_live_socket_video_owner_survives_router_restart(tmp_path) -> None:
             deleted_again = client.delete(f"{router_url}/v1/videos/{public_id}")
             gone = client.get(f"{router_url}/v1/videos/{public_id}")
     assert polled.status_code == 200
+    assert polled.headers["X-Slancha-Node"] == owner_node
     assert polled.json()["id"] == public_id
     assert polled.json()["status"] == "completed"
     assert content.content == b"live-video-bytes"
@@ -245,3 +402,4 @@ def test_live_socket_video_owner_survives_router_restart(tmp_path) -> None:
         ("GET", "/v1/videos/video_gen_live_123/content"),
         ("DELETE", "/v1/videos/video_gen_live_123"),
     ]
+    assert decoy_calls == []

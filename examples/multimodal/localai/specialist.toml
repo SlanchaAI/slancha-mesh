@@ -1,0 +1,21 @@
+# TEMPLATE: replace model identity and measured capacity before installing.
+# This conservative sample advertises only the configured transcription model.
+model_id = "REPLACE_WITH_LOCALAI_MODEL"
+specialist_id = "localai-transcription-example"
+domain = "general"
+difficulty_tiers = ["easy"]
+languages = ["en"]
+required_backend = "external"
+static_base_url = "http://127.0.0.1:8090"
+served_model_name = "REPLACE_WITH_LOCALAI_MODEL"
+storage_gb = 1.0 # REPLACE with measured on-disk model size
+runtime_gb = 2.0 # REPLACE with measured resident memory
+min_vram_gb = 0.0 # REPLACE when the configured backend requires an accelerator
+context_window = 448 # REPLACE with the model's real input limit
+n_layers = 1 # REPLACE with model metadata; allocator compatibility field
+capabilities = ["protocol:openai.audio.transcriptions.v1"]
+supports_lora_finetune = false
+coverage_tier = 3
+
+[estimated_tps_at]
+example = 1.0 # REPLACE with a measured task-specific capacity signal

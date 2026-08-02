@@ -31,6 +31,12 @@ Postgres, and the simulator. Container listeners still bind their container
 interfaces so Docker can forward traffic; no vLLM runtime port is exposed on
 the LAN merely because the canonical config listens on `0.0.0.0` internally.
 
+This alpha keeps image, audio, transcription, edit, and video clients off the
+semantic front door: call Mesh `:8080` directly for those routes. See the
+[`examples/multimodal`](../multimodal/README.md) adapters. Chat stays on
+`:8888`; cloud handoff after any typed punt remains a caller-owned Barkeep or
+equivalent policy decision.
+
 This profile uses vLLM's supported static selector because it exposes one
 dynamic Mesh backend. vLLM's learned selectors apply when a decision contains
 multiple model candidates; duplicating Mesh's changing node/model catalog in a

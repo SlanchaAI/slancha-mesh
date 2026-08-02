@@ -1,0 +1,11 @@
+{
+  "runtime": "LocalAI",
+  "runtime_version": "4.7.1",
+  "protocols": [
+    {"method": "POST", "path": "/v1/images/generations", "capability": "protocol:openai.images.generations.v1"},
+    {"method": "POST", "path": "/v1/images/edits", "capability": "protocol:openai.images.edits.v1"},
+    {"method": "POST", "path": "/v1/audio/speech", "capability": "protocol:openai.audio.speech.v1"},
+    {"method": "POST", "path": "/v1/audio/transcriptions", "capability": "protocol:openai.audio.transcriptions.v1"},
+    {"method": "POST", "path": "/video", "capability": "protocol:localai.video.v1"}
+  ]
+}

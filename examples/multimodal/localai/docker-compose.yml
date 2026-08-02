@@ -1,0 +1,10 @@
+services:
+  localai:
+    image: localai/localai:v4.7.1
+    restart: unless-stopped
+    ports:
+      - "${TAILSCALE_IP:?set TAILSCALE_IP to this node's Tailscale IPv4}:8090:8080"
+    volumes:
+      - ./models:/models:ro
+    environment:
+      MODELS_PATH: /models
