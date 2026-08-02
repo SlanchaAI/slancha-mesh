@@ -51,6 +51,7 @@ client can audit what the router picked without parsing logs:
 
 from __future__ import annotations
 
+import asyncio
 import hmac
 import json
 import logging
@@ -841,6 +842,7 @@ _VIDEO_CONTENT_MEDIA_TYPES = frozenset(
 _VIDEO_CONTENT_MAX_BYTES = 512 * 1024 * 1024
 _VIDEO_CONTENT_SPOOL_MEMORY_BYTES = 8 * 1024 * 1024
 _VIDEO_DELETE_LEASE_S = 300.0
+_VIDEO_DELETE_DEADLINE_S = 30.0
 _UPSTREAM_VIDEO_ID_CHARS = frozenset(
     "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_.-"
 )
@@ -2352,41 +2354,59 @@ def create_router_app(
                 )
             started_at = time.perf_counter()
             try:
-                async with client.stream(
-                    "DELETE",
-                    f"{job.owner_origin}/v1/videos/{job.upstream_job_id}",
-                    headers=_multipart_upstream_headers(),
-                    follow_redirects=False,
-                ) as upstream:
-                    if 300 <= upstream.status_code < 400:
-                        resolved_runtime.record_failure(key, f"http_{upstream.status_code}")
-                        raise HTTPException(
-                            status_code=status.HTTP_502_BAD_GATEWAY,
-                            detail="upstream video redirects are not accepted",
-                            headers=_video_audit_headers(owner, "redirect_rejected"),
-                        )
-                    if (
-                        _base_media_type(upstream.headers.get("content-type"))
-                        != "application/json"
-                    ):
-                        resolved_runtime.record_failure(key, "unexpected_media_type")
-                        raise HTTPException(
-                            status_code=status.HTTP_502_BAD_GATEWAY,
-                            detail="upstream video delete must return application/json",
-                            headers=_video_audit_headers(owner, "unexpected_media_type"),
-                        )
-                    try:
-                        content = await _read_bounded_response(
-                            upstream, max_bytes=VIDEO_JOB_PROTOCOL.max_response_bytes
-                        )
-                    except ValueError as exc:
-                        resolved_runtime.record_failure(key, "response_too_large")
-                        raise HTTPException(
-                            status_code=status.HTTP_502_BAD_GATEWAY,
-                            detail="upstream video delete response is too large",
-                            headers=_video_audit_headers(owner, "response_too_large"),
-                        ) from exc
-                    upstream_status_code = upstream.status_code
+                if _VIDEO_DELETE_DEADLINE_S >= _VIDEO_DELETE_LEASE_S:
+                    raise RuntimeError("video delete deadline must be shorter than claim lease")
+                async with asyncio.timeout(_VIDEO_DELETE_DEADLINE_S):
+                    async with client.stream(
+                        "DELETE",
+                        f"{job.owner_origin}/v1/videos/{job.upstream_job_id}",
+                        headers=_multipart_upstream_headers(),
+                        follow_redirects=False,
+                    ) as upstream:
+                        if 300 <= upstream.status_code < 400:
+                            resolved_runtime.record_failure(
+                                key, f"http_{upstream.status_code}"
+                            )
+                            raise HTTPException(
+                                status_code=status.HTTP_502_BAD_GATEWAY,
+                                detail="upstream video redirects are not accepted",
+                                headers=_video_audit_headers(owner, "redirect_rejected"),
+                            )
+                        if (
+                            _base_media_type(upstream.headers.get("content-type"))
+                            != "application/json"
+                        ):
+                            resolved_runtime.record_failure(key, "unexpected_media_type")
+                            raise HTTPException(
+                                status_code=status.HTTP_502_BAD_GATEWAY,
+                                detail="upstream video delete must return application/json",
+                                headers=_video_audit_headers(
+                                    owner, "unexpected_media_type"
+                                ),
+                            )
+                        try:
+                            content = await _read_bounded_response(
+                                upstream,
+                                max_bytes=VIDEO_JOB_PROTOCOL.max_response_bytes,
+                            )
+                        except ValueError as exc:
+                            resolved_runtime.record_failure(key, "response_too_large")
+                            raise HTTPException(
+                                status_code=status.HTTP_502_BAD_GATEWAY,
+                                detail="upstream video delete response is too large",
+                                headers=_video_audit_headers(
+                                    owner, "response_too_large"
+                                ),
+                            ) from exc
+                        upstream_status_code = upstream.status_code
+            except TimeoutError:
+                resolved_runtime.record_failure(key, "upstream_delete_timeout")
+                return _video_owner_punt(
+                    specialist_id=job.specialist_id,
+                    node_id=job.owner_node_id,
+                    reason="upstream_delete_timeout",
+                    local_attempts=1,
+                )
             except HTTPException:
                 raise
             except (httpx.HTTPError, OSError) as exc:

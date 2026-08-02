@@ -1651,6 +1651,79 @@ def test_concurrent_video_deletes_touch_owner_exactly_once(tmp_path) -> None:
     assert delete_calls == 1
 
 
+def test_video_delete_deadline_releases_claim_before_single_retry(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    db_path = tmp_path / "video-jobs.sqlite3"
+    stream_entered = threading.Event()
+    stream_closed = threading.Event()
+    delete_calls = 0
+
+    class DelayedDeleteStream(httpx.AsyncByteStream):
+        async def __aiter__(self):
+            stream_entered.set()
+            await asyncio.sleep(0.25)
+            yield json.dumps(
+                {
+                    "id": "upstream-id",
+                    "deleted": True,
+                    "object": "video.deleted",
+                }
+            ).encode()
+
+        async def aclose(self) -> None:
+            stream_closed.set()
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal delete_calls
+        if request.method == "POST":
+            return httpx.Response(
+                200,
+                json={"id": "upstream-id", "status": "queued", "created_at": 1},
+            )
+        if request.method == "DELETE":
+            delete_calls += 1
+            if delete_calls == 1:
+                return httpx.Response(
+                    200,
+                    stream=DelayedDeleteStream(),
+                    headers={"content-type": "application/json"},
+                )
+            return httpx.Response(
+                200,
+                json={
+                    "id": "upstream-id",
+                    "deleted": True,
+                    "object": "video.deleted",
+                },
+            )
+        raise AssertionError("unexpected owner request")
+
+    monkeypatch.setattr("mesh.router_app._VIDEO_DELETE_DEADLINE_S", 0.05)
+    with TestClient(
+        _video_app(_snapshot(capabilities=[VIDEO_JOB_CAPABILITY]), handler, db_path)
+    ) as client:
+        created = client.post(
+            "/v1/videos",
+            files=[("model", (None, SPECIALIST_ID)), ("prompt", (None, "prompt"))],
+        )
+        path = f"/v1/videos/{created.json()['id']}"
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            first = pool.submit(client.delete, path)
+            assert stream_entered.wait(timeout=2)
+            overlapping = client.delete(path)
+            first_response = first.result(timeout=2)
+        retry = client.delete(path)
+
+    assert overlapping.status_code == 404
+    assert first_response.status_code == 503
+    assert first_response.json()["error"]["details"]["retryable"] is True
+    assert "upstream_delete_timeout" in first_response.headers["X-Slancha-Reason"]
+    assert stream_closed.is_set()
+    assert retry.status_code == 200
+    assert delete_calls == 2
+
+
 def test_video_delete_requires_exact_upstream_200_and_releases_claim(tmp_path) -> None:
     db_path = tmp_path / "video-jobs.sqlite3"
     mode = ["create"]
