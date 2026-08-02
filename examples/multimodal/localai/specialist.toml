@@ -1,4 +1,5 @@
 # TEMPLATE: replace model identity and measured capacity before installing.
+# Runtime pin: LocalAI 4.7.1 (container config in this directory).
 # This conservative sample advertises only the configured transcription model.
 model_id = "REPLACE_WITH_LOCALAI_MODEL"
 specialist_id = "localai-transcription-example"

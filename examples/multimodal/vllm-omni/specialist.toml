@@ -1,5 +1,6 @@
 # TEMPLATE: replace model identity, immutable revision, license, and measured
 # capacity before installing. This sample advertises async video jobs only.
+# Runtime pin: vLLM-Omni 0.20.0 (startup command in the parent README).
 model_id = "REPLACE_WITH_VLLM_OMNI_MODEL"
 specialist_id = "vllm-omni-video-example"
 domain = "general"
