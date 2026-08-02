@@ -10,7 +10,10 @@ domain = "general"
 difficulty_tiers = ["medium"]
 languages = ["en", "zh", "es", "fr", "de", "ja", "ko"]
 required_backend = "external"
-static_base_url = "http://127.0.0.1:8901"
+# User-systemd proxies loopback :8003 to the existing vLLM :8901; the
+# pre-existing root mesh-forward@8003 unit exposes only the convention port
+# on tailscale0. This keeps vLLM loopback-only and inside the gateway ACL.
+static_base_url = "http://127.0.0.1:8003"
 served_model_name = "qwen3-vl-8b"
 storage_gb = 9.9
 runtime_gb = 12.0

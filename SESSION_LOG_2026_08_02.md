@@ -58,3 +58,9 @@ medium tier, neither reported p95, and stable tie order kept choosing Spark.
 Split the general lane explicitly: Spark easy, GB10 medium, Dell hard. Deploy
 the same commit to Spark so its node-advertised card metadata carries the
 policy; the Mac router does not override remote claims.
+
+The first medium probe selected GB10 correctly but timed out because its vLLM
+binds loopback `:8901`; discovery host-pinned that unreachable port. Reused the
+box's existing root-owned `mesh-forward@8003` tailnet listener and added a
+durable user-systemd inner hop from loopback `:8003` to `:8901`. The card now
+advertises convention port `:8003`, preserving the vLLM loopback bind and ACL.
