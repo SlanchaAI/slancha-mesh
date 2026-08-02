@@ -58,6 +58,7 @@ import os
 import threading
 import time
 from contextlib import asynccontextmanager
+from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Annotated, Any, Callable, Protocol
 from urllib.parse import urlsplit
@@ -65,7 +66,10 @@ from urllib.parse import urlsplit
 import httpx
 from fastapi import Depends, FastAPI, Header, HTTPException, Request, Response, status
 from fastapi.responses import JSONResponse, StreamingResponse
+from python_multipart.exceptions import MultipartParseError
 from starlette.concurrency import run_in_threadpool
+from starlette.datastructures import Headers, UploadFile
+from starlette.formparsers import MultiPartException, MultiPartParser
 
 from mesh.discovery import DiscoveryResult
 from mesh.escalation import PuntCode, punt_response
@@ -76,7 +80,7 @@ from mesh.models import (
     RegistrySnapshot,
     SpecialistCard,
 )
-from mesh.protocols import JSON_PROTOCOLS, JsonProtocol
+from mesh.protocols import JSON_PROTOCOLS, MULTIPART_PROTOCOLS, JsonProtocol, MultipartProtocol
 from mesh.registry import MeshRegistry
 from mesh.runtime_health import RouterRuntimeHealth, binding_key
 from mesh.usage import (
@@ -530,6 +534,288 @@ async def _proxy_json_media(
                 f"p95={binding.p95_latency_ms_60s}"
             ),
         ),
+    )
+
+
+@dataclass(frozen=True)
+class _MultipartPart:
+    name: str
+    value: str | bytes
+    filename: str | None = None
+    content_type: str | None = None
+
+
+def _safe_multipart_filename(filename: str | None) -> str | None:
+    """Accept a leaf filename with no controls or path semantics."""
+
+    if (
+        not filename
+        or filename in {".", ".."}
+        or len(filename.encode("utf-8")) > 255
+        or "/" in filename
+        or "\\" in filename
+        or any(ord(char) < 32 or ord(char) == 127 for char in filename)
+    ):
+        return None
+    return filename
+
+
+def _multipart_upstream_headers() -> dict[str, str]:
+    """Build node-only auth headers; httpx supplies a fresh multipart boundary."""
+
+    upstream = os.environ.get("SLANCHA_UPSTREAM_TOKEN", "").strip()
+    if upstream:
+        return {"Authorization": f"Bearer {upstream}"}
+    return {}
+
+
+async def _parse_bounded_multipart(
+    request: Request,
+    *,
+    protocol: MultipartProtocol,
+) -> list[_MultipartPart]:
+    """Structurally parse one bounded multipart body and materialize safe parts."""
+
+    declared = request.headers.get("content-length")
+    if (
+        declared is not None
+        and declared.isdigit()
+        and int(declared) > protocol.max_request_bytes
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_413_CONTENT_TOO_LARGE,
+            detail=f"request body exceeds {protocol.max_request_bytes} bytes",
+        )
+    raw = await _read_bounded_request(request, max_bytes=protocol.max_request_bytes)
+
+    async def _body_stream():
+        yield raw
+
+    parser = MultiPartParser(
+        Headers({"content-type": request.headers["content-type"]}),
+        _body_stream(),
+        max_files=protocol.max_files,
+        max_fields=protocol.max_fields,
+        max_part_size=protocol.max_field_bytes,
+    )
+    try:
+        form = await parser.parse()
+    except MultiPartException as exc:
+        detail = str(exc)
+        limit_error = detail.startswith(("Part exceeded", "Too many"))
+        raise HTTPException(
+            status_code=(
+                status.HTTP_413_CONTENT_TOO_LARGE
+                if limit_error
+                else status.HTTP_400_BAD_REQUEST
+            ),
+            detail=f"invalid multipart body: {detail}",
+        ) from exc
+    except (MultipartParseError, KeyError, ValueError) as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"invalid multipart body: {exc}",
+        ) from exc
+
+    parts: list[_MultipartPart] = []
+    try:
+        for name, value in form.multi_items():
+            if isinstance(value, UploadFile):
+                if name not in protocol.allowed_file_fields:
+                    raise HTTPException(
+                        status_code=status.HTTP_400_BAD_REQUEST,
+                        detail=f"unsupported multipart file field {name!r}",
+                    )
+                filename = _safe_multipart_filename(value.filename)
+                if filename is None:
+                    raise HTTPException(
+                        status_code=status.HTTP_400_BAD_REQUEST,
+                        detail=f"unsafe multipart filename for field {name!r}",
+                    )
+                content_type = _base_media_type(value.content_type)
+                if content_type not in protocol.allowed_file_media_types:
+                    raise HTTPException(
+                        status_code=status.HTTP_415_UNSUPPORTED_MEDIA_TYPE,
+                        detail=(
+                            f"unsupported file content type {content_type or '<missing>'!r} "
+                            f"for field {name!r}"
+                        ),
+                    )
+                content = await value.read(protocol.max_file_bytes + 1)
+                if len(content) > protocol.max_file_bytes:
+                    raise HTTPException(
+                        status_code=status.HTTP_413_CONTENT_TOO_LARGE,
+                        detail=(
+                            f"multipart file {name!r} exceeds "
+                            f"{protocol.max_file_bytes} bytes"
+                        ),
+                    )
+                parts.append(
+                    _MultipartPart(
+                        name=name,
+                        value=content,
+                        filename=filename,
+                        content_type=content_type,
+                    )
+                )
+                continue
+
+            if name not in protocol.allowed_fields:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=f"unsupported multipart field {name!r}",
+                )
+            if len(value.encode("utf-8")) > protocol.max_field_bytes:
+                raise HTTPException(
+                    status_code=status.HTTP_413_CONTENT_TOO_LARGE,
+                    detail=(
+                        f"multipart field {name!r} exceeds "
+                        f"{protocol.max_field_bytes} bytes"
+                    ),
+                )
+            parts.append(_MultipartPart(name=name, value=value))
+    finally:
+        await form.close()
+
+    return parts
+
+
+def _multipart_outbound_parts(
+    parts: list[_MultipartPart],
+    *,
+    upstream_model: str,
+) -> list[tuple[str, tuple]]:
+    """Reconstruct validated multipart parts with a rewritten model alias."""
+
+    outbound: list[tuple[str, tuple]] = []
+    for part in parts:
+        if part.filename is None:
+            value = upstream_model if part.name == "model" else part.value
+            outbound.append((part.name, (None, value)))
+        else:
+            outbound.append(
+                (part.name, (part.filename, part.value, part.content_type))
+            )
+    return outbound
+
+
+async def _proxy_multipart_media(
+    client: httpx.AsyncClient,
+    *,
+    protocol: MultipartProtocol,
+    binding: NodeBinding,
+    node_origin: str,
+    specialist_id: str,
+    parts: list[_MultipartPart],
+    upstream_model: str,
+    response_format: str | None,
+    runtime_health: RouterRuntimeHealth,
+) -> Response:
+    """Send one validated multipart request to one selected node."""
+
+    key = binding_key(specialist_id, binding.node_id)
+    upstream_url = f"{node_origin}{protocol.upstream_path}"
+    started_at = time.perf_counter()
+    try:
+        async with client.stream(
+            protocol.method,
+            upstream_url,
+            files=_multipart_outbound_parts(parts, upstream_model=upstream_model),
+            headers=_multipart_upstream_headers(),
+            follow_redirects=False,
+        ) as upstream:
+            if 300 <= upstream.status_code < 400:
+                runtime_health.record_failure(key, f"http_{upstream.status_code}")
+                raise HTTPException(
+                    status_code=status.HTTP_502_BAD_GATEWAY,
+                    detail="upstream media redirects are not accepted",
+                    headers=_media_audit_headers(
+                        protocol=protocol,
+                        binding=binding,
+                        reason="redirect_rejected",
+                    ),
+                )
+
+            media_type = _base_media_type(upstream.headers.get("content-type"))
+            accepted = (
+                protocol.success_media_types_for(response_format)
+                if upstream.status_code < 400
+                else ("application/json", "text/plain")
+            )
+            if media_type not in accepted:
+                runtime_health.record_failure(key, "unexpected_media_type")
+                raise HTTPException(
+                    status_code=status.HTTP_502_BAD_GATEWAY,
+                    detail=(
+                        "upstream returned unexpected content type "
+                        f"{media_type or '<missing>'!r} for {protocol.protocol_id}"
+                    ),
+                    headers=_media_audit_headers(
+                        protocol=protocol,
+                        binding=binding,
+                        reason="unexpected_media_type",
+                    ),
+                )
+            try:
+                content = await _read_bounded_response(
+                    upstream,
+                    max_bytes=protocol.max_response_bytes,
+                )
+            except ValueError as exc:
+                runtime_health.record_failure(key, "response_too_large")
+                raise HTTPException(
+                    status_code=status.HTTP_502_BAD_GATEWAY,
+                    detail=str(exc),
+                    headers=_media_audit_headers(
+                        protocol=protocol,
+                        binding=binding,
+                        reason="response_too_large",
+                    ),
+                ) from exc
+    except HTTPException:
+        raise
+    except (httpx.HTTPError, OSError) as exc:
+        runtime_health.record_failure(key, exc.__class__.__name__)
+        _log.warning(
+            "[router] multipart upstream %s for %s failed after selection: %s",
+            binding.node_id,
+            protocol.protocol_id,
+            exc,
+        )
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=(
+                f"selected local node failed for {protocol.protocol_id}; "
+                "request was not retried"
+            ),
+            headers=_media_audit_headers(
+                protocol=protocol,
+                binding=binding,
+                reason="transport_failure",
+            ),
+        ) from exc
+
+    latency_ms = int((time.perf_counter() - started_at) * 1000)
+    if upstream.status_code >= 500:
+        runtime_health.record_failure(key, f"http_{upstream.status_code}")
+    elif upstream.status_code >= 400:
+        runtime_health.record_client_error()
+    else:
+        runtime_health.record_success(key, latency_ms)
+    response_headers = _media_audit_headers(
+        protocol=protocol,
+        binding=binding,
+        reason=(
+            "primary; "
+            f"queue_depth={binding.queue_depth} "
+            f"p95={binding.p95_latency_ms_60s}"
+        ),
+    )
+    response_headers["content-type"] = upstream.headers["content-type"]
+    return Response(
+        content=content,
+        status_code=upstream.status_code,
+        headers=response_headers,
     )
 
 
@@ -1167,6 +1453,153 @@ def create_router_app(
         app.add_api_route(
             protocol.public_path,
             _media_handler(protocol),
+            methods=[protocol.method],
+            name=f"media:{protocol.protocol_id}",
+            summary=f"Route {protocol.protocol_id} to a capable mesh node",
+        )
+
+    def _multipart_media_handler(protocol: MultipartProtocol):
+        async def multipart_media(
+            request: Request,
+            _: Annotated[None, Depends(verify_router_token)],
+        ) -> Response:
+            content_type = _base_media_type(request.headers.get("content-type"))
+            if content_type != "multipart/form-data":
+                raise HTTPException(
+                    status_code=status.HTTP_415_UNSUPPORTED_MEDIA_TYPE,
+                    detail=f"{protocol.public_path} accepts multipart/form-data",
+                )
+
+            parts = await _parse_bounded_multipart(request, protocol=protocol)
+            model_parts = [
+                part.value
+                for part in parts
+                if part.name == "model" and isinstance(part.value, str)
+            ]
+            if len(model_parts) != 1 or not model_parts[0].strip():
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="multipart body must contain exactly one non-empty `model` field",
+                )
+            specialist_id = model_parts[0]
+
+            present_file_fields = {
+                part.name for part in parts if part.filename is not None
+            }
+            missing_files = set(protocol.required_file_fields) - present_file_fields
+            if missing_files:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=(
+                        "multipart body lacks required file field(s): "
+                        + ", ".join(sorted(missing_files))
+                    ),
+                )
+
+            response_formats = [
+                part.value
+                for part in parts
+                if part.name == "response_format" and isinstance(part.value, str)
+            ]
+            if len(response_formats) > 1:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="multipart body may contain at most one `response_format` field",
+                )
+            response_format = response_formats[0] if response_formats else None
+            if not protocol.success_media_types_for(response_format):
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=f"unsupported response_format {response_format!r}",
+                )
+
+            snapshot = _snapshot()
+            if specialist_id not in snapshot.specialists:
+                resolved_runtime.record_client_error()
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail=(
+                        f"unknown specialist {specialist_id!r}; "
+                        "check `GET /v1/models` for available model ids."
+                    ),
+                )
+            card = snapshot.catalog.get(specialist_id)
+            if card is None or protocol.capability not in card.capabilities:
+                resolved_runtime.record_punt()
+                return punt_response(
+                    code=PuntCode.NO_SUITABLE_LOCAL_ROUTE,
+                    message="The requested specialist does not support this media protocol.",
+                    reason=(
+                        f"specialist {specialist_id!r} lacks capability "
+                        f"{protocol.capability!r}"
+                    ),
+                    local_attempts=0,
+                    retryable=True,
+                )
+
+            discovered = _reachable_bindings(specialist_id, snapshot)
+            if not discovered:
+                resolved_runtime.record_punt()
+                return punt_response(
+                    code=PuntCode.LOCAL_ROUTE_UNAVAILABLE,
+                    message="The requested local specialist has no healthy binding.",
+                    reason=f"no reachable node for specialist {specialist_id!r}",
+                    local_attempts=0,
+                    retryable=True,
+                )
+
+            selected: tuple[NodeBinding, str] | None = None
+            for candidate in discovered:
+                node_origin = _validated_node_origin(candidate.node_url)
+                if node_origin is None:
+                    _log.warning(
+                        "[router] ignoring non-origin node URL for media route %s/%s",
+                        specialist_id,
+                        candidate.node_id,
+                    )
+                    continue
+                if resolved_runtime.is_routable(
+                    binding_key(specialist_id, candidate.node_id)
+                ):
+                    selected = (candidate, node_origin)
+                    break
+            if selected is None:
+                resolved_runtime.record_punt()
+                return punt_response(
+                    code=PuntCode.LOCAL_ROUTE_UNAVAILABLE,
+                    message="The requested local specialist is temporarily unavailable.",
+                    reason=(
+                        "no request-safe, runtime-ready media binding for "
+                        f"specialist {specialist_id!r}"
+                    ),
+                    local_attempts=0,
+                    retryable=True,
+                )
+            binding, node_origin = selected
+
+            upstream_model = _rewrite_model_for_upstream(
+                {"model": specialist_id},
+                specialist_id,
+                snapshot,
+            )["model"]
+            return await _proxy_multipart_media(
+                client,
+                protocol=protocol,
+                binding=binding,
+                node_origin=node_origin,
+                specialist_id=specialist_id,
+                parts=parts,
+                upstream_model=upstream_model,
+                response_format=response_format,
+                runtime_health=resolved_runtime,
+            )
+
+        return multipart_media
+
+    for protocol in MULTIPART_PROTOCOLS:
+        app.add_api_route(
+            protocol.public_path,
+            _multipart_media_handler(protocol),
             methods=[protocol.method],
             name=f"media:{protocol.protocol_id}",
             summary=f"Route {protocol.protocol_id} to a capable mesh node",

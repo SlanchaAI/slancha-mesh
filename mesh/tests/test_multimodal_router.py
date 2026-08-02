@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+from email import policy
+from email.parser import BytesParser
 from datetime import datetime, timezone
 from typing import Any
 
@@ -11,7 +13,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from mesh.models import NodeBinding, NodeSummary, RegistrySnapshot, SpecialistCard
-from mesh.protocols import JSON_PROTOCOLS_BY_PATH
+from mesh.protocols import JSON_PROTOCOLS_BY_PATH, MULTIPART_PROTOCOLS_BY_PATH
 from mesh.router_app import create_router_app
 
 
@@ -100,6 +102,25 @@ def _client(snapshot: RegistrySnapshot, handler) -> TestClient:
     return TestClient(
         create_router_app(snapshot_source=lambda: snapshot, http_client=upstream)
     )
+
+
+def _multipart_parts(request: httpx.Request) -> list[dict[str, Any]]:
+    """Decode an outbound multipart request with the stdlib MIME parser."""
+
+    content_type = request.headers["content-type"]
+    message = BytesParser(policy=policy.default).parsebytes(
+        f"Content-Type: {content_type}\r\nMIME-Version: 1.0\r\n\r\n".encode()
+        + request.read()
+    )
+    return [
+        {
+            "name": part.get_param("name", header="content-disposition"),
+            "filename": part.get_filename(),
+            "content_type": part.get_content_type(),
+            "content": part.get_payload(decode=True),
+        }
+        for part in message.iter_parts()
+    ]
 
 
 @pytest.mark.parametrize(
@@ -614,3 +635,323 @@ def test_localai_video_rejects_success_without_only_inline_b64_data(
     assert response.headers["X-Slancha-Specialist"] == SPECIALIST_ID
     assert response.headers["X-Slancha-Node"] == "media-node"
     assert "invalid_inline_video" in response.headers["X-Slancha-Reason"]
+
+
+@pytest.mark.parametrize(
+    ("public_path", "protocol_id", "files", "upstream_content_type", "upstream_body"),
+    [
+        (
+            "/v1/images/edits",
+            "openai.images.edits.v1",
+            [
+                ("model", (None, SPECIALIST_ID)),
+                ("prompt", (None, "first prompt")),
+                ("prompt", (None, "second prompt")),
+                ("image", ("input.png", b"\x89PNG\r\nmedia", "image/png")),
+            ],
+            "application/json",
+            b'{"data":[{"b64_json":"aW1hZ2U="}]}',
+        ),
+        (
+            "/v1/audio/transcriptions",
+            "openai.audio.transcriptions.v1",
+            [
+                ("model", (None, SPECIALIST_ID)),
+                ("response_format", (None, "text")),
+                ("timestamp_granularities[]", (None, "word")),
+                ("timestamp_granularities[]", (None, "segment")),
+                ("file", ("sample.wav", b"RIFFaudio", "audio/wav")),
+            ],
+            "text/plain; charset=utf-8",
+            b"hello from the mesh",
+        ),
+    ],
+)
+def test_each_multipart_protocol_preserves_safe_parts_and_rewrites_model(
+    monkeypatch: pytest.MonkeyPatch,
+    public_path: str,
+    protocol_id: str,
+    files: list[tuple[str, tuple[str | None, str | bytes] | tuple[str, bytes, str]]],
+    upstream_content_type: str,
+    upstream_body: bytes,
+) -> None:
+    captured: dict[str, Any] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["authorization"] = request.headers.get("authorization")
+        captured["cookie"] = request.headers.get("cookie")
+        captured["content_type"] = request.headers["content-type"]
+        captured["parts"] = _multipart_parts(request)
+        return httpx.Response(
+            200,
+            content=upstream_body,
+            headers={"content-type": upstream_content_type},
+        )
+
+    monkeypatch.setenv("SLANCHA_UPSTREAM_TOKEN", "node-only-secret")
+    response = _client(
+        _snapshot(capabilities=[f"protocol:{protocol_id}"]), handler
+    ).post(
+        public_path,
+        files=files,
+        headers={
+            "Authorization": "Bearer caller-secret",
+            "Cookie": "session=caller-secret",
+        },
+    )
+
+    assert response.status_code == 200, response.text
+    assert response.content == upstream_body
+    assert captured["authorization"] == "Bearer node-only-secret"
+    assert captured["cookie"] is None
+    assert "multipart/form-data; boundary=" in captured["content_type"]
+    parts = captured["parts"]
+    assert [p["content"] for p in parts if p["name"] == "model"] == [
+        b"upstream-media-model"
+    ]
+    if public_path.endswith("/edits"):
+        assert [p["content"] for p in parts if p["name"] == "prompt"] == [
+            b"first prompt",
+            b"second prompt",
+        ]
+        image = next(p for p in parts if p["name"] == "image")
+        assert image == {
+            "name": "image",
+            "filename": "input.png",
+            "content_type": "image/png",
+            "content": b"\x89PNG\r\nmedia",
+        }
+    else:
+        assert [
+            p["content"] for p in parts if p["name"] == "timestamp_granularities[]"
+        ] == [b"word", b"segment"]
+    assert response.headers["X-Slancha-Specialist"] == SPECIALIST_ID
+    assert response.headers["X-Slancha-Node"] == "media-node"
+    assert f"protocol={protocol_id}" in response.headers["X-Slancha-Reason"]
+
+
+@pytest.mark.parametrize("model_parts", [[], [SPECIALIST_ID, SPECIALIST_ID]])
+def test_multipart_route_requires_exactly_one_model_before_upstream(
+    model_parts: list[str],
+) -> None:
+    protocol = MULTIPART_PROTOCOLS_BY_PATH["/v1/images/edits"]
+    files = [("model", (None, value)) for value in model_parts]
+    files.append(("image", ("input.png", b"image", "image/png")))
+    response = _client(
+        _snapshot(capabilities=[protocol.capability]),
+        lambda request: pytest.fail("invalid model shape reached upstream"),
+    ).post(protocol.public_path, files=files)
+
+    assert response.status_code == 400
+    assert "exactly one" in response.json()["detail"]
+
+
+def test_multipart_route_punts_when_specialist_lacks_protocol_capability() -> None:
+    response = _client(
+        _snapshot(capabilities=["vision"]),
+        lambda request: pytest.fail("capability mismatch reached upstream"),
+    ).post(
+        "/v1/images/edits",
+        files=[
+            ("model", (None, SPECIALIST_ID)),
+            ("image", ("input.png", b"image", "image/png")),
+        ],
+    )
+
+    assert response.status_code == 503
+    assert response.headers["X-Slancha-Outcome"] == "punt"
+    assert response.json()["error"]["code"] == "no_suitable_local_route"
+
+
+def test_multipart_route_rejects_malformed_body_before_upstream() -> None:
+    protocol = MULTIPART_PROTOCOLS_BY_PATH["/v1/images/edits"]
+    response = _client(
+        _snapshot(capabilities=[protocol.capability]),
+        lambda request: pytest.fail("malformed multipart reached upstream"),
+    ).post(
+        protocol.public_path,
+        content=b"not-a-valid-multipart-body",
+        headers={"Content-Type": "multipart/form-data; boundary=broken"},
+    )
+
+    assert response.status_code == 400
+    assert "multipart" in response.json()["detail"].lower()
+
+
+def test_multipart_route_rejects_declared_aggregate_over_limit() -> None:
+    protocol = MULTIPART_PROTOCOLS_BY_PATH["/v1/images/edits"]
+    response = _client(
+        _snapshot(capabilities=[protocol.capability]),
+        lambda request: pytest.fail("oversized request reached upstream"),
+    ).post(
+        protocol.public_path,
+        content=b"x",
+        headers={
+            "Content-Type": "multipart/form-data; boundary=x",
+            "Content-Length": str(protocol.max_request_bytes + 1),
+        },
+    )
+
+    assert response.status_code == 413
+
+
+def test_multipart_route_rejects_field_over_limit() -> None:
+    protocol = MULTIPART_PROTOCOLS_BY_PATH["/v1/images/edits"]
+    response = _client(
+        _snapshot(capabilities=[protocol.capability]),
+        lambda request: pytest.fail("oversized field reached upstream"),
+    ).post(
+        protocol.public_path,
+        files=[
+            ("model", (None, SPECIALIST_ID)),
+            ("prompt", (None, "x" * (protocol.max_field_bytes + 1))),
+            ("image", ("input.png", b"image", "image/png")),
+        ],
+    )
+
+    assert response.status_code == 413
+
+
+def test_multipart_route_rejects_file_over_limit() -> None:
+    protocol = MULTIPART_PROTOCOLS_BY_PATH["/v1/audio/transcriptions"]
+    response = _client(
+        _snapshot(capabilities=[protocol.capability]),
+        lambda request: pytest.fail("oversized file reached upstream"),
+    ).post(
+        protocol.public_path,
+        files=[
+            ("model", (None, SPECIALIST_ID)),
+            (
+                "file",
+                ("sample.wav", b"x" * (protocol.max_file_bytes + 1), "audio/wav"),
+            ),
+        ],
+    )
+
+    assert response.status_code == 413
+
+
+@pytest.mark.parametrize(
+    "parts",
+    [
+        [("extra", (None, str(i))) for i in range(40)],
+        [("image", (f"{i}.png", b"", "image/png")) for i in range(20)],
+    ],
+)
+def test_multipart_route_rejects_field_or_file_count_over_limit(
+    parts: list[tuple[str, tuple[str | None, str] | tuple[str, bytes, str]]],
+) -> None:
+    protocol = MULTIPART_PROTOCOLS_BY_PATH["/v1/images/edits"]
+    response = _client(
+        _snapshot(capabilities=[protocol.capability]),
+        lambda request: pytest.fail("excess multipart parts reached upstream"),
+    ).post(
+        protocol.public_path,
+        files=[("model", (None, SPECIALIST_ID)), *parts],
+    )
+
+    assert response.status_code in {400, 413}
+
+
+def test_multipart_route_rejects_unsafe_filename_before_upstream() -> None:
+    protocol = MULTIPART_PROTOCOLS_BY_PATH["/v1/images/edits"]
+    response = _client(
+        _snapshot(capabilities=[protocol.capability]),
+        lambda request: pytest.fail("unsafe filename reached upstream"),
+    ).post(
+        protocol.public_path,
+        files=[
+            ("model", (None, SPECIALIST_ID)),
+            ("image", ("../input.png", b"image", "image/png")),
+        ],
+    )
+
+    assert response.status_code == 400
+    assert "filename" in response.json()["detail"]
+
+
+def test_transcription_response_type_must_match_requested_output_mode() -> None:
+    protocol = MULTIPART_PROTOCOLS_BY_PATH["/v1/audio/transcriptions"]
+    response = _client(
+        _snapshot(capabilities=[protocol.capability]),
+        lambda request: httpx.Response(
+            200,
+            content=b'{"text":"wrong wire type"}',
+            headers={"content-type": "application/json"},
+        ),
+    ).post(
+        protocol.public_path,
+        files=[
+            ("model", (None, SPECIALIST_ID)),
+            ("response_format", (None, "text")),
+            ("file", ("sample.wav", b"RIFF", "audio/wav")),
+        ],
+    )
+
+    assert response.status_code == 502
+    assert "unexpected_media_type" in response.headers["X-Slancha-Reason"]
+
+
+@pytest.mark.parametrize("failure", ["redirect", "transport", "server_error"])
+def test_multipart_non_idempotent_request_never_falls_back_after_attempt(
+    failure: str,
+) -> None:
+    protocol = MULTIPART_PROTOCOLS_BY_PATH["/v1/images/edits"]
+    attempted_hosts: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        attempted_hosts.append(request.url.host)
+        if failure == "redirect":
+            return httpx.Response(307, headers={"location": "http://attacker.invalid"})
+        if failure == "transport":
+            raise httpx.ConnectError("lost after send", request=request)
+        return httpx.Response(
+            503,
+            content=b"unavailable",
+            headers={"content-type": "text/plain"},
+        )
+
+    response = _client(
+        _snapshot(
+            capabilities=[protocol.capability],
+            bindings=[
+                _binding(node_id="first", node_url="http://first:8091"),
+                _binding(node_id="second", node_url="http://second:8091"),
+            ],
+        ),
+        handler,
+    ).post(
+        protocol.public_path,
+        files=[
+            ("model", (None, SPECIALIST_ID)),
+            ("image", ("input.png", b"image", "image/png")),
+        ],
+    )
+
+    assert attempted_hosts == ["first"]
+    assert response.status_code in {502, 503}
+    assert response.headers["X-Slancha-Node"] == "first"
+
+
+def test_multipart_route_rejects_oversized_upstream_response() -> None:
+    protocol = MULTIPART_PROTOCOLS_BY_PATH["/v1/images/edits"]
+    response = _client(
+        _snapshot(capabilities=[protocol.capability]),
+        lambda request: httpx.Response(
+            200,
+            content=b"{}",
+            headers={
+                "content-type": "application/json",
+                "content-length": str(protocol.max_response_bytes + 1),
+            },
+        ),
+    ).post(
+        protocol.public_path,
+        files=[
+            ("model", (None, SPECIALIST_ID)),
+            ("image", ("input.png", b"image", "image/png")),
+        ],
+    )
+
+    assert response.status_code == 502
+    assert "response_too_large" in response.headers["X-Slancha-Reason"]
