@@ -305,6 +305,50 @@ def _base_media_type(raw: str | None) -> str:
     return raw.split(";", 1)[0].strip().lower()
 
 
+def _validated_node_origin(node_url: str | None) -> str | None:
+    """Return a strict HTTP(S) origin, rejecting path/query-controlled targets."""
+
+    if not node_url:
+        return None
+    parts = urlsplit(node_url)
+    scheme = parts.scheme.lower()
+    if scheme not in {"http", "https"}:
+        return None
+    if (
+        not parts.hostname
+        or parts.username is not None
+        or parts.password is not None
+        or parts.path not in {"", "/"}
+        or parts.query
+        or parts.fragment
+        or any(char.isspace() for char in parts.hostname)
+    ):
+        return None
+    try:
+        port = parts.port
+    except ValueError:
+        return None
+    host = parts.hostname
+    if ":" in host:
+        host = f"[{host}]"
+    port_suffix = f":{port}" if port is not None else ""
+    return f"{scheme}://{host}{port_suffix}"
+
+
+async def _read_bounded_request(request: Request, *, max_bytes: int) -> bytes:
+    """Consume an ASGI request incrementally and stop before exceeding its cap."""
+
+    content = bytearray()
+    async for chunk in request.stream():
+        if len(chunk) > max_bytes - len(content):
+            raise HTTPException(
+                status_code=status.HTTP_413_CONTENT_TOO_LARGE,
+                detail=f"request body exceeds {max_bytes} bytes",
+            )
+        content.extend(chunk)
+    return bytes(content)
+
+
 async def _read_bounded_response(
     response: httpx.Response,
     *,
@@ -323,11 +367,46 @@ async def _read_bounded_response(
     return bytes(content)
 
 
+def _media_audit_headers(
+    *,
+    protocol: JsonProtocol,
+    binding: NodeBinding,
+    reason: str,
+) -> dict[str, str]:
+    return {
+        "X-Slancha-Specialist": binding.specialist_id,
+        "X-Slancha-Node": binding.node_id,
+        "X-Slancha-Reason": f"protocol={protocol.protocol_id}; {reason}",
+    }
+
+
+def _has_only_inline_video_data(content: bytes) -> bool:
+    """Require non-empty LocalAI video data with no node-relative URL fields."""
+
+    try:
+        payload = json.loads(content)
+    except (TypeError, ValueError):
+        return False
+    if not isinstance(payload, dict):
+        return False
+    data = payload.get("data")
+    if not isinstance(data, list) or not data:
+        return False
+    return all(
+        isinstance(item, dict)
+        and "url" not in item
+        and isinstance(item.get("b64_json"), str)
+        and bool(item["b64_json"])
+        for item in data
+    )
+
+
 async def _proxy_json_media(
     client: httpx.AsyncClient,
     *,
     protocol: JsonProtocol,
     binding: NodeBinding,
+    node_origin: str,
     specialist_id: str,
     upstream_body: dict,
     runtime_health: RouterRuntimeHealth,
@@ -335,7 +414,7 @@ async def _proxy_json_media(
     """Send one non-idempotent media request to exactly one selected node."""
 
     key = binding_key(specialist_id, binding.node_id)
-    upstream_url = f"{binding.node_url.rstrip('/')}{protocol.upstream_path}"  # type: ignore[union-attr]
+    upstream_url = f"{node_origin}{protocol.upstream_path}"
     started_at = time.perf_counter()
     try:
         async with client.stream(
@@ -349,6 +428,11 @@ async def _proxy_json_media(
                 raise HTTPException(
                     status_code=status.HTTP_502_BAD_GATEWAY,
                     detail="upstream media redirects are not accepted",
+                    headers=_media_audit_headers(
+                        protocol=protocol,
+                        binding=binding,
+                        reason="redirect_rejected",
+                    ),
                 )
 
             media_type = _base_media_type(upstream.headers.get("content-type"))
@@ -365,6 +449,11 @@ async def _proxy_json_media(
                         "upstream returned unexpected content type "
                         f"{media_type or '<missing>'!r} for {protocol.protocol_id}"
                     ),
+                    headers=_media_audit_headers(
+                        protocol=protocol,
+                        binding=binding,
+                        reason="unexpected_media_type",
+                    ),
                 )
             try:
                 content = await _read_bounded_response(
@@ -376,7 +465,27 @@ async def _proxy_json_media(
                 raise HTTPException(
                     status_code=status.HTTP_502_BAD_GATEWAY,
                     detail=str(exc),
+                    headers=_media_audit_headers(
+                        protocol=protocol,
+                        binding=binding,
+                        reason="response_too_large",
+                    ),
                 ) from exc
+            if (
+                upstream.status_code < 300
+                and protocol.require_b64_json
+                and not _has_only_inline_video_data(content)
+            ):
+                runtime_health.record_failure(key, "invalid_inline_video")
+                raise HTTPException(
+                    status_code=status.HTTP_502_BAD_GATEWAY,
+                    detail="LocalAI video response lacks safe inline b64_json data",
+                    headers=_media_audit_headers(
+                        protocol=protocol,
+                        binding=binding,
+                        reason="invalid_inline_video",
+                    ),
+                )
     except HTTPException:
         raise
     except (httpx.HTTPError, OSError) as exc:
@@ -393,6 +502,11 @@ async def _proxy_json_media(
                 f"selected local node failed for {protocol.protocol_id}; "
                 "request was not retried"
             ),
+            headers=_media_audit_headers(
+                protocol=protocol,
+                binding=binding,
+                reason="transport_failure",
+            ),
         ) from exc
 
     latency_ms = int((time.perf_counter() - started_at) * 1000)
@@ -406,15 +520,15 @@ async def _proxy_json_media(
         content=content,
         status_code=upstream.status_code,
         media_type=media_type,
-        headers={
-            "X-Slancha-Specialist": specialist_id,
-            "X-Slancha-Node": binding.node_id,
-            "X-Slancha-Reason": (
-                f"protocol={protocol.protocol_id}; primary; "
+        headers=_media_audit_headers(
+            protocol=protocol,
+            binding=binding,
+            reason=(
+                "primary; "
                 f"queue_depth={binding.queue_depth} "
                 f"p95={binding.p95_latency_ms_60s}"
             ),
-        },
+        ),
     )
 
 
@@ -938,12 +1052,10 @@ def create_router_app(
                     status_code=status.HTTP_413_CONTENT_TOO_LARGE,
                     detail=f"request body exceeds {protocol.max_request_bytes} bytes",
                 )
-            raw = await request.body()
-            if len(raw) > protocol.max_request_bytes:
-                raise HTTPException(
-                    status_code=status.HTTP_413_CONTENT_TOO_LARGE,
-                    detail=f"request body exceeds {protocol.max_request_bytes} bytes",
-                )
+            raw = await _read_bounded_request(
+                request,
+                max_bytes=protocol.max_request_bytes,
+            )
             try:
                 body = json.loads(raw)
             except Exception as exc:  # noqa: BLE001 — malformed JSON is a 400
@@ -1004,25 +1116,34 @@ def create_router_app(
                     retryable=True,
                 )
 
-            binding = next(
-                (
-                    candidate
-                    for candidate in discovered
-                    if resolved_runtime.is_routable(
-                        binding_key(specialist_id, candidate.node_id)
+            selected: tuple[NodeBinding, str] | None = None
+            for candidate in discovered:
+                node_origin = _validated_node_origin(candidate.node_url)
+                if node_origin is None:
+                    _log.warning(
+                        "[router] ignoring non-origin node URL for media route %s/%s",
+                        specialist_id,
+                        candidate.node_id,
                     )
-                ),
-                None,
-            )
-            if binding is None:
+                    continue
+                if resolved_runtime.is_routable(
+                    binding_key(specialist_id, candidate.node_id)
+                ):
+                    selected = (candidate, node_origin)
+                    break
+            if selected is None:
                 resolved_runtime.record_punt()
                 return punt_response(
                     code=PuntCode.LOCAL_ROUTE_UNAVAILABLE,
                     message="The requested local specialist is temporarily unavailable.",
-                    reason=f"all runtime circuits open for specialist {specialist_id!r}",
+                    reason=(
+                        "no request-safe, runtime-ready media binding for "
+                        f"specialist {specialist_id!r}"
+                    ),
                     local_attempts=0,
                     retryable=True,
                 )
+            binding, node_origin = selected
 
             upstream_body = _rewrite_model_for_upstream(
                 body,
@@ -1033,6 +1154,7 @@ def create_router_app(
                 client,
                 protocol=protocol,
                 binding=binding,
+                node_origin=node_origin,
                 specialist_id=specialist_id,
                 upstream_body=upstream_body,
                 runtime_health=resolved_runtime,

@@ -332,6 +332,42 @@ def test_media_route_rejects_actual_request_over_limit_when_length_header_lies()
     assert response.status_code == 413
 
 
+async def test_media_route_stops_streaming_request_when_length_header_lies() -> None:
+    protocol = JSON_PROTOCOLS_BY_PATH["/v1/images/generations"]
+
+    class ManyChunks(httpx.AsyncByteStream):
+        def __init__(self) -> None:
+            self.yielded = 0
+
+        async def __aiter__(self):
+            for _ in range(20):
+                self.yielded += 1
+                yield b"x" * (protocol.max_request_bytes // 4)
+
+    stream = ManyChunks()
+    snapshot = _snapshot(capabilities=[f"protocol:{protocol.protocol_id}"])
+    app = create_router_app(
+        snapshot_source=lambda: snapshot,
+        http_client=httpx.AsyncClient(
+            transport=httpx.MockTransport(
+                lambda request: pytest.fail("oversized request reached upstream")
+            )
+        ),
+    )
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app),
+        base_url="http://router",
+    ) as client:
+        response = await client.post(
+            protocol.public_path,
+            content=stream,
+            headers={"Content-Type": "application/json", "Content-Length": "2"},
+        )
+
+    assert response.status_code == 413
+    assert stream.yielded == 5
+
+
 def test_media_route_rejects_actual_upstream_response_over_protocol_limit() -> None:
     protocol = JSON_PROTOCOLS_BY_PATH["/v1/images/generations"]
     oversized = b"x" * (protocol.max_response_bytes + 1)
@@ -353,6 +389,9 @@ def test_media_route_rejects_actual_upstream_response_over_protocol_limit() -> N
     assert response.status_code == 502
     assert response.headers.get("X-Slancha-Outcome") is None
     assert "response body exceeds" in response.json()["detail"]
+    assert response.headers["X-Slancha-Specialist"] == SPECIALIST_ID
+    assert response.headers["X-Slancha-Node"] == "media-node"
+    assert "response_too_large" in response.headers["X-Slancha-Reason"]
 
 
 def test_media_route_rejects_unexpected_success_media_type() -> None:
@@ -375,6 +414,9 @@ def test_media_route_rejects_unexpected_success_media_type() -> None:
     assert response.status_code == 502
     assert response.headers.get("X-Slancha-Outcome") is None
     assert "unexpected content type" in response.json()["detail"]
+    assert response.headers["X-Slancha-Specialist"] == SPECIALIST_ID
+    assert response.headers["X-Slancha-Node"] == "media-node"
+    assert "unexpected_media_type" in response.headers["X-Slancha-Reason"]
 
 
 def test_media_route_attempts_only_one_node_after_upstream_connect_failure() -> None:
@@ -400,6 +442,65 @@ def test_media_route_attempts_only_one_node_after_upstream_connect_failure() -> 
     assert response.status_code == 502
     assert response.headers.get("X-Slancha-Outcome") is None
     assert attempted_hosts == ["first"]
+    assert response.headers["X-Slancha-Specialist"] == SPECIALIST_ID
+    assert response.headers["X-Slancha-Node"] == "first"
+    assert "transport_failure" in response.headers["X-Slancha-Reason"]
+
+
+def test_media_route_rejects_node_url_path_and_query_before_upstream() -> None:
+    protocol_id = "openai.images.generations.v1"
+    response = _client(
+        _snapshot(
+            capabilities=[f"protocol:{protocol_id}"],
+            bindings=[
+                _binding(
+                    node_url=(
+                        "http://media-node:8091/attacker-prefix"
+                        "?redirect=/v1/images/generations"
+                    )
+                )
+            ],
+        ),
+        lambda request: pytest.fail("path-bearing node URL reached upstream"),
+    ).post(
+        "/v1/images/generations",
+        json={"model": SPECIALIST_ID, "prompt": "red cube"},
+    )
+
+    assert response.status_code == 503
+    assert response.headers["X-Slancha-Outcome"] == "punt"
+    assert response.json()["error"]["details"]["local_attempts"] == 0
+
+
+def test_media_route_skips_invalid_node_origin_and_uses_later_valid_binding() -> None:
+    protocol_id = "openai.images.generations.v1"
+    attempted_urls: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        attempted_urls.append(str(request.url))
+        return httpx.Response(
+            200,
+            json={"data": [{"b64_json": "aW1hZ2U="}]},
+            headers={"content-type": "application/json"},
+        )
+
+    response = _client(
+        _snapshot(
+            capabilities=[f"protocol:{protocol_id}"],
+            bindings=[
+                _binding(node_id="bad", node_url="http://bad:8091/prefix"),
+                _binding(node_id="good", node_url="http://good:8091/"),
+            ],
+        ),
+        handler,
+    ).post(
+        "/v1/images/generations",
+        json={"model": SPECIALIST_ID, "prompt": "red cube"},
+    )
+
+    assert response.status_code == 200
+    assert attempted_urls == ["http://good:8091/v1/images/generations"]
+    assert response.headers["X-Slancha-Node"] == "good"
 
 
 def test_media_route_returns_typed_punt_when_capable_node_is_unreachable() -> None:
@@ -437,3 +538,41 @@ def test_localai_video_requires_inline_base64_response_format() -> None:
 
     assert response.status_code == 400
     assert "b64_json" in response.json()["detail"]
+
+
+@pytest.mark.parametrize(
+    "upstream_payload",
+    [
+        {"data": [{"url": "/generated/video.mp4"}]},
+        {"data": [{}]},
+        {"data": [{"b64_json": "", "url": "/generated/video.mp4"}]},
+        {"data": []},
+    ],
+)
+def test_localai_video_rejects_success_without_only_inline_b64_data(
+    upstream_payload: dict[str, Any],
+) -> None:
+    protocol_id = "localai.video.v1"
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json=upstream_payload,
+            headers={"content-type": "application/json"},
+        )
+
+    response = _client(
+        _snapshot(capabilities=[f"protocol:{protocol_id}"]), handler
+    ).post(
+        "/video",
+        json={
+            "model": SPECIALIST_ID,
+            "prompt": "red cube rotates",
+            "response_format": "b64_json",
+        },
+    )
+
+    assert response.status_code == 502
+    assert response.headers["X-Slancha-Specialist"] == SPECIALIST_ID
+    assert response.headers["X-Slancha-Node"] == "media-node"
+    assert "invalid_inline_video" in response.headers["X-Slancha-Reason"]
