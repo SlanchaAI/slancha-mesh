@@ -3,10 +3,12 @@
 This project follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 and intends to use semantic versioning after the alpha interface settles.
 
-## Unreleased
+## [0.1.0a1] - 2026-08-02
 
 ### Added
 
+- Reproducible core and add-on wheel/source-distribution validation, including
+  archive isolation and clean-install checks.
 - Stable typed-punt response for unsuitable or exhausted local routes.
 - Per-binding runtime circuits and request-readiness health fields.
 - Durable node and router service roles for systemd, launchd, and Windows.
@@ -14,6 +16,7 @@ and intends to use semantic versioning after the alpha interface settles.
 
 ### Changed
 
+- Core and add-on package versions now align at `0.1.0a1`.
 - Fine-tuning, replay evaluation, promotion gates, and the dashboard now ship
   in the optional `slancha-mesh-tune` distribution.
 - Core packaging excludes tests, tuning code, corpora, and training assets.

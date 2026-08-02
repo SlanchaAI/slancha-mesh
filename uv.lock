@@ -4812,7 +4812,7 @@ dependencies = [
 
 [[package]]
 name = "slancha-mesh"
-version = "0.0.6"
+version = "0.1.0a1"
 source = { editable = "." }
 dependencies = [
     { name = "fastapi" },
@@ -4865,7 +4865,7 @@ provides-extras = ["serve", "signing", "classifier", "dev"]
 
 [[package]]
 name = "slancha-mesh-tune"
-version = "0.0.6"
+version = "0.1.0a1"
 source = { editable = "packages/slancha-mesh-tune" }
 dependencies = [
     { name = "slancha-mesh" },

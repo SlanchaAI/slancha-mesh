@@ -81,15 +81,26 @@ jobs:
       - name: Setup uv
         uses: astral-sh/setup-uv@v5
 
-      - name: Build both distributions
+      - name: Build both wheels and source distributions
         run: |
-          uv build --package slancha-mesh --wheel --out-dir dist/core
-          uv build --package slancha-mesh-tune --wheel --out-dir dist/tune
+          set -euo pipefail
+          mkdir .venv-router
+          trap 'rm -rf .venv-router' EXIT
+          printf 'must-not-ship\n' > .venv-router/release-artifact-sentinel.txt
+          uv build --package slancha-mesh --out-dir dist/core
+          uv build --package slancha-mesh-tune --out-dir dist/tune
+
+      - name: Verify release archive contents
+        run: python scripts/check_release_artifacts.py dist/core dist/tune
+
+      - name: Validate release metadata
+        run: uv run --with twine twine check dist/core/* dist/tune/*
 
       - name: Prove core has no tuning harness
         run: |
           python -m venv /tmp/slancha-core
           /tmp/slancha-core/bin/pip install dist/core/*.whl
+          /tmp/slancha-core/bin/python -c 'import importlib.metadata as metadata; import mesh; assert metadata.version("slancha-mesh") == mesh.__version__ == "0.1.0a1"'
           /tmp/slancha-core/bin/python -c 'import mesh.serve; import importlib.util; assert importlib.util.find_spec("mesh.training") is None'
           ! /tmp/slancha-core/bin/slancha-mesh --help | grep -q loop
 
@@ -97,9 +108,11 @@ jobs:
         run: |
           unzip -Z1 dist/tune/*.whl | grep -qx LICENSE
           unzip -Z1 dist/tune/*.whl | grep -qx NOTICE
-          /tmp/slancha-core/bin/pip install --no-deps dist/tune/*.whl
-          /tmp/slancha-core/bin/slancha-mesh-tune check
-          /tmp/slancha-core/bin/python -c 'import mesh.training, mesh.eval.gate'
+          python -m venv /tmp/slancha-tune
+          /tmp/slancha-tune/bin/pip install --find-links "${{ github.workspace }}/dist/core" dist/tune/*.whl
+          /tmp/slancha-tune/bin/python -c 'import importlib.metadata as metadata; assert metadata.version("slancha-mesh") == metadata.version("slancha-mesh-tune") == "0.1.0a1"'
+          /tmp/slancha-tune/bin/slancha-mesh-tune check
+          /tmp/slancha-tune/bin/python -c 'import mesh.training, mesh.eval.gate'
 
   # The docker/ registry image (the push/central-registry control plane) had
   # no CI coverage — it could bit-rot silently. Build it + smoke the live
