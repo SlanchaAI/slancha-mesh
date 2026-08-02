@@ -203,6 +203,60 @@ MULTIPART_PROTOCOLS = (
     ),
 )
 
+
+VIDEO_JOB_PROTOCOL = MultipartProtocol(
+    protocol_id="vllm_omni.video.jobs.v1",
+    public_path="/v1/videos",
+    upstream_path="/v1/videos",
+    max_request_bytes=128 * _MIB,
+    max_response_bytes=1 * _MIB,
+    success_media_types=("application/json",),
+    max_file_bytes=128 * _MIB,
+    max_field_bytes=1 * _MIB,
+    max_files=1,
+    max_fields=32,
+    allowed_fields=(
+        "model",
+        "prompt",
+        "seconds",
+        "size",
+        "user",
+        "image_reference",
+        "video_reference",
+        "audio_reference",
+        "width",
+        "height",
+        "num_frames",
+        "fps",
+        "num_inference_steps",
+        "guidance_scale",
+        "guidance_scale_2",
+        "boundary_ratio",
+        "flow_shift",
+        "true_cfg_scale",
+        "seed",
+        "generate_sound",
+        "sound_duration",
+        "negative_prompt",
+        "enable_frame_interpolation",
+        "frame_interpolation_exp",
+        "frame_interpolation_scale",
+        "frame_interpolation_model_path",
+        "lora",
+        "extra_params",
+    ),
+    allowed_file_fields=("input_reference",),
+    allowed_file_media_types=(
+        "application/octet-stream",
+        "image/jpeg",
+        "image/png",
+        "image/webp",
+        "video/mp4",
+        "video/quicktime",
+        "video/webm",
+    ),
+)
+
 MULTIPART_PROTOCOLS_BY_PATH = {
     protocol.public_path: protocol for protocol in MULTIPART_PROTOCOLS
 }
@@ -220,4 +274,5 @@ __all__ = [
     "MULTIPART_PROTOCOLS_BY_PATH",
     "JsonProtocol",
     "MultipartProtocol",
+    "VIDEO_JOB_PROTOCOL",
 ]

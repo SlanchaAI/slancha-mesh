@@ -517,7 +517,10 @@ def cmd_router(args: argparse.Namespace) -> int:
                f"(spool={usage_sink.spool})")
 
     app = create_router_app(
-        snapshot_source=holder.get, auto_router=auto_router, usage_sink=usage_sink
+        snapshot_source=holder.get,
+        auto_router=auto_router,
+        usage_sink=usage_sink,
+        video_job_db_path=args.video_job_db,
     )
 
     # Fail-closed (#97): don't expose the router on a public interface unauthenticated.
@@ -893,6 +896,15 @@ def build_parser() -> argparse.ArgumentParser:
     rt.add_argument("--auto-route", action="store_true",
                     help='Resolve `model: "auto"` per-prompt via the built-in classifier '
                          "(requires the [classifier] extra).")
+    rt.add_argument(
+        "--video-job-db",
+        default=None,
+        metavar="PATH",
+        help=(
+            "SQLite owner map for asynchronous video jobs "
+            "(default ~/.local/state/slancha-mesh/router/video-jobs.sqlite3)."
+        ),
+    )
     rt.set_defaults(func=cmd_router)
 
     # semantic-router — supported vLLM Semantic Router front door

@@ -10,9 +10,10 @@ from typing import Iterator
 
 import httpx
 import uvicorn
-from fastapi import FastAPI, Response
+from fastapi import FastAPI, Request, Response
 
 from mesh.discovery import DiscoveredSpecialist, DiscoveryResult
+from mesh.models import SpecialistCard
 from mesh.router_app import create_router_app, discovery_to_snapshot
 from mesh.runtime_health import RouterRuntimeHealth
 
@@ -131,3 +132,114 @@ def test_live_socket_local_success_punt_suppression_and_recovery() -> None:
             assert healthy["status"] == "ok"
             assert healthy["specialists_routable"] == 1
             assert healthy["open_circuits"] == 0
+
+
+def test_live_socket_video_owner_survives_router_restart(tmp_path) -> None:
+    specialist_id = "live-video"
+    upstream = FastAPI()
+    upstream_calls: list[tuple[str, str]] = []
+
+    @upstream.post("/v1/videos")
+    async def create_video(request: Request):
+        form = await request.form()
+        upstream_calls.append(("POST", "/v1/videos"))
+        assert form["model"] == specialist_id
+        assert form["prompt"] == "restart proof"
+        return {
+            "id": "video_gen_live_123",
+            "object": "video",
+            "status": "queued",
+            "created_at": 1701234567,
+        }
+
+    @upstream.get("/v1/videos/video_gen_live_123")
+    async def poll_video():
+        upstream_calls.append(("GET", "/v1/videos/video_gen_live_123"))
+        return {
+            "id": "video_gen_live_123",
+            "object": "video",
+            "status": "completed",
+            "progress": 100,
+            "created_at": 1701234567,
+        }
+
+    @upstream.get("/v1/videos/video_gen_live_123/content")
+    async def download_video():
+        upstream_calls.append(("GET", "/v1/videos/video_gen_live_123/content"))
+        return Response(content=b"live-video-bytes", media_type="video/mp4")
+
+    @upstream.delete("/v1/videos/video_gen_live_123")
+    async def delete_video():
+        upstream_calls.append(("DELETE", "/v1/videos/video_gen_live_123"))
+        return {
+            "id": "video_gen_live_123",
+            "deleted": True,
+            "object": "video.deleted",
+        }
+
+    with _serve_live_app(upstream) as upstream_url:
+        discovery = DiscoveryResult(
+            specialists={
+                specialist_id: DiscoveredSpecialist(
+                    specialist_id=specialist_id,
+                    node_urls=(upstream_url,),
+                )
+            }
+        )
+        card = SpecialistCard(
+            model_id="example/video",
+            specialist_id=specialist_id,
+            domain="general",
+            difficulty_tiers=["medium"],
+            required_backend="external",
+            served_model_name=specialist_id,
+            storage_gb=1,
+            runtime_gb=1,
+            min_vram_gb=1,
+            context_window=4096,
+            n_layers=1,
+            estimated_tps_at={"test": 1},
+            capabilities=["protocol:vllm_omni.video.jobs.v1"],
+        )
+        snapshot = discovery_to_snapshot(discovery, catalog=[card])
+        db_path = tmp_path / "router" / "video-jobs.sqlite3"
+
+        first_router = create_router_app(
+            snapshot_source=lambda: snapshot,
+            video_job_db_path=db_path,
+        )
+        with _serve_live_app(first_router) as router_url, httpx.Client(timeout=2) as client:
+            created = client.post(
+                f"{router_url}/v1/videos",
+                files={
+                    "model": (None, specialist_id),
+                    "prompt": (None, "restart proof"),
+                },
+            )
+            assert created.status_code == 200, created.text
+            public_id = created.json()["id"]
+        restarted_router = create_router_app(
+            snapshot_source=lambda: snapshot,
+            video_job_db_path=db_path,
+        )
+        with _serve_live_app(restarted_router) as router_url, httpx.Client(timeout=2) as client:
+            polled = client.get(f"{router_url}/v1/videos/{public_id}")
+            content = client.get(f"{router_url}/v1/videos/{public_id}/content")
+            deleted = client.delete(f"{router_url}/v1/videos/{public_id}")
+            gone = client.get(f"{router_url}/v1/videos/{public_id}")
+    assert polled.status_code == 200
+    assert polled.json()["id"] == public_id
+    assert polled.json()["status"] == "completed"
+    assert content.content == b"live-video-bytes"
+    assert deleted.json() == {
+        "id": public_id,
+        "deleted": True,
+        "object": "video.deleted",
+    }
+    assert gone.status_code == 404
+    assert upstream_calls == [
+        ("POST", "/v1/videos"),
+        ("GET", "/v1/videos/video_gen_live_123"),
+        ("GET", "/v1/videos/video_gen_live_123/content"),
+        ("DELETE", "/v1/videos/video_gen_live_123"),
+    ]
