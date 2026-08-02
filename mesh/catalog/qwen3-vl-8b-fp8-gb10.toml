@@ -1,0 +1,34 @@
+# Medium general/vision lane — ADOPTED endpoint on promaxgb10-d325.
+# The existing vLLM service owns Qwen/Qwen3-VL-8B-Instruct-FP8 on :8901
+# under served name `qwen3-vl-8b`; mesh only advertises and routes to it.
+# Keep this card on the GB10: its loopback URL relies on --peer host-pinning.
+model_id = "Qwen/Qwen3-VL-8B-Instruct-FP8"
+specialist_id = "qwen3-vl-8b-fp8-gb10"
+domain = "general"
+# Medium only: Spark keeps the easy lane and Dell's larger shared endpoint
+# keeps hard work. Vision callers can also select this specialist explicitly.
+difficulty_tiers = ["medium"]
+languages = ["en", "zh", "es", "fr", "de", "ja", "ko"]
+required_backend = "external"
+static_base_url = "http://127.0.0.1:8901"
+served_model_name = "qwen3-vl-8b"
+storage_gb = 9.9
+runtime_gb = 12.0
+min_vram_gb = 10.0
+# The live server deliberately caps the upstream model's 262K window at 64K.
+context_window = 65536
+n_layers = 36
+hidden_size = 4096
+n_kv_heads = 8
+head_dim = 128
+kv_arch = "gqa"
+capabilities = ["streaming", "system_prompt", "tools", "vision"]
+supports_lora_finetune = false
+upstream_model_card = "Qwen/Qwen3-VL-8B-Instruct-FP8"
+license = "Apache-2.0"
+coverage_tier = 1
+
+# MEASURED on this endpoint 2026-08-02: an 8-token warm completion in 0.70s
+# end-to-end. This small sample is deployment evidence, not a throughput claim.
+[estimated_tps_at]
+gb10 = 11.4
