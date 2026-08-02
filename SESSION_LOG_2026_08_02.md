@@ -100,3 +100,102 @@ Remaining seams: HTTPS needs the tailnet-wide certificate toggle; the current
 TCP proxy remains WireGuard-encrypted, ACL-filtered, and tailnet-only. Cloud
 punt consumption is not configured in the deployed vLLM policy; local
 exhaustion returns the typed punt for an upstream cloud executor to consume.
+
+## Multimodal adapters and private media front door
+
+Goal: expose the new trusted image/audio/edit/transcription/video routes for
+personal use without adding a heavyweight runtime to Mesh core or weakening
+the existing chat path.
+
+### Runtime examples
+
+- Added pinned LocalAI 4.7.1 container config, protocol map, conservative
+  external-card template, and curls for image generation/edit, text to speech,
+  transcription, and inline synchronous video.
+- Added pinned vLLM-Omni 0.20.0 startup guidance, protocol map, conservative
+  external-card template, and curls for image generation/edit, audio, and the
+  durable asynchronous video lifecycle.
+- Both cards tell operators to replace model identity, immutable revision where
+  applicable, license, and measured capacity. Each advertises one conservative
+  protocol; operators must add a token only after proving that endpoint on the
+  configured model.
+- Neither runtime, CUDA, media codecs, nor weights became a core dependency.
+  Primary references are linked from `examples/multimodal/README.md`.
+
+No LocalAI or vLLM-Omni process/container was present on the six reachable
+SSH-capable fleet hosts. No runtime was installed and no weights were
+downloaded. Status: adapters built, not wired; missing producer is an
+operator-configured LocalAI or vLLM-Omni specialist service.
+
+### Real request and loopback evidence
+
+A tiny inline PNG request used the OpenAI vision-chat shape through the live
+Mac Mesh router. The body and model output were discarded. Bounded result:
+
+- HTTP 200;
+- `X-Slancha-Specialist: qwen3-vl-8b-fp8-gb10`;
+- `X-Slancha-Node: promaxgb10-d325.taila93596.ts.net:8003`;
+- selection reason `primary`, with queue depth zero.
+
+Real-TCP tests now put runtime-shaped upstream and router applications on
+loopback sockets. They inspect trusted method/path routing, JSON and multipart
+content types, binary audio, upstream-only authorization, model aliasing, and
+file bytes. The asynchronous video test creates a job, restarts the router with
+the non-owner ranked first, then polls, downloads, and deletes through the
+persisted owner. The decoy node receives zero calls.
+
+### Tailscale Serve change
+
+Before mutation, private TCP Serve contained only `:8772` and chat `:8888`.
+Using the installed 1.98 CLI syntax, the additive command was:
+
+```bash
+tailscale serve --bg --tcp=8080 tcp://127.0.0.1:8080
+```
+
+After mutation, Serve contains `:8080 -> 127.0.0.1:8080`, `:8772`, and
+`:8888`; each listener reports `tailnet only`. Funnel was not enabled and Mesh
+still binds loopback. Rollback removes only the new listener:
+
+```bash
+tailscale serve --tcp=8080 off
+```
+
+From Orin, short MagicDNS resolution was unavailable because that host does not
+accept tailnet DNS. Resolving the Mac peer through Orin's local Tailscale
+netmap, without recording its address, proved both endpoints over the private
+Serve listener:
+
+- `/health`: HTTP 200, status `ok`, three reachable and three routable;
+- `/v1/models`: HTTP 200, four entries, Qwen3-VL specialist present.
+
+Status: direct media front door wired and live. Chat remains on vLLM Semantic
+Router `:8888`. Paid/cloud handoff remains caller-owned and is not hidden inside
+either path.
+
+### Verification
+
+- Runtime example/real-socket focus: 5 passed; Ruff clean; Docker Compose and
+  both JSON protocol maps parsed.
+- Router/media/video regression packet: 137 passed.
+- Strict catalog validation: 18 cards clean.
+- Full suite: 1,223 passed, 16 skipped, six pre-existing training-stub
+  warnings.
+- Whole core/add-on Ruff gate: clean.
+- Release artifacts: two wheels plus two source distributions built; archive
+  inspection passed all four; `twine check` passed all four; isolated uv-based
+  installs proved core excludes training and the add-on composes at version
+  `0.1.0a1`.
+
+### Artifacts
+
+- `examples/multimodal/README.md` — optional runtime boundary, startup, and
+  adopted endpoint calls.
+- `examples/multimodal/localai/` — pinned container, protocol map, card
+  template.
+- `examples/multimodal/vllm-omni/` — pinned runtime map and card template.
+- `mesh/tests/test_multimodal_examples.py` — mapping/card drift gate.
+- `mesh/tests/test_router_live_socket.py` — runtime-shaped wire and durable
+  owner-pin proof.
+- `examples/oss-routing/README.md` — alpha split between chat `:8888`, media
+  `:8080`, and caller-owned cloud policy.
