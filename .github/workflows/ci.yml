@@ -109,7 +109,8 @@ jobs:
           unzip -Z1 dist/tune/*.whl | grep -qx LICENSE
           unzip -Z1 dist/tune/*.whl | grep -qx NOTICE
           python -m venv /tmp/slancha-tune
-          /tmp/slancha-tune/bin/pip install --find-links "${{ github.workspace }}/dist/core" dist/tune/*.whl
+          /tmp/slancha-tune/bin/pip install dist/core/*.whl
+          /tmp/slancha-tune/bin/pip install --no-index --no-deps dist/tune/*.whl
           /tmp/slancha-tune/bin/python -c 'import importlib.metadata as metadata; assert metadata.version("slancha-mesh") == metadata.version("slancha-mesh-tune") == "0.1.0a1"'
           /tmp/slancha-tune/bin/slancha-mesh-tune check
           /tmp/slancha-tune/bin/python -c 'import mesh.training, mesh.eval.gate'
