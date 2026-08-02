@@ -56,6 +56,8 @@ def test_crud_persists_only_routing_ownership(tmp_path) -> None:
         "updated_at",
         "expires_at",
         "last_status",
+        "delete_claim_token",
+        "delete_claimed_until",
     }
 
 
@@ -89,6 +91,69 @@ def test_wal_store_supports_concurrent_app_threads(tmp_path) -> None:
     assert all(store.get(record.public_id) is not None for record in records)
     with sqlite3.connect(store.path) as connection:
         assert connection.execute("PRAGMA journal_mode").fetchone()[0] == "wal"
+
+
+def test_existing_owner_database_is_migrated_for_delete_claims(tmp_path) -> None:
+    db_path = tmp_path / "video-jobs.sqlite3"
+    with sqlite3.connect(db_path) as connection:
+        connection.execute(
+            """
+            CREATE TABLE video_jobs (
+                public_id TEXT PRIMARY KEY,
+                protocol_id TEXT NOT NULL,
+                specialist_id TEXT NOT NULL,
+                owner_node_id TEXT NOT NULL,
+                owner_origin TEXT NOT NULL,
+                upstream_job_id TEXT NOT NULL,
+                created_at REAL NOT NULL,
+                updated_at REAL NOT NULL,
+                expires_at REAL NOT NULL,
+                last_status TEXT NOT NULL
+            )
+            """
+        )
+
+    store = VideoJobStore(db_path)
+    record = _create(store)
+
+    claim = store.claim_delete(record.public_id)
+    assert claim is not None
+    assert claim.job == record
+
+
+def test_delete_claim_is_exclusive_and_recovers_after_bounded_lease(tmp_path) -> None:
+    now = [1_000.0]
+    store = VideoJobStore(
+        tmp_path / "video-jobs.sqlite3",
+        clock=lambda: now[0],
+    )
+    record = _create(store)
+
+    first = store.claim_delete(record.public_id, lease_s=10)
+
+    assert first is not None
+    assert first.job == record
+    assert store.claim_delete(record.public_id, lease_s=10) is None
+
+    now[0] = 1_011.0
+    recovered = store.claim_delete(record.public_id, lease_s=10)
+    assert recovered is not None
+    assert recovered.token != first.token
+    assert store.release_delete(record.public_id, first.token) is False
+    assert store.confirm_delete(record.public_id, recovered.token) is True
+    assert store.get(record.public_id) is None
+
+
+def test_failed_delete_claim_can_be_released_for_immediate_retry(tmp_path) -> None:
+    store = VideoJobStore(tmp_path / "video-jobs.sqlite3")
+    record = _create(store)
+    claim = store.claim_delete(record.public_id)
+    assert claim is not None
+
+    assert store.release_delete(record.public_id, claim.token) is True
+    retry = store.claim_delete(record.public_id)
+    assert retry is not None
+    assert retry.token != claim.token
 
 
 @pytest.mark.parametrize(

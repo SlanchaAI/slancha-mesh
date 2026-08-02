@@ -39,6 +39,12 @@ class VideoJob:
     status: str
 
 
+@dataclass(frozen=True)
+class VideoDeleteClaim:
+    job: VideoJob
+    token: str
+
+
 class VideoJobStore:
     """Small SQLite owner map; each operation owns its connection."""
 
@@ -73,10 +79,14 @@ class VideoJobStore:
                     created_at REAL NOT NULL,
                     updated_at REAL NOT NULL,
                     expires_at REAL NOT NULL,
-                    last_status TEXT NOT NULL
+                    last_status TEXT NOT NULL,
+                    delete_claim_token TEXT,
+                    delete_claimed_until REAL
                 )
                 """
             )
+            self._ensure_column(connection, "delete_claim_token", "TEXT")
+            self._ensure_column(connection, "delete_claimed_until", "REAL")
             connection.execute(
                 "CREATE INDEX IF NOT EXISTS video_jobs_expires_at "
                 "ON video_jobs(expires_at)"
@@ -86,6 +96,30 @@ class VideoJobStore:
         connection = sqlite3.connect(self.path, timeout=5.0)
         connection.execute("PRAGMA busy_timeout=5000")
         return connection
+
+    @staticmethod
+    def _ensure_column(
+        connection: sqlite3.Connection,
+        name: str,
+        declaration: str,
+    ) -> None:
+        columns = {
+            row[1] for row in connection.execute("PRAGMA table_info(video_jobs)")
+        }
+        if name not in columns:
+            try:
+                connection.execute(
+                    f"ALTER TABLE video_jobs ADD COLUMN {name} {declaration}"
+                )
+            except sqlite3.OperationalError:
+                # Another router process may have completed the idempotent
+                # migration after this connection inspected the schema.
+                columns = {
+                    row[1]
+                    for row in connection.execute("PRAGMA table_info(video_jobs)")
+                }
+                if name not in columns:
+                    raise
 
     @staticmethod
     def _validate_text(field: str, value: str) -> str:
@@ -222,10 +256,71 @@ class VideoJobStore:
             )
             return cursor.rowcount == 1
 
+    def claim_delete(
+        self,
+        public_id: str,
+        *,
+        lease_s: float = 300.0,
+    ) -> VideoDeleteClaim | None:
+        if lease_s <= 0:
+            raise ValueError("lease_s must be positive")
+        now = self._clock()
+        token = uuid.uuid4().hex
+        with self._connect() as connection:
+            self._cleanup_expired(connection, now)
+            cursor = connection.execute(
+                """
+                UPDATE video_jobs
+                SET delete_claim_token = ?, delete_claimed_until = ?
+                WHERE public_id = ? AND expires_at > ?
+                  AND (
+                    delete_claim_token IS NULL
+                    OR delete_claimed_until IS NULL
+                    OR delete_claimed_until <= ?
+                  )
+                """,
+                (token, now + lease_s, public_id, now, now),
+            )
+            if cursor.rowcount != 1:
+                return None
+            row = connection.execute(
+                """
+                SELECT public_id, protocol_id, specialist_id, owner_node_id,
+                       owner_origin, upstream_job_id, created_at, updated_at,
+                       expires_at, last_status
+                FROM video_jobs WHERE public_id = ?
+                """,
+                (public_id,),
+            ).fetchone()
+        if row is None:  # pragma: no cover - same transaction updated it
+            return None
+        return VideoDeleteClaim(job=self._from_row(row), token=token)
+
+    def release_delete(self, public_id: str, token: str) -> bool:
+        with self._connect() as connection:
+            cursor = connection.execute(
+                """
+                UPDATE video_jobs
+                SET delete_claim_token = NULL, delete_claimed_until = NULL
+                WHERE public_id = ? AND delete_claim_token = ?
+                """,
+                (public_id, token),
+            )
+            return cursor.rowcount == 1
+
+    def confirm_delete(self, public_id: str, token: str) -> bool:
+        with self._connect() as connection:
+            cursor = connection.execute(
+                "DELETE FROM video_jobs WHERE public_id = ? AND delete_claim_token = ?",
+                (public_id, token),
+            )
+            return cursor.rowcount == 1
+
 
 __all__ = [
     "DEFAULT_VIDEO_JOB_DB",
     "DEFAULT_VIDEO_JOB_TTL_S",
+    "VideoDeleteClaim",
     "VideoJob",
     "VideoJobStore",
 ]
