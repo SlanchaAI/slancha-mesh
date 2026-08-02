@@ -52,6 +52,7 @@ client can audit what the router picked without parsing logs:
 from __future__ import annotations
 
 import hmac
+import json
 import logging
 import os
 import threading
@@ -75,6 +76,7 @@ from mesh.models import (
     RegistrySnapshot,
     SpecialistCard,
 )
+from mesh.protocols import JSON_PROTOCOLS, JsonProtocol
 from mesh.registry import MeshRegistry
 from mesh.runtime_health import RouterRuntimeHealth, binding_key
 from mesh.usage import (
@@ -293,6 +295,127 @@ def _safe_media_type(raw: str | None, default: str) -> str:
         return default
     base = raw.split(";", 1)[0].strip().lower()  # drop any ;charset=...
     return raw if base in _ALLOWED_MEDIA_TYPES else default
+
+
+def _base_media_type(raw: str | None) -> str:
+    """Normalize a response media type for exact protocol allowlisting."""
+
+    if not raw:
+        return ""
+    return raw.split(";", 1)[0].strip().lower()
+
+
+async def _read_bounded_response(
+    response: httpx.Response,
+    *,
+    max_bytes: int,
+) -> bytes:
+    """Read one upstream response without trusting its Content-Length."""
+
+    declared = response.headers.get("content-length")
+    if declared is not None and declared.isdigit() and int(declared) > max_bytes:
+        raise ValueError(f"response body exceeds {max_bytes} bytes")
+    content = bytearray()
+    async for chunk in response.aiter_bytes():
+        content.extend(chunk)
+        if len(content) > max_bytes:
+            raise ValueError(f"response body exceeds {max_bytes} bytes")
+    return bytes(content)
+
+
+async def _proxy_json_media(
+    client: httpx.AsyncClient,
+    *,
+    protocol: JsonProtocol,
+    binding: NodeBinding,
+    specialist_id: str,
+    upstream_body: dict,
+    runtime_health: RouterRuntimeHealth,
+) -> Response:
+    """Send one non-idempotent media request to exactly one selected node."""
+
+    key = binding_key(specialist_id, binding.node_id)
+    upstream_url = f"{binding.node_url.rstrip('/')}{protocol.upstream_path}"  # type: ignore[union-attr]
+    started_at = time.perf_counter()
+    try:
+        async with client.stream(
+            protocol.method,
+            upstream_url,
+            json=upstream_body,
+            headers=_upstream_headers(),
+        ) as upstream:
+            if 300 <= upstream.status_code < 400:
+                runtime_health.record_failure(key, f"http_{upstream.status_code}")
+                raise HTTPException(
+                    status_code=status.HTTP_502_BAD_GATEWAY,
+                    detail="upstream media redirects are not accepted",
+                )
+
+            media_type = _base_media_type(upstream.headers.get("content-type"))
+            accepted = (
+                protocol.success_media_types
+                if upstream.status_code < 400
+                else ("application/json", "text/plain")
+            )
+            if media_type not in accepted:
+                runtime_health.record_failure(key, "unexpected_media_type")
+                raise HTTPException(
+                    status_code=status.HTTP_502_BAD_GATEWAY,
+                    detail=(
+                        "upstream returned unexpected content type "
+                        f"{media_type or '<missing>'!r} for {protocol.protocol_id}"
+                    ),
+                )
+            try:
+                content = await _read_bounded_response(
+                    upstream,
+                    max_bytes=protocol.max_response_bytes,
+                )
+            except ValueError as exc:
+                runtime_health.record_failure(key, "response_too_large")
+                raise HTTPException(
+                    status_code=status.HTTP_502_BAD_GATEWAY,
+                    detail=str(exc),
+                ) from exc
+    except HTTPException:
+        raise
+    except (httpx.HTTPError, OSError) as exc:
+        runtime_health.record_failure(key, exc.__class__.__name__)
+        _log.warning(
+            "[router] media upstream %s for %s failed after selection: %s",
+            binding.node_id,
+            protocol.protocol_id,
+            exc,
+        )
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=(
+                f"selected local node failed for {protocol.protocol_id}; "
+                "request was not retried"
+            ),
+        ) from exc
+
+    latency_ms = int((time.perf_counter() - started_at) * 1000)
+    if upstream.status_code >= 500:
+        runtime_health.record_failure(key, f"http_{upstream.status_code}")
+    elif upstream.status_code >= 400:
+        runtime_health.record_client_error()
+    else:
+        runtime_health.record_success(key, latency_ms)
+    return Response(
+        content=content,
+        status_code=upstream.status_code,
+        media_type=media_type,
+        headers={
+            "X-Slancha-Specialist": specialist_id,
+            "X-Slancha-Node": binding.node_id,
+            "X-Slancha-Reason": (
+                f"protocol={protocol.protocol_id}; primary; "
+                f"queue_depth={binding.queue_depth} "
+                f"p95={binding.p95_latency_ms_60s}"
+            ),
+        },
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -792,6 +915,139 @@ def create_router_app(
                 for sid in ids
             ],
         }
+
+    def _media_handler(protocol: JsonProtocol):
+        async def json_media(
+            request: Request,
+            _: Annotated[None, Depends(verify_router_token)],
+        ) -> Response:
+            content_type = _base_media_type(request.headers.get("content-type"))
+            if content_type != "application/json":
+                raise HTTPException(
+                    status_code=status.HTTP_415_UNSUPPORTED_MEDIA_TYPE,
+                    detail=f"{protocol.public_path} accepts application/json",
+                )
+
+            declared = request.headers.get("content-length")
+            if (
+                declared is not None
+                and declared.isdigit()
+                and int(declared) > protocol.max_request_bytes
+            ):
+                raise HTTPException(
+                    status_code=status.HTTP_413_CONTENT_TOO_LARGE,
+                    detail=f"request body exceeds {protocol.max_request_bytes} bytes",
+                )
+            raw = await request.body()
+            if len(raw) > protocol.max_request_bytes:
+                raise HTTPException(
+                    status_code=status.HTTP_413_CONTENT_TOO_LARGE,
+                    detail=f"request body exceeds {protocol.max_request_bytes} bytes",
+                )
+            try:
+                body = json.loads(raw)
+            except Exception as exc:  # noqa: BLE001 — malformed JSON is a 400
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=f"request body is not valid JSON: {exc}",
+                ) from exc
+            if not isinstance(body, dict):
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="request body must be a JSON object",
+                )
+
+            specialist_id = body.get("model")
+            if not isinstance(specialist_id, str) or not specialist_id:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="`model` must be a non-empty specialist_id",
+                )
+            if protocol.require_b64_json and body.get("response_format") != "b64_json":
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="LocalAI video requires response_format=b64_json",
+                )
+
+            snapshot = _snapshot()
+            if specialist_id not in snapshot.specialists:
+                resolved_runtime.record_client_error()
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail=(
+                        f"unknown specialist {specialist_id!r}; "
+                        "check `GET /v1/models` for available model ids."
+                    ),
+                )
+            card = snapshot.catalog.get(specialist_id)
+            if card is None or protocol.capability not in card.capabilities:
+                resolved_runtime.record_punt()
+                return punt_response(
+                    code=PuntCode.NO_SUITABLE_LOCAL_ROUTE,
+                    message="The requested specialist does not support this media protocol.",
+                    reason=(
+                        f"specialist {specialist_id!r} lacks capability "
+                        f"{protocol.capability!r}"
+                    ),
+                    local_attempts=0,
+                    retryable=True,
+                )
+
+            discovered = _reachable_bindings(specialist_id, snapshot)
+            if not discovered:
+                resolved_runtime.record_punt()
+                return punt_response(
+                    code=PuntCode.LOCAL_ROUTE_UNAVAILABLE,
+                    message="The requested local specialist has no healthy binding.",
+                    reason=f"no reachable node for specialist {specialist_id!r}",
+                    local_attempts=0,
+                    retryable=True,
+                )
+
+            binding = next(
+                (
+                    candidate
+                    for candidate in discovered
+                    if resolved_runtime.is_routable(
+                        binding_key(specialist_id, candidate.node_id)
+                    )
+                ),
+                None,
+            )
+            if binding is None:
+                resolved_runtime.record_punt()
+                return punt_response(
+                    code=PuntCode.LOCAL_ROUTE_UNAVAILABLE,
+                    message="The requested local specialist is temporarily unavailable.",
+                    reason=f"all runtime circuits open for specialist {specialist_id!r}",
+                    local_attempts=0,
+                    retryable=True,
+                )
+
+            upstream_body = _rewrite_model_for_upstream(
+                body,
+                specialist_id,
+                snapshot,
+            )
+            return await _proxy_json_media(
+                client,
+                protocol=protocol,
+                binding=binding,
+                specialist_id=specialist_id,
+                upstream_body=upstream_body,
+                runtime_health=resolved_runtime,
+            )
+
+        return json_media
+
+    for protocol in JSON_PROTOCOLS:
+        app.add_api_route(
+            protocol.public_path,
+            _media_handler(protocol),
+            methods=[protocol.method],
+            name=f"media:{protocol.protocol_id}",
+            summary=f"Route {protocol.protocol_id} to a capable mesh node",
+        )
 
     @app.post(
         "/v1/chat/completions",
