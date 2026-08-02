@@ -226,6 +226,7 @@ def test_live_socket_video_owner_survives_router_restart(tmp_path) -> None:
             polled = client.get(f"{router_url}/v1/videos/{public_id}")
             content = client.get(f"{router_url}/v1/videos/{public_id}/content")
             deleted = client.delete(f"{router_url}/v1/videos/{public_id}")
+            deleted_again = client.delete(f"{router_url}/v1/videos/{public_id}")
             gone = client.get(f"{router_url}/v1/videos/{public_id}")
     assert polled.status_code == 200
     assert polled.json()["id"] == public_id
@@ -236,6 +237,7 @@ def test_live_socket_video_owner_survives_router_restart(tmp_path) -> None:
         "deleted": True,
         "object": "video.deleted",
     }
+    assert deleted_again.status_code == 404
     assert gone.status_code == 404
     assert upstream_calls == [
         ("POST", "/v1/videos"),

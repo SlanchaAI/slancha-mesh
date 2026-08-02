@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import sqlite3
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from email import policy
 from email.parser import BytesParser
 from datetime import datetime, timezone
@@ -1450,3 +1453,229 @@ def test_invalid_upstream_delete_does_not_remove_local_ownership(tmp_path) -> No
 
     assert rejected.status_code == 502
     assert still_owned.status_code == 200
+
+
+@pytest.mark.parametrize(
+    "upstream_id",
+    [".", "..", "%2e%2e", "../escape", "nested/id", r"nested\id"],
+)
+def test_video_create_rejects_upstream_ids_with_path_semantics(
+    tmp_path, upstream_id: str
+) -> None:
+    db_path = tmp_path / "video-jobs.sqlite3"
+
+    response = TestClient(
+        _video_app(
+            _snapshot(capabilities=[VIDEO_JOB_CAPABILITY]),
+            lambda request: httpx.Response(
+                200,
+                json={"id": upstream_id, "status": "queued", "created_at": 1},
+            ),
+            db_path,
+        )
+    ).post(
+        "/v1/videos",
+        files=[("model", (None, SPECIALIST_ID)), ("prompt", (None, "prompt"))],
+    )
+
+    assert response.status_code == 502
+    assert not db_path.exists()
+
+
+def test_video_load_rejects_wrong_persisted_protocol_without_owner_call(tmp_path) -> None:
+    db_path = tmp_path / "video-jobs.sqlite3"
+    calls = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        return httpx.Response(
+            200,
+            json={"id": "upstream-id", "status": "queued", "created_at": 1},
+        )
+
+    with TestClient(
+        _video_app(_snapshot(capabilities=[VIDEO_JOB_CAPABILITY]), handler, db_path)
+    ) as client:
+        created = client.post(
+            "/v1/videos",
+            files=[("model", (None, SPECIALIST_ID)), ("prompt", (None, "prompt"))],
+        )
+        with sqlite3.connect(db_path) as connection:
+            connection.execute(
+                "UPDATE video_jobs SET protocol_id = ?",
+                ("some_other_protocol",),
+            )
+        response = client.get(f"/v1/videos/{created.json()['id']}")
+
+    assert response.status_code == 404
+    assert calls == 1
+
+
+def test_video_status_store_failure_does_not_expose_exception_text(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    db_path = tmp_path / "video-jobs.sqlite3"
+    mode = ["create"]
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "id": "upstream-id",
+                "status": "queued" if mode[0] == "create" else "completed",
+                "created_at": 1,
+            },
+        )
+
+    with TestClient(
+        _video_app(_snapshot(capabilities=[VIDEO_JOB_CAPABILITY]), handler, db_path)
+    ) as client:
+        created = client.post(
+            "/v1/videos",
+            files=[("model", (None, SPECIALIST_ID)), ("prompt", (None, "prompt"))],
+        )
+        mode[0] = "completed"
+
+        def fail_update(*args, **kwargs):
+            raise sqlite3.OperationalError("/private/router/video-jobs.sqlite3 leaked")
+
+        monkeypatch.setattr("mesh.job_store.VideoJobStore.update_status", fail_update)
+        response = client.get(f"/v1/videos/{created.json()['id']}")
+
+    assert response.status_code == 502
+    assert "private" not in response.text
+    assert "sqlite" not in response.text.lower()
+
+
+def test_video_create_preflight_punt_has_complete_audit_headers(tmp_path) -> None:
+    response = TestClient(
+        _video_app(
+            _snapshot(capabilities=[]),
+            lambda request: pytest.fail("capability punt reached upstream"),
+            tmp_path / "video-jobs.sqlite3",
+        )
+    ).post(
+        "/v1/videos",
+        files=[("model", (None, SPECIALIST_ID)), ("prompt", (None, "prompt"))],
+    )
+
+    assert response.status_code == 503
+    assert response.headers["X-Slancha-Specialist"] == SPECIALIST_ID
+    assert response.headers["X-Slancha-Node"] == "unselected"
+    assert "vllm_omni.video.jobs.v1" in response.headers["X-Slancha-Reason"]
+
+
+def test_video_content_overflow_fails_before_response_starts(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    db_path = tmp_path / "video-jobs.sqlite3"
+
+    class UndeclaredStream(httpx.AsyncByteStream):
+        async def __aiter__(self):
+            yield b"123456789"
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.method == "POST":
+            return httpx.Response(
+                200,
+                json={"id": "upstream-id", "status": "queued", "created_at": 1},
+            )
+        return httpx.Response(
+            200,
+            stream=UndeclaredStream(),
+            headers={"content-type": "video/mp4"},
+        )
+
+    monkeypatch.setattr("mesh.router_app._VIDEO_CONTENT_MAX_BYTES", 8)
+    with TestClient(
+        _video_app(_snapshot(capabilities=[VIDEO_JOB_CAPABILITY]), handler, db_path),
+        raise_server_exceptions=False,
+    ) as client:
+        created = client.post(
+            "/v1/videos",
+            files=[("model", (None, SPECIALIST_ID)), ("prompt", (None, "prompt"))],
+        )
+        response = client.get(f"/v1/videos/{created.json()['id']}/content")
+
+    assert response.status_code == 502
+    assert response.content != b"12345678"
+    assert "response_too_large" in response.headers["X-Slancha-Reason"]
+
+
+def test_concurrent_video_deletes_touch_owner_exactly_once(tmp_path) -> None:
+    db_path = tmp_path / "video-jobs.sqlite3"
+    owner_entered = threading.Event()
+    release_owner = threading.Event()
+    delete_calls = 0
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal delete_calls
+        if request.method == "POST":
+            return httpx.Response(
+                200,
+                json={"id": "upstream-id", "status": "queued", "created_at": 1},
+            )
+        if request.method == "DELETE":
+            delete_calls += 1
+            owner_entered.set()
+            for _ in range(200):
+                if release_owner.is_set():
+                    break
+                await asyncio.sleep(0.01)
+            assert release_owner.is_set()
+            return httpx.Response(
+                200,
+                json={"id": "upstream-id", "deleted": True, "object": "video.deleted"},
+            )
+        raise AssertionError("unexpected owner request")
+
+    with TestClient(
+        _video_app(_snapshot(capabilities=[VIDEO_JOB_CAPABILITY]), handler, db_path)
+    ) as client:
+        created = client.post(
+            "/v1/videos",
+            files=[("model", (None, SPECIALIST_ID)), ("prompt", (None, "prompt"))],
+        )
+        path = f"/v1/videos/{created.json()['id']}"
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            first = pool.submit(client.delete, path)
+            assert owner_entered.wait(timeout=2)
+            second = pool.submit(client.delete, path)
+            second_response = second.result(timeout=2)
+            release_owner.set()
+            first_response = first.result(timeout=2)
+
+    assert first_response.status_code == 200
+    assert second_response.status_code == 404
+    assert delete_calls == 1
+
+
+def test_video_delete_requires_exact_upstream_200_and_releases_claim(tmp_path) -> None:
+    db_path = tmp_path / "video-jobs.sqlite3"
+    mode = ["create"]
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if mode[0] == "create":
+            return httpx.Response(
+                200,
+                json={"id": "upstream-id", "status": "queued", "created_at": 1},
+            )
+        return httpx.Response(
+            202,
+            json={"id": "upstream-id", "deleted": True, "object": "video.deleted"},
+        )
+
+    with TestClient(
+        _video_app(_snapshot(capabilities=[VIDEO_JOB_CAPABILITY]), handler, db_path)
+    ) as client:
+        created = client.post(
+            "/v1/videos",
+            files=[("model", (None, SPECIALIST_ID)), ("prompt", (None, "prompt"))],
+        )
+        mode[0] = "delete"
+        first = client.delete(f"/v1/videos/{created.json()['id']}")
+        second = client.delete(f"/v1/videos/{created.json()['id']}")
+
+    assert first.status_code == 502
+    assert second.status_code == 502

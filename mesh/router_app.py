@@ -57,6 +57,7 @@ import logging
 import math
 import os
 import sqlite3
+import tempfile
 import threading
 import time
 from contextlib import asynccontextmanager
@@ -75,7 +76,12 @@ from starlette.formparsers import MultiPartException, MultiPartParser
 
 from mesh.discovery import DiscoveryResult
 from mesh.escalation import PuntCode, punt_response
-from mesh.job_store import DEFAULT_VIDEO_JOB_DB, VideoJob, VideoJobStore
+from mesh.job_store import (
+    DEFAULT_VIDEO_JOB_DB,
+    VideoDeleteClaim,
+    VideoJob,
+    VideoJobStore,
+)
 from mesh.models import (
     MeshSelectionResult,
     NodeBinding,
@@ -833,6 +839,8 @@ _VIDEO_CONTENT_MEDIA_TYPES = frozenset(
     {"application/octet-stream", "video/mp4", "video/webm"}
 )
 _VIDEO_CONTENT_MAX_BYTES = 512 * 1024 * 1024
+_VIDEO_CONTENT_SPOOL_MEMORY_BYTES = 8 * 1024 * 1024
+_VIDEO_DELETE_LEASE_S = 300.0
 _UPSTREAM_VIDEO_ID_CHARS = frozenset(
     "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_.-"
 )
@@ -860,6 +868,7 @@ def _parse_video_job_payload(content: bytes) -> tuple[dict[str, Any], str, str]:
     if (
         not isinstance(upstream_id, str)
         or not upstream_id
+        or upstream_id in {".", ".."}
         or len(upstream_id) > 1024
         or any(char not in _UPSTREAM_VIDEO_ID_CHARS for char in upstream_id)
     ):
@@ -976,6 +985,24 @@ def _video_upstream_error(
         },
         headers=_video_audit_headers(binding, reason),
     )
+
+
+def _video_preflight_punt(
+    response: JSONResponse,
+    *,
+    specialist_id: str,
+    reason: str,
+) -> JSONResponse:
+    response.headers.update(
+        {
+            "X-Slancha-Specialist": specialist_id,
+            "X-Slancha-Node": "unselected",
+            "X-Slancha-Reason": (
+                f"protocol={VIDEO_JOB_PROTOCOL.protocol_id}; {reason}"
+            ),
+        }
+    )
+    return response
 
 
 # ---------------------------------------------------------------------------
@@ -1789,7 +1816,47 @@ def create_router_app(
             ) from exc
         if job is None:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Video not found")
+        if job.protocol_id != VIDEO_JOB_PROTOCOL.protocol_id:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Video not found")
         return job
+
+    async def _claim_video_delete(
+        public_id: str,
+    ) -> tuple[VideoJobStore, VideoDeleteClaim]:
+        if not _valid_public_video_id(public_id):
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Video not found")
+        try:
+            store = await run_in_threadpool(_video_store)
+            claim = await run_in_threadpool(
+                store.claim_delete,
+                public_id,
+                lease_s=_VIDEO_DELETE_LEASE_S,
+            )
+        except (OSError, sqlite3.Error, ValueError) as exc:
+            _log.error("[router] video delete claim unavailable: %s", type(exc).__name__)
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="video ownership store is unavailable",
+            ) from exc
+        if claim is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Video not found")
+        if claim.job.protocol_id != VIDEO_JOB_PROTOCOL.protocol_id:
+            await run_in_threadpool(store.release_delete, public_id, claim.token)
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Video not found")
+        return store, claim
+
+    async def _release_video_delete(
+        store: VideoJobStore,
+        claim: VideoDeleteClaim,
+    ) -> None:
+        try:
+            await run_in_threadpool(
+                store.release_delete,
+                claim.job.public_id,
+                claim.token,
+            )
+        except (OSError, sqlite3.Error):
+            _log.error("[router] video delete claim release failed")
 
     @app.post(
         VIDEO_JOB_PROTOCOL.public_path,
@@ -1833,15 +1900,19 @@ def create_router_app(
         card = snapshot.catalog.get(specialist_id)
         if card is None or VIDEO_JOB_PROTOCOL.capability not in card.capabilities:
             resolved_runtime.record_punt()
-            return punt_response(
-                code=PuntCode.NO_SUITABLE_LOCAL_ROUTE,
-                message="The requested specialist does not support asynchronous video jobs.",
-                reason=(
-                    f"specialist {specialist_id!r} lacks capability "
-                    f"{VIDEO_JOB_PROTOCOL.capability!r}"
+            return _video_preflight_punt(
+                punt_response(
+                    code=PuntCode.NO_SUITABLE_LOCAL_ROUTE,
+                    message="The requested specialist does not support asynchronous video jobs.",
+                    reason=(
+                        f"specialist {specialist_id!r} lacks capability "
+                        f"{VIDEO_JOB_PROTOCOL.capability!r}"
+                    ),
+                    local_attempts=0,
+                    retryable=True,
                 ),
-                local_attempts=0,
-                retryable=True,
+                specialist_id=specialist_id,
+                reason="capability_missing",
             )
         selected: tuple[NodeBinding, str] | None = None
         for candidate in _reachable_bindings(specialist_id, snapshot):
@@ -1853,12 +1924,16 @@ def create_router_app(
                 break
         if selected is None:
             resolved_runtime.record_punt()
-            return punt_response(
-                code=PuntCode.LOCAL_ROUTE_UNAVAILABLE,
-                message="The requested local video specialist is unavailable.",
-                reason=f"no runtime-ready binding for specialist {specialist_id!r}",
-                local_attempts=0,
-                retryable=True,
+            return _video_preflight_punt(
+                punt_response(
+                    code=PuntCode.LOCAL_ROUTE_UNAVAILABLE,
+                    message="The requested local video specialist is unavailable.",
+                    reason=f"no runtime-ready binding for specialist {specialist_id!r}",
+                    local_attempts=0,
+                    retryable=True,
+                ),
+                specialist_id=specialist_id,
+                reason="no_runtime_ready_binding",
             )
         binding, owner_origin = selected
         upstream_model = _rewrite_model_for_upstream(
@@ -1931,7 +2006,7 @@ def create_router_app(
             resolved_runtime.record_failure(key, "invalid_job_response")
             raise HTTPException(
                 status_code=status.HTTP_502_BAD_GATEWAY,
-                detail=str(exc),
+                detail="upstream video job response is invalid",
                 headers=_video_audit_headers(binding, "invalid_job_response"),
             ) from exc
         try:
@@ -2044,7 +2119,7 @@ def create_router_app(
             resolved_runtime.record_failure(key, "invalid_job_response")
             raise HTTPException(
                 status_code=status.HTTP_502_BAD_GATEWAY,
-                detail=str(exc),
+                detail="upstream video status response is invalid",
                 headers=_video_audit_headers(binding, "invalid_job_response"),
             ) from exc
         try:
@@ -2054,11 +2129,19 @@ def create_router_app(
             )
             if updated is None:
                 raise ValueError("video ownership expired while status was in flight")
-        except (OSError, sqlite3.Error, ValueError) as exc:
+        except (OSError, sqlite3.Error) as exc:
+            _log.error("[router] video status store update failed: %s", type(exc).__name__)
+            resolved_runtime.record_failure(key, "ownership_store_failure")
+            raise HTTPException(
+                status_code=status.HTTP_502_BAD_GATEWAY,
+                detail="video ownership status could not be persisted",
+                headers=_video_audit_headers(binding, "ownership_store_failure"),
+            ) from exc
+        except ValueError as exc:
             resolved_runtime.record_failure(key, "invalid_job_response")
             raise HTTPException(
                 status_code=status.HTTP_502_BAD_GATEWAY,
-                detail=str(exc),
+                detail="video ownership expired while status was in flight",
                 headers=_video_audit_headers(binding, "invalid_job_response"),
             ) from exc
         resolved_runtime.record_success(
@@ -2156,28 +2239,74 @@ def create_router_app(
                 headers=_video_audit_headers(owner, "response_too_large"),
             )
 
-        async def video_bytes():
-            total = 0
-            completed = False
-            try:
-                async for chunk in upstream.aiter_bytes():
-                    if len(chunk) > _VIDEO_CONTENT_MAX_BYTES - total:
-                        resolved_runtime.record_failure(key, "response_too_large")
-                        raise RuntimeError("upstream video content exceeded the response limit")
-                    total += len(chunk)
-                    yield chunk
-                completed = True
-            finally:
-                await upstream.aclose()
-                if completed:
-                    resolved_runtime.record_success(
-                        key, int((time.perf_counter() - started_at) * 1000)
+        try:
+            spool = tempfile.SpooledTemporaryFile(
+                max_size=min(
+                    _VIDEO_CONTENT_SPOOL_MEMORY_BYTES,
+                    _VIDEO_CONTENT_MAX_BYTES,
+                ),
+                mode="w+b",
+            )
+        except OSError as exc:
+            await upstream.aclose()
+            resolved_runtime.record_failure(key, "content_spool_failure")
+            raise HTTPException(
+                status_code=status.HTTP_502_BAD_GATEWAY,
+                detail="video content could not be buffered safely",
+                headers=_video_audit_headers(owner, "content_spool_failure"),
+            ) from exc
+        total = 0
+        try:
+            async for chunk in upstream.aiter_bytes():
+                if len(chunk) > _VIDEO_CONTENT_MAX_BYTES - total:
+                    resolved_runtime.record_failure(key, "response_too_large")
+                    raise HTTPException(
+                        status_code=status.HTTP_502_BAD_GATEWAY,
+                        detail=f"response body exceeds {_VIDEO_CONTENT_MAX_BYTES} bytes",
+                        headers=_video_audit_headers(owner, "response_too_large"),
                     )
+                total += len(chunk)
+                await run_in_threadpool(spool.write, chunk)
+        except HTTPException:
+            spool.close()
+            raise
+        except httpx.HTTPError as exc:
+            spool.close()
+            resolved_runtime.record_failure(key, type(exc).__name__)
+            return _video_owner_punt(
+                specialist_id=job.specialist_id,
+                node_id=job.owner_node_id,
+                reason="transport_failure",
+                local_attempts=1,
+            )
+        except OSError as exc:
+            spool.close()
+            resolved_runtime.record_failure(key, "content_spool_failure")
+            raise HTTPException(
+                status_code=status.HTTP_502_BAD_GATEWAY,
+                detail="video content could not be buffered safely",
+                headers=_video_audit_headers(owner, "content_spool_failure"),
+            ) from exc
+        finally:
+            await upstream.aclose()
+        await run_in_threadpool(spool.seek, 0)
+        resolved_runtime.record_success(
+            key, int((time.perf_counter() - started_at) * 1000)
+        )
 
+        async def video_bytes():
+            try:
+                while chunk := await run_in_threadpool(spool.read, 64 * 1024):
+                    yield chunk
+            finally:
+                spool.close()
+
+        response_headers = _video_audit_headers(owner, "owner_pinned_content")
+        response_headers["content-length"] = str(total)
         return StreamingResponse(
             video_bytes(),
             media_type=media_type,
-            headers=_video_audit_headers(owner, "owner_pinned_content"),
+            headers=response_headers,
         )
 
     @app.get("/v1/videos/{public_id}", summary="Poll an owner-pinned video job")
@@ -2201,109 +2330,152 @@ def create_router_app(
         public_id: str,
         _: Annotated[None, Depends(verify_router_token)],
     ) -> Response:
-        job = await _load_video_job(public_id)
-        owner = _recorded_video_owner(job, _snapshot())
-        if owner is None:
-            return _video_owner_punt(
-                specialist_id=job.specialist_id,
-                node_id=job.owner_node_id,
-                reason="owner_absent",
-                local_attempts=0,
-            )
-        key = binding_key(job.specialist_id, job.owner_node_id)
-        if not resolved_runtime.is_routable(key):
-            return _video_owner_punt(
-                specialist_id=job.specialist_id,
-                node_id=job.owner_node_id,
-                reason="circuit_open",
-                local_attempts=0,
-            )
-        started_at = time.perf_counter()
+        store, claim = await _claim_video_delete(public_id)
+        job = claim.job
+        owner_confirmed = False
         try:
-            async with client.stream(
-                "DELETE",
-                f"{job.owner_origin}/v1/videos/{job.upstream_job_id}",
-                headers=_multipart_upstream_headers(),
-                follow_redirects=False,
-            ) as upstream:
-                if 300 <= upstream.status_code < 400:
-                    resolved_runtime.record_failure(key, f"http_{upstream.status_code}")
-                    raise HTTPException(
-                        status_code=status.HTTP_502_BAD_GATEWAY,
-                        detail="upstream video redirects are not accepted",
-                        headers=_video_audit_headers(owner, "redirect_rejected"),
-                    )
-                if _base_media_type(upstream.headers.get("content-type")) != "application/json":
-                    resolved_runtime.record_failure(key, "unexpected_media_type")
-                    raise HTTPException(
-                        status_code=status.HTTP_502_BAD_GATEWAY,
-                        detail="upstream video delete must return application/json",
-                        headers=_video_audit_headers(owner, "unexpected_media_type"),
-                    )
-                try:
-                    content = await _read_bounded_response(
-                        upstream, max_bytes=VIDEO_JOB_PROTOCOL.max_response_bytes
-                    )
-                except ValueError as exc:
-                    resolved_runtime.record_failure(key, "response_too_large")
-                    raise HTTPException(
-                        status_code=status.HTTP_502_BAD_GATEWAY,
-                        detail=str(exc),
-                        headers=_video_audit_headers(owner, "response_too_large"),
-                    ) from exc
-                if upstream.status_code >= 500:
-                    resolved_runtime.record_failure(key, f"http_{upstream.status_code}")
-                    return _video_owner_punt(
-                        specialist_id=job.specialist_id,
-                        node_id=job.owner_node_id,
-                        reason=f"http_{upstream.status_code}",
-                        local_attempts=1,
-                    )
-                if upstream.status_code >= 400:
-                    resolved_runtime.record_client_error()
-                    return _video_upstream_error(
-                        binding=owner,
-                        status_code=upstream.status_code,
-                        reason=f"http_{upstream.status_code}",
-                    )
-        except HTTPException:
-            raise
-        except (httpx.HTTPError, OSError) as exc:
-            resolved_runtime.record_failure(key, type(exc).__name__)
-            return _video_owner_punt(
-                specialist_id=job.specialist_id,
-                node_id=job.owner_node_id,
-                reason="transport_failure",
-                local_attempts=1,
-            )
+            owner = _recorded_video_owner(job, _snapshot())
+            if owner is None:
+                return _video_owner_punt(
+                    specialist_id=job.specialist_id,
+                    node_id=job.owner_node_id,
+                    reason="owner_absent",
+                    local_attempts=0,
+                )
+            key = binding_key(job.specialist_id, job.owner_node_id)
+            if not resolved_runtime.is_routable(key):
+                return _video_owner_punt(
+                    specialist_id=job.specialist_id,
+                    node_id=job.owner_node_id,
+                    reason="circuit_open",
+                    local_attempts=0,
+                )
+            started_at = time.perf_counter()
+            try:
+                async with client.stream(
+                    "DELETE",
+                    f"{job.owner_origin}/v1/videos/{job.upstream_job_id}",
+                    headers=_multipart_upstream_headers(),
+                    follow_redirects=False,
+                ) as upstream:
+                    if 300 <= upstream.status_code < 400:
+                        resolved_runtime.record_failure(key, f"http_{upstream.status_code}")
+                        raise HTTPException(
+                            status_code=status.HTTP_502_BAD_GATEWAY,
+                            detail="upstream video redirects are not accepted",
+                            headers=_video_audit_headers(owner, "redirect_rejected"),
+                        )
+                    if (
+                        _base_media_type(upstream.headers.get("content-type"))
+                        != "application/json"
+                    ):
+                        resolved_runtime.record_failure(key, "unexpected_media_type")
+                        raise HTTPException(
+                            status_code=status.HTTP_502_BAD_GATEWAY,
+                            detail="upstream video delete must return application/json",
+                            headers=_video_audit_headers(owner, "unexpected_media_type"),
+                        )
+                    try:
+                        content = await _read_bounded_response(
+                            upstream, max_bytes=VIDEO_JOB_PROTOCOL.max_response_bytes
+                        )
+                    except ValueError as exc:
+                        resolved_runtime.record_failure(key, "response_too_large")
+                        raise HTTPException(
+                            status_code=status.HTTP_502_BAD_GATEWAY,
+                            detail="upstream video delete response is too large",
+                            headers=_video_audit_headers(owner, "response_too_large"),
+                        ) from exc
+                    upstream_status_code = upstream.status_code
+            except HTTPException:
+                raise
+            except (httpx.HTTPError, OSError) as exc:
+                resolved_runtime.record_failure(key, type(exc).__name__)
+                return _video_owner_punt(
+                    specialist_id=job.specialist_id,
+                    node_id=job.owner_node_id,
+                    reason="transport_failure",
+                    local_attempts=1,
+                )
 
-        try:
-            payload = json.loads(content)
+            if upstream_status_code >= 500:
+                resolved_runtime.record_failure(key, f"http_{upstream_status_code}")
+                return _video_owner_punt(
+                    specialist_id=job.specialist_id,
+                    node_id=job.owner_node_id,
+                    reason=f"http_{upstream_status_code}",
+                    local_attempts=1,
+                )
+            if upstream_status_code >= 400:
+                resolved_runtime.record_client_error()
+                return _video_upstream_error(
+                    binding=owner,
+                    status_code=upstream_status_code,
+                    reason=f"http_{upstream_status_code}",
+                )
+            if upstream_status_code != status.HTTP_200_OK:
+                resolved_runtime.record_failure(key, "unexpected_success_status")
+                raise HTTPException(
+                    status_code=status.HTTP_502_BAD_GATEWAY,
+                    detail="upstream video delete did not return HTTP 200",
+                    headers=_video_audit_headers(owner, "unexpected_success_status"),
+                )
+            try:
+                payload = json.loads(content)
+            except (TypeError, ValueError) as exc:
+                raise HTTPException(
+                    status_code=status.HTTP_502_BAD_GATEWAY,
+                    detail="upstream video delete response is invalid",
+                    headers=_video_audit_headers(owner, "invalid_delete_response"),
+                ) from exc
             if (
                 not isinstance(payload, dict)
                 or payload.get("id") != job.upstream_job_id
                 or payload.get("deleted") is not True
                 or payload.get("object") != "video.deleted"
             ):
-                raise ValueError("upstream video delete response is invalid")
-            store = await run_in_threadpool(_video_store)
-            deleted = await run_in_threadpool(store.delete, job.public_id)
+                raise HTTPException(
+                    status_code=status.HTTP_502_BAD_GATEWAY,
+                    detail="upstream video delete response is invalid",
+                    headers=_video_audit_headers(owner, "invalid_delete_response"),
+                )
+
+            owner_confirmed = True
+            try:
+                deleted = await run_in_threadpool(
+                    store.confirm_delete,
+                    job.public_id,
+                    claim.token,
+                )
+            except (OSError, sqlite3.Error) as exc:
+                _log.error("[router] confirmed video delete could not be persisted")
+                resolved_runtime.record_failure(key, "ownership_store_failure")
+                raise HTTPException(
+                    status_code=status.HTTP_502_BAD_GATEWAY,
+                    detail="confirmed video delete could not be persisted",
+                    headers=_video_audit_headers(owner, "ownership_store_failure"),
+                ) from exc
             if not deleted:
-                raise ValueError("video ownership expired while delete was in flight")
-        except (TypeError, OSError, sqlite3.Error, ValueError) as exc:
-            resolved_runtime.record_failure(key, "invalid_delete_response")
-            raise HTTPException(
-                status_code=status.HTTP_502_BAD_GATEWAY,
-                detail=str(exc),
-                headers=_video_audit_headers(owner, "invalid_delete_response"),
-            ) from exc
-        resolved_runtime.record_success(
-            key, int((time.perf_counter() - started_at) * 1000)
-        )
-        return JSONResponse(
-            content={"id": job.public_id, "deleted": True, "object": "video.deleted"},
-            headers=_video_audit_headers(owner, "owner_pinned_delete"),
-        )
+                resolved_runtime.record_failure(key, "delete_claim_lost")
+                raise HTTPException(
+                    status_code=status.HTTP_502_BAD_GATEWAY,
+                    detail="video delete ownership claim was lost",
+                    headers=_video_audit_headers(owner, "delete_claim_lost"),
+                )
+            resolved_runtime.record_success(
+                key, int((time.perf_counter() - started_at) * 1000)
+            )
+            return JSONResponse(
+                content={
+                    "id": job.public_id,
+                    "deleted": True,
+                    "object": "video.deleted",
+                },
+                headers=_video_audit_headers(owner, "owner_pinned_delete"),
+            )
+        finally:
+            if not owner_confirmed:
+                await _release_video_delete(store, claim)
 
     @app.post(
         "/v1/chat/completions",
