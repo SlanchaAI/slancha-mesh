@@ -1,0 +1,54 @@
+version: v0.3
+
+listeners:
+  - name: slancha-semantic-router
+    # Listen on the container interface so Docker's published port can reach Envoy.
+    address: 0.0.0.0
+    # VLLM_SR_PORT_OFFSET=100 publishes this internal listener on host :8888.
+    port: 8788
+    timeout: 300s
+
+providers:
+  defaults:
+    default_model: slancha-auto
+  models:
+    - name: slancha-auto
+      provider_model_id: auto
+      api_format: openai
+      backend_refs:
+        - name: slancha-local-mesh
+          endpoint: host.docker.internal:8080
+          protocol: http
+          weight: 100
+
+routing:
+  modelCards:
+    - name: slancha-auto
+      description: Request-ready models discovered across the local Slancha mesh.
+      capabilities: [chat, reasoning, tools]
+      tags: [local, private-fleet]
+  decisions:
+    - name: local-mesh
+      description: Send requests to the local mesh; the mesh returns a typed punt when unsuitable.
+      priority: 100
+      rules:
+        operator: AND
+        conditions: []
+      modelRefs:
+        - model: slancha-auto
+          use_reasoning: false
+      # Mesh presents one dynamic virtual backend, so static selection avoids
+      # duplicating Mesh's live fleet choice inside vLLM Semantic Router.
+      algorithm:
+        type: static
+
+global:
+  router:
+    model_selection:
+      enabled: false
+  stores:
+    semantic_cache:
+      enabled: false
+  integrations:
+    tools:
+      enabled: false

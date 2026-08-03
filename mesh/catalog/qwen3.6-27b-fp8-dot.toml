@@ -1,5 +1,5 @@
 # General hard-lane specialist — ADOPTED endpoint (external backend).
-# dellpromax runs Dot's production vLLM 24/7: `vllm serve
+# The owning GPU node runs Dot's production vLLM: `vllm serve
 # Qwen/Qwen3.6-27B-FP8 --served-model-name dot-backbone --port 8011
 # --max-model-len 131072 --enable-auto-tool-choice --tool-call-parser
 # qwen3_xml`. The mesh routes to it and NEVER manages its lifecycle
@@ -9,8 +9,8 @@
 # else's service to rename it is not an option.
 #
 # DEPLOYMENT: this card must be adopted by a serve agent running ON
-# dellpromax. The loopback static_base_url is advertised into the registry
-# as-is; it only resolves correctly because the mac router dials the agent
+# the owning node. The loopback static_base_url is advertised into the registry
+# as-is; it only resolves correctly because the gateway dials the agent
 # via --peer host-pinning (same pattern as the gb10 ollama cards). A serve
 # agent on any other box would advertise a loopback URL that dials the
 # WRONG machine's :8011.

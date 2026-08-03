@@ -20,6 +20,12 @@ resolution-markers = [
     "python_full_version < '3.12' and sys_platform != 'darwin' and sys_platform != 'emscripten' and sys_platform != 'win32'",
 ]
 
+[manifest]
+members = [
+    "slancha-mesh",
+    "slancha-mesh-tune",
+]
+
 [[package]]
 name = "accelerate"
 version = "1.13.0"
@@ -4806,13 +4812,14 @@ dependencies = [
 
 [[package]]
 name = "slancha-mesh"
-version = "0.0.6"
+version = "0.1.0a1"
 source = { editable = "." }
 dependencies = [
     { name = "fastapi" },
     { name = "httpx" },
     { name = "psutil" },
     { name = "pydantic" },
+    { name = "python-multipart" },
     { name = "uvicorn" },
 ]
 
@@ -4824,20 +4831,59 @@ classifier = [
     { name = "tokenizers" },
     { name = "treelite" },
 ]
-dashboard = [
-    { name = "streamlit" },
-]
 dev = [
     { name = "jsonschema" },
     { name = "pytest" },
     { name = "pytest-asyncio" },
     { name = "ruff" },
 ]
-loop = [
-    { name = "slancha-local" },
-]
 serve = [
     { name = "vllm" },
+]
+signing = [
+    { name = "pynacl" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "fastapi", specifier = ">=0.110" },
+    { name = "httpx", specifier = ">=0.27" },
+    { name = "jsonschema", marker = "extra == 'dev'", specifier = ">=4.0" },
+    { name = "numpy", marker = "extra == 'classifier'", specifier = ">=1.26" },
+    { name = "onnxruntime", marker = "extra == 'classifier'", specifier = ">=1.17" },
+    { name = "psutil", specifier = ">=5.9" },
+    { name = "pydantic", specifier = ">=2.5" },
+    { name = "pynacl", marker = "extra == 'signing'", specifier = ">=1.5" },
+    { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.0" },
+    { name = "pytest-asyncio", marker = "extra == 'dev'", specifier = ">=0.23" },
+    { name = "python-multipart", specifier = ">=0.0.29" },
+    { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.5" },
+    { name = "tokenizers", marker = "extra == 'classifier'", specifier = ">=0.20" },
+    { name = "treelite", marker = "extra == 'classifier'", specifier = ">=4.0" },
+    { name = "uvicorn", specifier = ">=0.27" },
+    { name = "vllm", marker = "extra == 'serve'", specifier = ">=0.17" },
+]
+provides-extras = ["serve", "signing", "classifier", "dev"]
+
+[[package]]
+name = "slancha-mesh-tune"
+version = "0.1.0a1"
+source = { editable = "packages/slancha-mesh-tune" }
+dependencies = [
+    { name = "slancha-mesh" },
+]
+
+[package.optional-dependencies]
+dashboard = [
+    { name = "streamlit" },
+]
+dev = [
+    { name = "pytest" },
+    { name = "pytest-asyncio" },
+    { name = "ruff" },
+]
+loop = [
+    { name = "slancha-local" },
 ]
 signing = [
     { name = "pynacl" },
@@ -4854,28 +4900,18 @@ train = [
 requires-dist = [
     { name = "accelerate", marker = "extra == 'train'", specifier = ">=0.29" },
     { name = "datasets", marker = "extra == 'train'", specifier = ">=2.18" },
-    { name = "fastapi", specifier = ">=0.110" },
-    { name = "httpx", specifier = ">=0.27" },
-    { name = "jsonschema", marker = "extra == 'dev'", specifier = ">=4.0" },
-    { name = "numpy", marker = "extra == 'classifier'", specifier = ">=1.26" },
-    { name = "onnxruntime", marker = "extra == 'classifier'", specifier = ">=1.17" },
     { name = "peft", marker = "extra == 'train'", specifier = ">=0.10" },
-    { name = "psutil", specifier = ">=5.9" },
-    { name = "pydantic", specifier = ">=2.5" },
     { name = "pynacl", marker = "extra == 'signing'", specifier = ">=1.5" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.0" },
     { name = "pytest-asyncio", marker = "extra == 'dev'", specifier = ">=0.23" },
     { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.5" },
     { name = "slancha-local", marker = "extra == 'loop'", git = "https://github.com/SlanchaAi/slancha-local" },
+    { name = "slancha-mesh", editable = "." },
     { name = "streamlit", marker = "extra == 'dashboard'", specifier = ">=1.30" },
-    { name = "tokenizers", marker = "extra == 'classifier'", specifier = ">=0.20" },
     { name = "torch", marker = "extra == 'train'", specifier = ">=2.2" },
     { name = "transformers", marker = "extra == 'train'", specifier = ">=4.40" },
-    { name = "treelite", marker = "extra == 'classifier'", specifier = ">=4.0" },
-    { name = "uvicorn", specifier = ">=0.27" },
-    { name = "vllm", marker = "extra == 'serve'", specifier = ">=0.17" },
 ]
-provides-extras = ["serve", "train", "dashboard", "signing", "classifier", "loop", "dev"]
+provides-extras = ["train", "dashboard", "loop", "signing", "dev"]
 
 [[package]]
 name = "smmap"

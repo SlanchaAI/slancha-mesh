@@ -1,16 +1,17 @@
 name: cross-repo-schema-pin
 
 # Validates the canonical fixture at mesh/contracts/mesh_usage_event.json
-# against the published MeshUsageEvent JSON Schema in slancha-shared (PUBLIC),
+# against the published MeshUsageEvent JSON Schema in private slancha-shared,
 # generated from the slancha-api MeshUsageEvent Pydantic.
 #
 # Catches drift in either direction:
 #   - someone edits the fixture in a wire-incompatible way → this fails
 #   - slancha-api tightens MeshUsageEvent + republishes the schema → this fails
 #
-# Why slancha-shared (not a direct slancha-api checkout): slancha-api is
-# PRIVATE, so checking it out here with the repo-scoped default GITHUB_TOKEN
-# 404'd. slancha-shared is public; slancha-api owns regenerating the schema.
+# Both consumer repositories are private. Maintainer CI supplies
+# SLANCHA_CROSS_REPO_TOKEN; public forks and untrusted pull requests skip these
+# integration checks instead of failing checkout. In-repo contract tests remain
+# part of the regular CI matrix.
 
 on:
   pull_request:
@@ -24,13 +25,13 @@ on:
       - "mesh/catalog/**"
       # Promotion-gate source of truth — slancha-local mirrors these; the
       # gate-parity job below fails when a change here drifts from the mirror.
-      - "mesh/eval/gate.py"
-      - "mesh/eval/runner.py"
+      - "packages/slancha-mesh-tune/mesh/eval/gate.py"
+      - "packages/slancha-mesh-tune/mesh/eval/runner.py"
       # Signing/identity sources are ALSO a cross-repo contract (slancha-local +
       # kanpai mirror their shapes). Without these a signing-only PR skipped the
       # parity workflow entirely (#128).
-      - "mesh/eval/row_sign.py"
-      - "mesh/eval/seed_verify.py"
+      - "packages/slancha-mesh-tune/mesh/eval/row_sign.py"
+      - "packages/slancha-mesh-tune/mesh/eval/seed_verify.py"
       - "mesh/identity.py"
       - ".github/workflows/cross-repo-schema-pin.yml"
   push:
@@ -47,32 +48,49 @@ permissions:
 jobs:
   pin:
     runs-on: ubuntu-latest
+    env:
+      CROSS_REPO_TOKEN: ${{ secrets.SLANCHA_CROSS_REPO_TOKEN }}
     steps:
+      - name: Check private integration access
+        id: access
+        shell: bash
+        run: |
+          if [[ -n "$CROSS_REPO_TOKEN" ]]; then
+            echo "available=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "Private schema-pin skipped: SLANCHA_CROSS_REPO_TOKEN is unset."
+            echo "available=false" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Checkout slancha-mesh
-        uses: actions/checkout@v5
+        if: steps.access.outputs.available == 'true'
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
         with:
           path: slancha-mesh
 
-      - name: Checkout slancha-shared (public — canonical schema)
-        uses: actions/checkout@v5
+      - name: Checkout slancha-shared (private — canonical schema)
+        if: steps.access.outputs.available == 'true'
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
         with:
           repository: SlanchaAi/slancha-shared
-          # PUBLIC → default GITHUB_TOKEN can read it (no PAT). Hosts
-          # schemas/mesh-usage-event.schema.json.
+          token: ${{ secrets.SLANCHA_CROSS_REPO_TOKEN }}
           ref: main
           path: slancha-shared
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        if: steps.access.outputs.available == 'true'
         with:
           python-version: "3.12"
 
       - name: Install mesh deps
+        if: steps.access.outputs.available == 'true'
         working-directory: slancha-mesh
         run: |
           pip install --upgrade pip
           pip install -e .[dev]   # includes jsonschema
 
       - name: Run cross-repo schema-pin
+        if: steps.access.outputs.available == 'true'
         working-directory: slancha-mesh
         env:
           SLANCHA_SHARED_PATH: ${{ github.workspace }}/slancha-shared
@@ -80,6 +98,7 @@ jobs:
           pytest -q mesh/tests/test_cross_repo_usage_event.py
 
       - name: Validate catalog (substrate sanity)
+        if: steps.access.outputs.available == 'true'
         working-directory: slancha-mesh
         run: |
           python -m mesh.validate_card --strict
@@ -88,7 +107,7 @@ jobs:
     # Validates that slancha-local's mirror of the promotion gate
     # (slancha_local.train.gate) stays in sync with the source of truth here:
     # mesh.eval.gate (GateThresholds / PromotionVerdict / append_verdict) and
-    # mesh.eval.runner.EvalPass.to_row().
+    # mesh.eval.runner.EvalPass.to_row() from the optional tune distribution.
     #
     # The guard lives in slancha-local (tests/test_gate_cross_repo_compat.py)
     # and SKIPS when slancha-mesh isn't on disk — so slancha-local's own CI,
@@ -96,43 +115,63 @@ jobs:
     # HERE, against this PR's mesh tree, makes that drift fail centrally on the
     # mesh PR that introduces it instead of silently passing on both sides.
     #
-    # slancha-local is PUBLIC → the default GITHUB_TOKEN checks it out (no PAT).
-    # No mesh install needed: the guard AST-parses mesh's source for structural
-    # parity and imports mesh.eval.gate via sys.path for behavior parity —
-    # mesh.eval.gate is stdlib-only and mesh.models needs only pydantic, which
-    # slancha-local already pulls in (via fastapi).
+    # slancha-local is private; maintainer CI supplies the optional token.
+    # The guard AST-parses the tune source for structural parity. Installing
+    # core also lets the split namespace import mesh.eval.gate for behavior
+    # parity; slancha-local already supplies pydantic through fastapi.
     runs-on: ubuntu-latest
+    env:
+      CROSS_REPO_TOKEN: ${{ secrets.SLANCHA_CROSS_REPO_TOKEN }}
     steps:
+      - name: Check private integration access
+        id: access
+        shell: bash
+        run: |
+          if [[ -n "$CROSS_REPO_TOKEN" ]]; then
+            echo "available=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "Private gate-parity skipped: SLANCHA_CROSS_REPO_TOKEN is unset."
+            echo "available=false" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Checkout slancha-mesh (gate source under test)
-        uses: actions/checkout@v5
+        if: steps.access.outputs.available == 'true'
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
         with:
           path: slancha-mesh
 
-      - name: Checkout slancha-local (public — hosts the parity guard)
-        uses: actions/checkout@v5
+      - name: Checkout slancha-local (private — hosts the parity guard)
+        if: steps.access.outputs.available == 'true'
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
         with:
           repository: SlanchaAi/slancha-local
+          token: ${{ secrets.SLANCHA_CROSS_REPO_TOKEN }}
           ref: main
           path: slancha-local
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        if: steps.access.outputs.available == 'true'
         with:
           python-version: "3.12"
 
       - name: Install slancha-local (the consumer + its test deps)
+        if: steps.access.outputs.available == 'true'
         working-directory: slancha-local
         run: |
           pip install --upgrade pip
           pip install -e .[dev]
+          pip install -e "${{ github.workspace }}/slancha-mesh"
 
-      - name: Sanity — mesh gate source present (guard must not silently skip)
+      - name: Sanity — tune gate source present (guard must not silently skip)
+        if: steps.access.outputs.available == 'true'
         # The guard skipif's on mesh-not-on-disk; a wrong/missing checkout would
         # turn every parity test into a no-op green. Fail loud here instead.
-        run: test -f "${{ github.workspace }}/slancha-mesh/mesh/eval/gate.py"
+        run: test -f "${{ github.workspace }}/slancha-mesh/packages/slancha-mesh-tune/mesh/eval/gate.py"
 
       - name: Run gate/verdict cross-repo parity guard
+        if: steps.access.outputs.available == 'true'
         working-directory: slancha-local
         env:
-          SLANCHA_MESH_PATH: ${{ github.workspace }}/slancha-mesh
+          SLANCHA_MESH_PATH: ${{ github.workspace }}/slancha-mesh/packages/slancha-mesh-tune
         run: |
           pytest -q tests/test_gate_cross_repo_compat.py

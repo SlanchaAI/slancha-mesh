@@ -13,6 +13,13 @@ Out of scope for v0.0.1 (see `docs/SELF_ORGANIZING_LOOP_SCOPE.md`): vLLM
 provisioning, libp2p discovery, idle fine-tune daemon, MCP wrapper integration.
 """
 
+from pkgutil import extend_path
+
+# The optional ``slancha-mesh-tune`` distribution contributes additional
+# ``mesh.*`` modules from a second install location. Core remains a regular
+# package while extending its search path only when that add-on is installed.
+__path__ = extend_path(__path__, __name__)
+
 from mesh.models import (
     DifficultyTier,
     DomainId,
@@ -51,4 +58,4 @@ __all__ = [
     "SpecialistId",
 ]
 
-__version__ = "0.0.6"
+__version__ = "0.1.0a1"

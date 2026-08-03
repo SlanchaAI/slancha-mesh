@@ -1,0 +1,42 @@
+# Targets `ollama pull qwen3:14b` (Q4_K_M default tag). Added 2026-08-01:
+# validated against a live GB10-class node serving this exact tag through its
+# resident Ollama runtime.
+#
+# Mid-tier generalist with solid code + reasoning for its size class.
+model_id = "Qwen/Qwen3-14B"
+specialist_id = "qwen3-14b-q4-ollama"
+domain = "general"
+# Validated fleet policy assigns this card to the cheap/easy lane. Keeping
+# overlapping zero-telemetry external routes here would let stable tie order
+# defeat an operator's intended fleet balance.
+difficulty_tiers = ["easy"]
+languages = ["en", "zh", "es", "fr", "de", "ja", "ko"]
+required_backend = "ollama"
+ollama_tag = "qwen3:14b"
+storage_gb = 9.3
+runtime_gb = 11.0
+min_vram_gb = 12.0
+# Qwen3 native window; the 131k figure needs YaRN scaling Ollama's default
+# tag does not enable, so advertise what the serve actually honors.
+context_window = 32768
+n_layers = 40
+hidden_size = 5120
+# Qwen3-14B is GQA: 40 query heads / 8 KV heads, head_dim 128.
+n_kv_heads = 8
+head_dim = 128
+kv_arch = "gqa"
+supports_lora_finetune = false
+upstream_model_card = "Qwen/Qwen3-14B"
+coverage_tier = 1
+
+# estimated_tps_at DERIVED (not measured) via the §3.2 roofline in
+# docs/SIZING_BANDWIDTH_BRIEF.md: tps = MBU 0.8 × datasheet BW ÷ runtime_gb.
+# Datasheet BW (GB/s): gb10 273, m4_pro 273, m3_ultra 819, rtx_4090 1008,
+# rtx_3090 936. Allocator uses these only for tie-breaking when no live
+# bandwidth probe exists.
+[estimated_tps_at]
+gb10 = 20.0
+m4_pro = 20.0
+m3_ultra = 60.0
+rtx_4090 = 73.0
+rtx_3090 = 68.0

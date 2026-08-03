@@ -22,7 +22,7 @@
 
   "ttft_ms": 124,
   "tokens_per_second": 258.13,
-  "specialist_id": "paul-v8-essay-dpo-iter1-beta-0.1",
+  "specialist_id": "essay-specialist-v8-beta-0.1",
   "cost_cents": 0,
   "cloud_equivalent_cost_cents": 7,
   "fallback_fired": false,
@@ -34,7 +34,7 @@
   },
 
   "decision_reason": {
-    "winner": "paul-v8-essay-dpo-iter1-beta-0.1",
+    "winner": "essay-specialist-v8-beta-0.1",
     "alternatives_considered": [
       {
         "id": "demo-model-v1",

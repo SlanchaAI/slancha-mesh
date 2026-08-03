@@ -16,7 +16,7 @@ This module ships two paths behind one `TrainingPass`:
     promote it once it passes the held-out non-regression check.
 
 The heavy deps (`torch`/`transformers`/`peft`/`datasets`) are an
-**optional extra** — `pip install -e ".[train]"`. They are imported
+**optional extra** — `pip install "slancha-mesh-tune[train]"`. They are imported
 **lazily inside the real path** so the package still imports and the
 test suite still runs without them installed. If the real path is taken
 without them present, it raises `MissingTrainingDepsError` (a clear,
@@ -72,7 +72,7 @@ class MissingTrainingDepsError(RuntimeError):
     installed, we refuse loudly with an actionable message rather than
     falling back to the stub — a silent-stub fallback is exactly the
     failure issue #55 fixed (a stub checkpoint masquerading as a real
-    adapter). Install with: pip install -e ".[train]" (issue #65).
+    adapter). Install with: pip install "slancha-mesh-tune[train]" (issue #65).
     """
 
 
@@ -135,7 +135,7 @@ def _import_train_deps():
             "the real PEFT/LoRA training leg (issue #65) requires the optional "
             "'[train]' dependencies (torch, transformers, peft, datasets). They "
             "are not installed. Install them with:\n"
-            '    pip install -e ".[train]"\n'
+            '    pip install "slancha-mesh-tune[train]"\n'
             "Refusing to fall back to the stub (that would re-introduce the "
             f"silent-stub problem #55 fixed). Original import error: {e}"
         ) from e

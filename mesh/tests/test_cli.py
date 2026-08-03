@@ -283,13 +283,23 @@ def test_router_parser_carries_expected_defaults():
     assert args.refresh_s == 5.0  # matches heartbeat cadence
     assert args.tag  # has a default specialist tag
     assert args.log_level == "info"
+    assert args.video_job_db is None
 
 
 def test_router_parser_accepts_lan_and_tailnet_modes_via_flags():
     args_lan = _parse(["router", "--peer", "192.168.1.10", "--peer", "192.168.1.20"])
     assert args_lan.peer == ["192.168.1.10", "192.168.1.20"]
-    args_tn = _parse(["router", "--port", "9090", "--refresh-s", "10"])
+    args_tn = _parse([
+        "router",
+        "--port",
+        "9090",
+        "--refresh-s",
+        "10",
+        "--video-job-db",
+        "/tmp/video-jobs.sqlite3",
+    ])
     assert args_tn.port == 9090 and args_tn.refresh_s == 10.0
+    assert args_tn.video_job_db == "/tmp/video-jobs.sqlite3"
 
 
 def test_cmd_router_starts_uvicorn_with_router_app_and_stops_refresher(monkeypatch):
@@ -337,14 +347,26 @@ def test_cmd_router_starts_uvicorn_with_router_app_and_stops_refresher(monkeypat
         captured["specialists"] = list(snap.specialists)
         captured["host"] = host
         captured["port"] = port
+        captured["video_job_db_path"] = str(app.state.video_job_db_path)
 
     monkeypatch.setattr("uvicorn.run", fake_uvicorn_run)
 
-    rc = main(["router", "--port", "9091", "--bind", "127.0.0.1", "--refresh-s", "30"])
+    rc = main([
+        "router",
+        "--port",
+        "9091",
+        "--bind",
+        "127.0.0.1",
+        "--refresh-s",
+        "30",
+        "--video-job-db",
+        "/tmp/test-video-jobs.sqlite3",
+    ])
     assert rc == 0
     assert captured["host"] == "127.0.0.1" and captured["port"] == 9091
     # The discovered specialist must show up in the snapshot the router app uses.
     assert "demo" in captured["specialists"]
+    assert captured["video_job_db_path"] == "/tmp/test-video-jobs.sqlite3"
 
 
 def test_cmd_router_uses_explicit_peers_when_set(monkeypatch):
@@ -399,7 +421,6 @@ def test_cmd_router_uses_explicit_peers_when_set(monkeypatch):
 EXPECTED_CONSOLE_SCRIPTS = {
     "slancha-mesh": ("mesh.cli", "main"),
     "slancha-mesh-validate": ("mesh.validate_card", "main"),
-    "slancha-mesh-gate": ("mesh.eval.gate", "main"),
     "mesh-gpu": ("mesh.gpu.cli", "main"),
     "mesh-doctor": ("mesh.scripts.mesh_doctor", "main"),
 }
@@ -466,7 +487,8 @@ def test_slancha_mesh_help_lists_every_operator_tool(capsys):
     # Subcommands covering install/diagnostics/routing/serve.
     for sub in ("up", "discover", "status", "doctor", "serve", "router", "gpu", "plan"):
         assert sub in help_text, f"subcommand {sub!r} missing from --help"
-    # Sibling console scripts (validation, eval gate, gpu, doctor) surfaced in
-    # the epilog so module-path-only tools are discoverable.
-    for tool in ("mesh-gpu", "mesh-doctor", "slancha-mesh-validate", "slancha-mesh-gate"):
+    # Core sibling scripts surface here. The promotion gate moved to the
+    # separately installed slancha-mesh-tune add-on.
+    for tool in ("mesh-gpu", "mesh-doctor", "slancha-mesh-validate"):
         assert tool in help_text, f"sibling tool {tool!r} missing from --help epilog"
+    assert "slancha-mesh-gate" not in help_text

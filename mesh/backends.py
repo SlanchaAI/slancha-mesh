@@ -144,10 +144,9 @@ class VLLMBackend:
     def start(self) -> None:
         """Spawn `vllm serve <model_id>`. Skips if already up.
 
-        If the port is already bound by some other vLLM (e.g., started
-        manually for warmup), we adopt it via PID lookup so `stop()`
-        still works. This matters because Spark model loads take 2-4
-        minutes and we don't want to relaunch on every mesh restart.
+        If the port is already bound by another vLLM (for example, started
+        manually for warmup), track its PID for health without taking lifecycle
+        ownership. Mesh never stops a process it did not spawn.
         """
         if self._proc is not None and self._proc.poll() is None:
             return
@@ -248,12 +247,13 @@ class VLLMBackend:
         return self._port_in_use()
 
     def stop(self, timeout: float = 30.0) -> None:
-        """SIGTERM the process group then SIGKILL on timeout. Idempotent."""
+        """Stop only the process Mesh spawned; detach from adopted processes."""
         target_pid: int | None = None
         if self._proc is not None and self._proc.poll() is None:
             target_pid = self._proc.pid
         elif self._adopted_pid is not None:
-            target_pid = self._adopted_pid
+            self._adopted_pid = None
+            return
         if target_pid is None:
             return
         try:
@@ -629,7 +629,7 @@ class LlamaCppBackend:
     `llama-server -m <gguf> --port <port> --host <host>` and returns; the
     server exposes `/v1/chat/completions` + `/health` (200 once weights are
     loaded). If the port is already bound (a llama-server launched manually
-    for warmup), we adopt it via PID lookup so `stop()` still works.
+    for warmup), Mesh tracks it for health without taking lifecycle ownership.
 
     The model is a GGUF named by `card.gguf_path` — a local path or a
     `repo:file` HF identifier that llama-server can fetch. Missing → a clear
@@ -660,7 +660,7 @@ class LlamaCppBackend:
         return f"{self.base_url}/health"
 
     def start(self) -> None:
-        """Spawn `llama-server -m <gguf>`. Skips if already up; adopts a busy port.
+        """Spawn `llama-server -m <gguf>`; track a busy port without owning it.
 
         Like vLLM, this is non-blocking — use `wait_ready()` to block until
         `/health` returns 200. Requires `card.gguf_path`; raises otherwise.
@@ -737,12 +737,13 @@ class LlamaCppBackend:
         return self._port_in_use()
 
     def stop(self, timeout: float = 30.0) -> None:
-        """SIGTERM the process group then SIGKILL on timeout. Idempotent."""
+        """Stop only the process Mesh spawned; detach from adopted processes."""
         target_pid: int | None = None
         if self._proc is not None and self._proc.poll() is None:
             target_pid = self._proc.pid
         elif self._adopted_pid is not None:
-            target_pid = self._adopted_pid
+            self._adopted_pid = None
+            return
         if target_pid is None:
             return
         try:
@@ -822,7 +823,7 @@ class MLXBackend:
 
     Own-the-subprocess shape: mlx_lm.server is launched per-model
     (`python -m mlx_lm.server --model <repo> --port <port>`), so — like vLLM
-    and unlike Ollama — this backend spawns and owns its process. The server
+    and unlike Ollama — this backend owns only processes it spawns. The server
     serves `/v1/chat/completions` + `/v1/models`; we use `/v1/models` as the
     readiness probe (mlx_lm.server exposes no dedicated `/health`).
 
@@ -882,7 +883,7 @@ class MLXBackend:
 
         Non-blocking — use `wait_ready()` to block on `/v1/models`. Requires
         `card.mlx_repo` and a Darwin/arm64 host; raises a clear error otherwise.
-        Adopts an already-bound port like vLLM.
+        Tracks an already-bound port like vLLM without owning that process.
         """
         if not _is_apple_silicon():
             raise RuntimeError(
@@ -968,12 +969,13 @@ class MLXBackend:
         return self._port_in_use()
 
     def stop(self, timeout: float = 30.0) -> None:
-        """SIGTERM the process group then SIGKILL on timeout. Idempotent."""
+        """Stop only the process Mesh spawned; detach from adopted processes."""
         target_pid: int | None = None
         if self._proc is not None and self._proc.poll() is None:
             target_pid = self._proc.pid
         elif self._adopted_pid is not None:
-            target_pid = self._adopted_pid
+            self._adopted_pid = None
+            return
         if target_pid is None:
             return
         try:

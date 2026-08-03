@@ -7,6 +7,8 @@ test the daemon's contract against `NullBackend` only.
 from __future__ import annotations
 
 import time
+import subprocess
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -17,6 +19,25 @@ from mesh.models import NodeProbe, SpecialistCard
 from mesh.registry import MeshRegistry
 from mesh.select import ClassifierSignals, select_mesh_route
 from mesh.serve import ServeDaemon, _tail_file, build_backend, build_daemon
+
+
+def test_importing_core_serve_does_not_load_tuning_harness():
+    """A core node process must boot when the optional add-on is absent."""
+
+    code = """
+import sys
+import mesh.serve
+tuning = {'mesh.idle', 'mesh.replay_store', 'mesh.training'}
+loaded = sorted(tuning.intersection(sys.modules))
+raise SystemExit('loaded tuning modules: ' + ', '.join(loaded) if loaded else 0)
+"""
+    completed = subprocess.run(
+        [sys.executable, "-c", code],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    assert completed.returncode == 0, completed.stderr
 
 
 def _probe() -> NodeProbe:
@@ -62,228 +83,6 @@ def test_daemon_starts_and_heartbeats_with_null_backend():
     assert [lm.specialist_id for lm in hb.loaded_models] == [card.specialist_id]
     daemon.stop()
     assert not be.is_alive()
-
-
-def test_daemon_idle_detector_reports_training_health_via_heartbeat():
-    """Spec §7 + ServeDaemon integration: when the detector transitions
-    to TRAINING, heartbeat.health flips to 'training' so the router
-    drops hot-interactive traffic.
-    """
-    from datetime import datetime as _dt, timedelta as _td, timezone as _tz
-
-    from mesh.idle import IdleDetector
-    from mesh.models import NodeUtilization as _NU
-
-    card = _card()
-    be = NullBackend(card=card)
-    detector = IdleDetector()
-
-    # Drive detector to TRAINING via synthetic clock BEFORE wiring it to
-    # the daemon. heartbeat() calls observe() with real `now`, which would
-    # otherwise overwrite our synthetic _idle_since. The integration test
-    # boundary is "heartbeat reads detector.health()"; the state transition
-    # is unit-tested in test_idle.py.
-    anchor = _dt(2026, 5, 16, 12, 0, 0, tzinfo=_tz.utc)
-    detector.observe(_NU(gpu_util_pct=0.0, queue_depth=0), anchor)
-    detector.observe(_NU(gpu_util_pct=0.0, queue_depth=0), anchor + _td(seconds=61))
-    assert detector.should_start_training()
-    detector.mark_training_started(anchor + _td(seconds=61))
-
-    daemon = ServeDaemon(backends=[be], probe=_probe(), idle_detector=detector)
-    daemon.start(wait_ready=True, ready_timeout=1.0)
-
-    # Idle utilization observed in heartbeat → detector stays TRAINING
-    # (observe during TRAINING does not transition; spec §7 contract).
-    hb = daemon.heartbeat()
-    assert hb.health == "training"
-    daemon.stop()
-
-
-def test_daemon_without_idle_detector_is_backwards_compatible():
-    """v0.0.3-shape callers (no idle_detector) get unchanged behavior."""
-    card = _card()
-    be = NullBackend(card=card)
-    daemon = ServeDaemon(backends=[be], probe=_probe())  # no idle_detector
-    daemon.start(wait_ready=True, ready_timeout=1.0)
-    hb = daemon.heartbeat()
-    assert hb.health == "healthy"
-    daemon.stop()
-
-
-def test_daemon_spawns_training_thread_on_ready_edge(tmp_path):
-    """Integration (#39): detector READY_TO_TRAIN + training config →
-    daemon spawns TrainingPass thread on next heartbeat. Thread runs
-    to completion; subsequent heartbeat reaps it → COOLDOWN."""
-    from datetime import datetime as _dt, timedelta as _td, timezone as _tz
-    import time as _time
-
-    from mesh.idle import IdleDetector
-    from mesh.models import NodeUtilization as _NU
-    from mesh.replay_store import TrafficReplayStore
-
-    card = _card()
-    be = NullBackend(card=card)
-    detector = IdleDetector()
-    store = TrafficReplayStore(max_size=10)
-    for i in range(3):
-        store.add(f"p{i}", f"r{i}", "code", "easy")
-
-    daemon = ServeDaemon(
-        backends=[be],
-        probe=_probe(),
-        idle_detector=detector,
-        training_replay_store=store,
-        training_checkpoint_dir=tmp_path,
-        training_kwargs={"n_steps_planned": 3, "per_step_sleep_s": 0.001},
-    )
-    daemon.start(wait_ready=True, ready_timeout=1.0)
-
-    anchor = _dt(2026, 5, 16, 12, 0, 0, tzinfo=_tz.utc)
-    detector.observe(_NU(gpu_util_pct=0.0, queue_depth=0), anchor)
-    detector.observe(_NU(gpu_util_pct=0.0, queue_depth=0), anchor + _td(seconds=61))
-    assert detector.should_start_training()
-
-    # First heartbeat: spawns training thread, transitions to TRAINING.
-    hb1 = daemon.heartbeat()
-    assert hb1.health == "training"
-    assert daemon._training_thread is not None
-
-    _time.sleep(0.1)
-    assert not daemon._training_thread.is_alive()
-
-    # Second heartbeat: reaps thread → COOLDOWN.
-    hb2 = daemon.heartbeat()
-    assert detector.state.value == "cooldown"
-    assert hb2.health == "healthy"
-    assert daemon.last_checkpoint_path is not None
-    assert daemon.last_checkpoint_path.exists()
-
-    daemon.stop()
-
-
-def test_daemon_preempts_training_when_traffic_returns(tmp_path):
-    """Backend reports queue_depth > 0 mid-training → daemon signals
-    preempt → training thread yields with preempted=True."""
-    from datetime import datetime as _dt, timedelta as _td, timezone as _tz
-    import time as _time
-    import json
-
-    from mesh.idle import IdleDetector
-    from mesh.models import NodeUtilization as _NU
-    from mesh.replay_store import TrafficReplayStore
-
-    card = _card()
-
-    class BusyBackend(NullBackend):
-        def utilization(self) -> dict:
-            return {"queue_depth": 5}
-
-    be_idle = NullBackend(card=card)
-    detector = IdleDetector()
-    store = TrafficReplayStore(max_size=10)
-    for i in range(3):
-        store.add(f"p{i}", f"r{i}", "code", "easy")
-
-    daemon = ServeDaemon(
-        backends=[be_idle],
-        probe=_probe(),
-        idle_detector=detector,
-        training_replay_store=store,
-        training_checkpoint_dir=tmp_path,
-        training_kwargs={"n_steps_planned": 5000, "per_step_sleep_s": 0.001},
-    )
-    daemon.start(wait_ready=True, ready_timeout=1.0)
-
-    anchor = _dt(2026, 5, 16, 12, 0, 0, tzinfo=_tz.utc)
-    detector.observe(_NU(gpu_util_pct=0.0, queue_depth=0), anchor)
-    detector.observe(_NU(gpu_util_pct=0.0, queue_depth=0), anchor + _td(seconds=61))
-    daemon.heartbeat()  # spawns
-    assert daemon._training_thread.is_alive()
-
-    # Swap to busy backend → next heartbeat sees queue_depth=5 → preempts.
-    daemon.backends = [BusyBackend(card=card, base_url="http://x")]
-    daemon.backends[0].start()
-    _time.sleep(0.02)
-    daemon.heartbeat()  # observes busy → signal_preempt
-
-    daemon._training_thread.join(timeout=2.0)
-    assert not daemon._training_thread.is_alive()
-
-    daemon.heartbeat()  # reap → COOLDOWN
-    assert detector.state.value == "cooldown"
-
-    ck = daemon.last_checkpoint_path
-    assert ck is not None
-    meta = json.loads((ck / "meta.json").read_text())
-    assert meta["preempted"] is True
-    assert 0 < meta["n_steps_completed"] < 5000
-
-    daemon.stop()
-
-
-def test_daemon_training_disabled_without_config():
-    """idle_detector set + training config NOT set → detector observes,
-    but daemon never spawns training thread (back-compat)."""
-    from datetime import datetime as _dt, timedelta as _td, timezone as _tz
-
-    from mesh.idle import IdleDetector
-    from mesh.models import NodeUtilization as _NU
-
-    card = _card()
-    be = NullBackend(card=card)
-    detector = IdleDetector()
-    daemon = ServeDaemon(
-        backends=[be],
-        probe=_probe(),
-        idle_detector=detector,
-        # training_replay_store + checkpoint_dir intentionally None
-    )
-    daemon.start(wait_ready=True, ready_timeout=1.0)
-
-    anchor = _dt(2026, 5, 16, 12, 0, 0, tzinfo=_tz.utc)
-    detector.observe(_NU(gpu_util_pct=0.0, queue_depth=0), anchor)
-    detector.observe(_NU(gpu_util_pct=0.0, queue_depth=0), anchor + _td(seconds=61))
-    assert detector.should_start_training()
-
-    hb = daemon.heartbeat()
-    assert detector.state.value == "ready_to_train"  # never advanced
-    assert hb.health == "healthy"
-    assert daemon._training_thread is None
-
-    daemon.stop()
-
-
-def test_daemon_stop_preempts_inflight_training(tmp_path):
-    """daemon.stop() during training → signals preempt, joins cleanly."""
-    from datetime import datetime as _dt, timedelta as _td, timezone as _tz
-
-    from mesh.idle import IdleDetector
-    from mesh.models import NodeUtilization as _NU
-    from mesh.replay_store import TrafficReplayStore
-
-    card = _card()
-    be = NullBackend(card=card)
-    detector = IdleDetector()
-    store = TrafficReplayStore(max_size=10)
-    store.add("p", "r", "code", "easy")
-
-    daemon = ServeDaemon(
-        backends=[be],
-        probe=_probe(),
-        idle_detector=detector,
-        training_replay_store=store,
-        training_checkpoint_dir=tmp_path,
-        training_kwargs={"n_steps_planned": 50000, "per_step_sleep_s": 0.001},
-    )
-    daemon.start(wait_ready=True, ready_timeout=1.0)
-    anchor = _dt(2026, 5, 16, 12, 0, 0, tzinfo=_tz.utc)
-    detector.observe(_NU(gpu_util_pct=0.0, queue_depth=0), anchor)
-    detector.observe(_NU(gpu_util_pct=0.0, queue_depth=0), anchor + _td(seconds=61))
-    daemon.heartbeat()  # spawns training (would take 50s without preempt)
-
-    assert daemon._training_thread.is_alive()
-    daemon.stop(timeout=5.0)
-    assert daemon._training_thread is None
 
 
 def test_daemon_serves_multiple_backends_on_distinct_ports():
@@ -594,6 +393,50 @@ def test_build_backend_ollama_respects_OLLAMA_PORT_env(monkeypatch):
     )
     be = build_backend(card, port=8013)
     assert be.base_url.endswith(":11500")
+
+
+def test_build_backend_ollama_respects_private_interface_endpoint(monkeypatch):
+    monkeypatch.setenv("OLLAMA_HOST", "100.64.0.42:8003")
+    monkeypatch.setenv("OLLAMA_PORT", "11500")
+    card = SpecialistCard(
+        model_id="Qwen/Qwen3-14B",
+        specialist_id="qwen3-14b-q4-ollama",
+        domain="general",
+        difficulty_tiers=["easy"],
+        required_backend="ollama",
+        storage_gb=9.3,
+        runtime_gb=11.0,
+        min_vram_gb=12.0,
+        context_window=32768,
+        n_layers=40,
+        estimated_tps_at={"gb10": 20.0},
+        ollama_tag="qwen3:14b",
+    )
+
+    be = build_backend(card, port=8013, bind_host="0.0.0.0")
+
+    assert be.base_url == "http://100.64.0.42:8003"
+
+
+def test_build_backend_ollama_rejects_host_with_path(monkeypatch):
+    monkeypatch.setenv("OLLAMA_HOST", "http://100.64.0.42:8003/not-an-origin")
+    card = SpecialistCard(
+        model_id="Qwen/Qwen3-14B",
+        specialist_id="qwen3-14b-q4-ollama",
+        domain="general",
+        difficulty_tiers=["easy"],
+        required_backend="ollama",
+        storage_gb=9.3,
+        runtime_gb=11.0,
+        min_vram_gb=12.0,
+        context_window=32768,
+        n_layers=40,
+        estimated_tps_at={"gb10": 20.0},
+        ollama_tag="qwen3:14b",
+    )
+
+    with pytest.raises(ValueError, match="OLLAMA_HOST"):
+        build_backend(card, port=8013, bind_host="0.0.0.0")
 
 
 def test_build_daemon_raises_on_unknown_specialist():

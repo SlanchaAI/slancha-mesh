@@ -91,6 +91,23 @@ def test_llamacpp_stop_when_never_started_is_noop():
     assert not be.is_alive()
 
 
+def test_llamacpp_stop_never_kills_adopted_process(monkeypatch):
+    be = LlamaCppBackend(card=_card(), port=9999)
+    be._adopted_pid = 5555
+    monkeypatch.setattr(
+        "mesh.backends.os.getpgid",
+        lambda *_args: pytest.fail("adopted process must remain operator-owned"),
+    )
+    monkeypatch.setattr(
+        "mesh.backends.os.killpg",
+        lambda *_args: pytest.fail("adopted process must remain operator-owned"),
+    )
+
+    be.stop()
+
+    assert be._adopted_pid is None
+
+
 def test_llamacpp_start_spawns_llama_server(monkeypatch):
     """start() forks `llama-server -m <gguf> --port ... --host ...` (faked Popen)."""
     monkeypatch.setattr("mesh.backends.subprocess.Popen", _FakePopen)
@@ -155,6 +172,23 @@ def test_mlx_stop_when_never_started_is_noop():
     be = MLXBackend(card=_card(required_backend="mlx"), port=9999)
     be.stop()  # must not raise
     assert not be.is_alive()
+
+
+def test_mlx_stop_never_kills_adopted_process(monkeypatch):
+    be = MLXBackend(card=_card(required_backend="mlx"), port=9999)
+    be._adopted_pid = 5555
+    monkeypatch.setattr(
+        "mesh.backends.os.getpgid",
+        lambda *_args: pytest.fail("adopted process must remain operator-owned"),
+    )
+    monkeypatch.setattr(
+        "mesh.backends.os.killpg",
+        lambda *_args: pytest.fail("adopted process must remain operator-owned"),
+    )
+
+    be.stop()
+
+    assert be._adopted_pid is None
 
 
 def test_mlx_start_spawns_mlx_lm_server(monkeypatch):

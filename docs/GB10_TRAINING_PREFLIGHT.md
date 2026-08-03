@@ -57,7 +57,7 @@ of a process kill (GATE-CONTRACT "never co-host train+serve").
 
 ## 5. Launch through the GPU scheduler, via bash
 
-On the shared GB10 (`spark-472e`), every training launch goes through
+On a shared GB10, every training launch goes through
 `gpu-launch --kind training` so it gets hard preempt-protection and shows up in
 attribution:
 
