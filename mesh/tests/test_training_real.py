@@ -162,7 +162,7 @@ def test_real_path_missing_deps_raises(tmp_path: Path, monkeypatch):
     with pytest.raises(MissingTrainingDepsError) as exc:
         tp.run()
     msg = str(exc.value)
-    assert '".[train]"' in msg
+    assert '"slancha-mesh-tune[train]"' in msg
     assert "#55" in msg
     # No checkpoint written on the failed path.
     assert not any(tmp_path.iterdir())

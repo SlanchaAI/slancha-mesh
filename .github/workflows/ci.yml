@@ -31,21 +31,21 @@ jobs:
       matrix:
         python-version: ["3.11", "3.12", "3.13"]
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
 
       - name: Setup uv
-        uses: astral-sh/setup-uv@v5
+        uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5
         with:
           enable-cache: true
 
-      - name: Install (locked — reproducible from uv.lock)
+      - name: Install core + optional add-on (locked — reproducible from uv.lock)
         # --extra signing pulls PyNaCl so the node-identity (#102), eval-row/seed
         # signature (#104), and peer-challenge (#108) tests RUN in CI. Without it
         # they importorskip and 15 security tests silently pass-by-skipping (#125).
-        run: uv sync --extra dev --extra signing --frozen --python ${{ matrix.python-version }}
+        run: uv sync --all-packages --extra dev --extra signing --frozen --python ${{ matrix.python-version }}
 
       - name: Lint (ruff)
-        run: uv run --python ${{ matrix.python-version }} ruff check mesh/
+        run: uv run --python ${{ matrix.python-version }} ruff check mesh/ packages/slancha-mesh-tune/mesh/
 
       - name: OSS boundary (no proprietary symbol in mesh source)
         # The usage-telemetry seam (mesh/usage.py) must stay metering-NEUTRAL — a
@@ -65,13 +65,63 @@ jobs:
       - name: Validate catalog (substrate sanity)
         run: uv run --python ${{ matrix.python-version }} python -m mesh.validate_card --strict
 
+      - name: Add-on command smoke
+        run: |
+          uv run --python ${{ matrix.python-version }} slancha-mesh-tune check
+          if uv run --python ${{ matrix.python-version }} slancha-mesh-tune dashboard 2>dashboard.err; then
+            echo "::error::dashboard started without its optional extra"; exit 1
+          fi
+          grep -q 'slancha-mesh-tune\[dashboard\]' dashboard.err
+
+  package-boundary:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+
+      - name: Setup uv
+        uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5
+
+      - name: Build both wheels and source distributions
+        run: |
+          set -euo pipefail
+          mkdir .venv-router
+          trap 'rm -rf .venv-router' EXIT
+          printf 'must-not-ship\n' > .venv-router/release-artifact-sentinel.txt
+          uv build --package slancha-mesh --out-dir dist/core
+          uv build --package slancha-mesh-tune --out-dir dist/tune
+
+      - name: Verify release archive contents
+        run: python scripts/check_release_artifacts.py dist/core dist/tune
+
+      - name: Validate release metadata
+        run: uv run --with twine twine check dist/core/* dist/tune/*
+
+      - name: Prove core has no tuning harness
+        run: |
+          python -m venv /tmp/slancha-core
+          /tmp/slancha-core/bin/pip install dist/core/*.whl
+          /tmp/slancha-core/bin/python -c 'import importlib.metadata as metadata; import mesh; assert metadata.version("slancha-mesh") == mesh.__version__ == "0.1.0a1"'
+          /tmp/slancha-core/bin/python -c 'import mesh.serve; import importlib.util; assert importlib.util.find_spec("mesh.training") is None'
+          ! /tmp/slancha-core/bin/slancha-mesh --help | grep -q loop
+
+      - name: Prove add-on composes with core
+        run: |
+          unzip -Z1 dist/tune/*.whl | grep -qx LICENSE
+          unzip -Z1 dist/tune/*.whl | grep -qx NOTICE
+          python -m venv /tmp/slancha-tune
+          /tmp/slancha-tune/bin/pip install dist/core/*.whl
+          /tmp/slancha-tune/bin/pip install --no-index --no-deps dist/tune/*.whl
+          /tmp/slancha-tune/bin/python -c 'import importlib.metadata as metadata; assert metadata.version("slancha-mesh") == metadata.version("slancha-mesh-tune") == "0.1.0a1"'
+          /tmp/slancha-tune/bin/slancha-mesh-tune check
+          /tmp/slancha-tune/bin/python -c 'import mesh.training, mesh.eval.gate'
+
   # The docker/ registry image (the push/central-registry control plane) had
   # no CI coverage — it could bit-rot silently. Build it + smoke the live
   # endpoints so a broken Dockerfile/service boot fails the PR.
   docker:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
 
       - name: Build registry image
         run: docker build -t slancha-registry:ci -f docker/Dockerfile .

@@ -7,6 +7,8 @@ real-serving integration is in `test_integration_vllm.py` behind a
 
 from __future__ import annotations
 
+import pytest
+
 from mesh.backends import (
     ExternalBackend,
     NullBackend,
@@ -108,6 +110,23 @@ def test_vllm_backend_stop_when_never_started_is_noop():
     be = VLLMBackend(card=_card(), port=9999)
     be.stop()  # should not raise
     assert not be.is_alive()
+
+
+def test_vllm_backend_stop_never_kills_adopted_process(monkeypatch):
+    be = VLLMBackend(card=_card(), port=8123)
+    be._adopted_pid = 5555
+    monkeypatch.setattr(
+        "mesh.backends.os.getpgid",
+        lambda *_args: pytest.fail("adopted process must remain operator-owned"),
+    )
+    monkeypatch.setattr(
+        "mesh.backends.os.killpg",
+        lambda *_args: pytest.fail("adopted process must remain operator-owned"),
+    )
+
+    be.stop()
+
+    assert be._adopted_pid is None
 
 
 def test_fp8_marlin_fallback_blackwell_consumer():

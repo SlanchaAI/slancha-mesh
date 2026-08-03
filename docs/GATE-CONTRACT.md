@@ -52,7 +52,7 @@ stays and the candidate is archived (never served).
 7. **Frozen-holdout governor.** The set the gate scores against is a **version-pinned,
    hand-curated seed set — never auto-derived from live traffic.** This is what stops
    the loop from optimizing toward a drifting or poisoned signal (Goodhart). Both loops
-   independently landed here: slancha-mesh's curated holdout; forge's frozen Paul-email
+   independently landed here: slancha-mesh's curated holdout; forge's frozen private-email
    embedding centroid (precomputed offline from a held-out corpus).
    - **Goodhart regression test (mandatory):** the gate's test suite must assert that
      adversarially-degraded output — e.g. corporate-slop with the known "AI-tell"

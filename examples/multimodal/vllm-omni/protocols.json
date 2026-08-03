@@ -1,0 +1,14 @@
+{
+  "runtime": "vLLM-Omni",
+  "runtime_version": "0.20.0",
+  "protocols": [
+    {"method": "POST", "path": "/v1/images/generations", "capability": "protocol:openai.images.generations.v1"},
+    {"method": "POST", "path": "/v1/images/edits", "capability": "protocol:openai.images.edits.v1"},
+    {"method": "POST", "path": "/v1/audio/speech", "capability": "protocol:openai.audio.speech.v1"},
+    {"method": "POST", "path": "/v1/audio/generate", "capability": "protocol:vllm_omni.audio.generate.v1"},
+    {"method": "POST", "path": "/v1/videos", "capability": "protocol:vllm_omni.video.jobs.v1"},
+    {"method": "GET", "path": "/v1/videos/{id}", "capability": "protocol:vllm_omni.video.jobs.v1"},
+    {"method": "GET", "path": "/v1/videos/{id}/content", "capability": "protocol:vllm_omni.video.jobs.v1"},
+    {"method": "DELETE", "path": "/v1/videos/{id}", "capability": "protocol:vllm_omni.video.jobs.v1"}
+  ]
+}

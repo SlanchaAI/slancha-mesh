@@ -2,7 +2,7 @@
 
 **Status:** design brief, hardened after verification + adversarial review (2026-06-27).
 Internal. Hardware figures are externally-sourced and trust-tagged; everything else is
-code-grounded against `/Users/laul_pogan/Source/slancha-mesh` (the live target — three
+code-grounded against the Slancha-Mesh source tree (the live target — three
 sibling repos carry a `mesh/` dir, but only this one has `idle.py`, `backends.py`, and
 the full selector).
 **Scope:** the allocator/sizing path (`mesh/allocator.py`, `mesh/probe.py`,
@@ -344,8 +344,8 @@ and should seed the probe table / gate, replacing the datasheet estimates above.
 
 | Node | `nvidia-smi` name | Datasheet | **Measured BW** | **MBU** | In-situ decode |
 |------|-------------------|-----------|-----------------|---------|----------------|
-| GB10 (`promaxgb10-d325`) | `NVIDIA GB10` (matches probe table key → 273 served) | 273 GB/s | synthetic bench **blocked** — box saturated (117/121 GB used, 88 GB vLLM resident, ~3 GB free; a 2 GiB alloc OOM'd) | — | `dot-voice` (small) **46 tok/s**, `dot-backbone` (~88 GB) **8 tok/s** |
-| RTX PRO 6000 (`dellpromax`) | `NVIDIA RTX PRO 6000 Blackwell Workstation Edition` | 1792 GB/s | **1467 GB/s** (zero-install ctypes `cuMemcpyDtoD_v2`, 2 GiB, best/50) | **0.82** | idle (no resident model) |
+| GB10 (reference node) | `NVIDIA GB10` (matches probe table key → 273 served) | 273 GB/s | synthetic bench **blocked** — box saturated (117/121 GB used, 88 GB vLLM resident, ~3 GB free; a 2 GiB alloc OOM'd) | — | small model **46 tok/s**, large model (~88 GB) **8 tok/s** |
+| RTX PRO 6000 (reference node) | `NVIDIA RTX PRO 6000 Blackwell Workstation Edition` | 1792 GB/s | **1467 GB/s** (zero-install ctypes `cuMemcpyDtoD_v2`, 2 GiB, best/50) | **0.82** | idle (no resident model) |
 
 What it proves:
 

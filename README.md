@@ -1,404 +1,607 @@
 # Slancha-Mesh
 
-**Federate your local LLM nodes — Macs, GPU boxes, small homelab rigs —
-into one OpenAI-compatible endpoint with hardware-aware routing across
-specialists.**
+**One private, OpenAI-compatible endpoint across the local model servers you
+already run.** Slancha-Mesh discovers Ollama, vLLM, llama.cpp, and MLX
+specialists across mixed hardware, routes a chosen model to a healthy node,
+and returns a typed `punt` when local inference cannot serve the request.
 
-You probably already run Ollama or vLLM on one box. Slancha-Mesh is the
-layer on top: it discovers every node on your LAN or tailnet, learns what
-each one is good at (code / reasoning / multilingual / small-and-fast),
-and routes each prompt to the right one. No central server required (one
-is optional), and no data leaves your hardware. Apache-2.0.
+With automatic policy enabled, the caller can target the weakest sufficient
+specialist while Mesh handles live node readiness and failover. Cloud execution
+stays an explicit, caller-owned decision: Mesh holds no provider credentials
+and never turns a local failure into paid traffic. Optional adapters add image,
+audio, transcription, and video routes without making media runtimes part of
+the core.
 
-**Status:** the discovery, routing, and heartbeat substrate is stable and
-well-tested (~1,000 unit tests plus live demos on GB10 hardware). The
-specialist catalog ships one bring-up-validated card
-(`qwen3-coder-30b-a3b-fp8`) alongside ten draft cards spanning Ollama and
-vLLM; see [`docs/CATALOG_STATUS.md`](docs/CATALOG_STATUS.md) for per-card
-validation status.
+Each node serves a whole model. Mesh chooses among model/node replicas; it does
+not split one model across machines.
 
-## How it works
+> **Project status:** `0.1.0a1` alpha. Install the exact source revision shown
+> below; no PyPI package or GitHub release has been published yet. APIs and
+> configuration may change, and the project has no service-level agreement.
+> The core serving and routing package is separate from the optional tuning
+> harness.
 
-Slancha-Mesh has three pieces:
+## First value: route one Ollama model through Mesh
 
-- **Nodes** run your models on your hardware (through Ollama, vLLM,
-  llama.cpp, or MLX) and expose both an OpenAI-compatible endpoint and a
-  small `/models` self-description.
-- **Discovery** builds a routing table by pulling each node's
-  self-description — over your LAN (an explicit `--peer` list) or a
-  Tailscale / Headscale tailnet.
-- **The router** presents one OpenAI `/v1` endpoint. For each request it
-  looks up the target specialist, picks the best reachable node — using
-  live queue depth and measured p95 latency to break ties — and proxies
-  the call, falling through to the next node on failure.
+This path needs no Docker, cloud account, or application programming interface
+(API) key. It proves the Mesh hop with response headers rather than relying on
+the generated text.
 
-## Quickstart — one box, Ollama already installed
+### Prerequisites
 
-The block below installs the project, serves a model through your
-existing Ollama, and routes a real prompt through the mesh.
+- macOS or Linux with Python 3.11–3.13, Git, and `curl`; Windows nodes are
+  supported, but this canonical quickstart uses a POSIX shell
+- [Ollama](https://ollama.com/download) installed and running
+- about 9.3 GB for the model download; the catalog estimates 11 GB of runtime
+  memory, so 12 GB of free system RAM, VRAM, or unified memory available to the
+  model is the minimum and 16 GB leaves useful headroom
+- three concurrent terminals after setup
+
+Docker is needed only for the optional vLLM Semantic Router front door below.
+The quickstart uses the catalog's live-validated `qwen3:14b` Ollama tag. The
+download is real and large; run `slancha-mesh plan --json` first and choose a
+smaller draft card only if you accept that its exact activation path is not yet
+live-validated.
+
+### Setup
 
 ```bash
-# 1. Install. uv is fastest; the plain pip path works identically.
-#    uv:  curl -LsSf https://astral.sh/uv/install.sh | sh
-git clone https://github.com/SlanchaAi/slancha-mesh.git
+git clone https://github.com/SlanchaAI/slancha-mesh.git
 cd slancha-mesh
-uv venv && source .venv/bin/activate && uv pip install -e ".[dev]"
-# pip-only alternative (no uv):
-# python -m venv .venv && source .venv/bin/activate && pip install -e ".[dev]"
+git checkout --detach OSS_READY_CODE_REF
+python3 -m venv .venv
+source .venv/bin/activate
+python -m pip install -e .
+slancha-mesh plan --json
+```
 
-# 2. Pull a model your hardware can serve, through your existing Ollama:
-ollama pull qwen2.5-coder:7b-instruct-q4_K_M
+Inspect the plan and stop unless `ollama` appears in
+`hardware.available_backends` and either `hardware.ram_available_gb` or
+`hardware.vram_available_gb` is at least `12`. The planner may recommend a
+smaller specialist; that is safer for constrained hardware, but draft cards do
+not carry this quickstart's live-validation claim. Windows operators should use
+[`NODE_SETUP.md`](NODE_SETUP.md) instead of translating this POSIX sequence.
 
-# 3. Start the node — adopts your running Ollama daemon, serves node-info on :8088.
-slancha-mesh up --specialist qwen2.5-coder-7b-q4-ollama
+Only after that check passes, download the validated model:
 
-# 4. In another terminal: a drop-in OpenAI /v1 endpoint over your mesh.
+```bash
+ollama pull qwen3:14b
+```
+
+### Terminal 1 — serve the specialist
+
+Run from the repository with the virtual environment active. This adopts the
+running Ollama daemon and exposes the node description on loopback `:8088`.
+
+```bash
+slancha-mesh up --specialist qwen3-14b-q4-ollama
+```
+
+Leave it running.
+
+### Terminal 2 — run the Mesh router
+
+```bash
+cd slancha-mesh
+source .venv/bin/activate
 slancha-mesh router --peer 127.0.0.1 --port 8080
+```
 
-# 5. In a third terminal: ask a question — same shape as api.openai.com /v1.
-curl -s http://localhost:8080/v1/chat/completions \
+Leave it running. The router refreshes the node description and builds its
+routing table.
+
+### Terminal 3 — send a request
+
+```bash
+cd slancha-mesh
+source .venv/bin/activate
+curl -i http://127.0.0.1:8080/v1/chat/completions \
   -H 'Content-Type: application/json' \
   -d '{
-    "model": "qwen2.5-coder-7b-q4-ollama",
+    "model": "qwen3-14b-q4-ollama",
     "messages": [{"role":"user","content":"reverse a string in python"}]
-  }' | jq -r '.choices[0].message.content'
+  }'
 ```
 
-Expected output from step 5 — a short code answer:
+The answer varies, but a successful Mesh route has this observable shape:
 
 ```text
-You can reverse a string in Python with a slice:
+HTTP/1.1 200 OK
+x-slancha-specialist: qwen3-14b-q4-ollama
+x-slancha-node: <local-node-id>
+x-slancha-reason: primary; queue_depth=... p95=...
 
-    s = "hello"
-    print(s[::-1])   # 'olleh'
+{"choices":[...]}
 ```
 
-That response came back from `localhost:8080` — your local router
-discovered the node and proxied the prompt to the model on your own
-Ollama daemon. No cloud, no API key, one box.
-
-### Let the router pick the model
-
-Install the classifier extra and start the router with `--auto-route`;
-then `model: "auto"` routes each prompt by classified domain and
-difficulty (a built-in mmBERT-small + treelite classifier, ~ms per
-prompt, fully local — the model weights ship in the wheel, so this
-works air-gapped):
+`X-Slancha-Specialist`, `X-Slancha-Node`, and `X-Slancha-Reason` prove which
+specialist and node served the request. Diagnose setup with:
 
 ```bash
-pip install "slancha-mesh[classifier]"
-slancha-mesh router --peer 127.0.0.1 --port 8080 --auto-route
-
-curl -s http://localhost:8080/v1/chat/completions \
-  -H 'Content-Type: application/json' \
-  -d '{"model": "auto", "messages": [{"role":"user","content":"reverse a string in python"}]}'
-```
-
-The `X-Slancha-Specialist` response header names the model it picked,
-and the router log shows the classified signals per request. Coding
-prompts land on your coder, hard general prompts on your strongest
-generalist, easy ones on the smallest model that covers them.
-
-To inspect the routing table instead of sending a prompt:
-
-```bash
-# Reads local node-info, skips Tailscale, shows the node reachable
-# with the specialist bound to your Ollama daemon's URL.
 slancha-mesh discover --peer 127.0.0.1
+curl --fail http://127.0.0.1:8080/health
 ```
 
-### Usage telemetry (optional)
+Treat catalog hardware fit as a preflight estimate and report successful
+bring-up data.
 
-The router can emit a neutral **usage event** per completed inference — token
-counts + routing metadata only, **never prompt or completion bodies** — to a
-receiver you run. It's **off by default**; set `SLANCHA_USAGE_SINK_URL` to turn
-it on. Events are written to a local append-only JSONL spool (off the request
-path, so telemetry never blocks or fails a completion) and a background task
-drains them at-least-once with retry/backoff; the receiver dedups on
-`request_id`.
+### Second value: prove federation and failover
+
+After the same specialist is healthy on two machines, confirm both names
+resolve from the gateway and both node-info endpoints answer before replacing
+the one-peer router:
 
 ```bash
-SLANCHA_USAGE_SINK_URL=http://127.0.0.1:8977/v1/usage \
-  slancha-mesh router --peer 127.0.0.1 --port 8080
+getent hosts node-a node-b                 # Linux; use `dscacheutil -q host -a name ...` on macOS
+curl --fail http://node-a:8088/models
+curl --fail http://node-b:8088/models
+slancha-mesh discover --peer node-a --peer node-b
+# In Terminal 2, stop the one-peer router with Ctrl-C, then replace it:
+SLANCHA_ROUTER_BINDING_RETAIN_S=0 \
+  slancha-mesh router --peer node-a --peer node-b --port 8080 --refresh-s 2
 ```
 
-| Env var | Default | Meaning |
-|---|---|---|
-| `SLANCHA_USAGE_SINK_URL` | *(unset → off)* | Receiver URL. Unset = no telemetry (no spool, no drain). |
-| `SLANCHA_USAGE_SINK_TOKEN` | *(none)* | Optional bearer, sent **only** to that URL. |
-| `SLANCHA_USAGE_SPOOL_PATH` | `~/.slancha/usage-spool.jsonl` | Local spool file (mode `0600`). |
-| `SLANCHA_USAGE_DRAIN_INTERVAL_S` | `5` | Seconds between drain passes. |
+Send the Terminal 3 request and record `X-Slancha-Node`. Stop the foreground
+`slancha-mesh up` process on that selected node, wait three seconds, and repeat
+the request. Success means HTTP 200 returns with the same
+`X-Slancha-Specialist` and a different `X-Slancha-Node`; restart the stopped
+node afterward. The zero-retention setting makes this a deterministic failover
+test; production defaults retain a missed binding for two refresh cycles to
+smooth brief discovery loss. Stopping `up` removes the node description while
+leaving an adopted Ollama daemon running. Use the token or tailnet setup below
+before doing this across machines.
 
-The event carries token **counts**, not cost — the receiver prices them (mesh
-has no pricing). The router has no per-user principal (auth is a shared node
-token), so `user_id` is the caller-asserted OpenAI `user` field when present,
-else `"unattributed"`. **If the receiver scopes this emitter's token to a fixed
-set of actors, include `"unattributed"` in it (or don't scope it)** — otherwise
-that share of usage is refused and silently dropped by the receiver.
-
-### Which backend runs on your hardware?
-
-The planner recommends an engine per OS. The table below is what actually
-serves today versus what's recommended; pick the model size your VRAM
-fits.
-
-| Hardware | Backend | Notes |
-|---|---|---|
-| Apple Silicon Mac (e.g. 16GB) | **MLX** or Ollama | Planner prefers MLX (native Metal via `mlx_lm`); set `mlx_repo` on the card. Ollama is the zero-config fallback. Good for 7B Q4. |
-| Windows + NVIDIA (e.g. 8GB) | **Ollama** | Native CUDA. vLLM is Linux/WSL-only. Good for 7B Q4. |
-| Linux + NVIDIA ≥24GB (3090/4090) | **vLLM** | Throughput; FP8 on Ada/Hopper+, else AWQ. Ollama also works. |
-| Linux + NVIDIA <24GB | **Ollama** | GGUF fits. |
-| GB10 / DGX Spark (aarch64 unified) | **Ollama** | No official vLLM sm_121 wheels yet. |
-| CPU-only | **llama.cpp** or Ollama | Planner prefers llama.cpp (native `llama-server`); set `gguf_path` on the card. Ollama also works. |
-
-Ollama is the universal zero-config backend; vLLM adds throughput on
-Linux. MLX (Apple Silicon, `mlx_repo`) and llama.cpp (any box with a
-GGUF, `gguf_path`) are native paths the planner recommends.
-
-## Quickstart — two boxes on a LAN
-
-No Tailscale required. On a trusted LAN, exposing a node's node-info
-endpoint on all interfaces needs an explicit acknowledgement:
-`SLANCHA_AUTH_REQUIRED=false` (the network is your trust boundary) or a
-shared `SLANCHA_NODE_TOKEN`.
-
-On **box A** (say a Mac mini, `192.168.1.10`):
+This manual path proves discovery failover after a node disappears. The
+separate request-time retry path handles connection failures and upstream
+502/503/504 responses before any response bytes reach the caller; prove that
+bounded behavior without faulting a live model:
 
 ```bash
-OLLAMA_HOST=0.0.0.0:11434 ollama serve              # one-time: bind Ollama on the LAN
-ollama pull phi4-mini:3.8b-q4_K_M
-SLANCHA_AUTH_REQUIRED=false \
-  slancha-mesh up --specialist phi-4-mini-q4-ollama --node-info-host 0.0.0.0
+uv run pytest -q \
+  mesh/tests/test_router_app.py::test_chat_completions_falls_through_on_connect_failure_to_next_binding \
+  mesh/tests/test_router_app.py::test_chat_completions_retries_on_upstream_502_503_504
 ```
 
-On **box B** (say a 3090 box, `192.168.1.20`):
+## What Mesh owns
+
+```text
+OpenAI-compatible client
+          |
+          v
+  optional caller policy ---------> caller-approved cloud request
+          |                              (outside Mesh)
+          v
+  Slancha-Mesh router :8080
+          |
+          +-- pulls /models from node-info :8088
+          +-- ranks healthy bindings by readiness, queue, and latency
+          +-- retries another eligible local node before a typed punt
+          |
+          +-- Ollama / vLLM / llama.cpp / MLX specialists
+```
+
+- **Nodes** run models on your hardware and expose an OpenAI-compatible model
+  endpoint plus a small `/models` self-description.
+- **Pull discovery** walks an explicit LAN peer list or a
+  Tailscale/Headscale tailnet. A private mesh needs no central registry.
+- **The Mesh router** host-pins discovered model URLs, filters unavailable
+  bindings, and chooses among replicas of the requested specialist using live
+  queue depth and measured p95 latency.
+- **Model intent** comes from the request, the optional built-in classifier, or
+  a caller-side policy layer. Mesh does not learn a routing policy at runtime.
+- **Cloud policy** remains outside Mesh. A typed punt is data, not an automatic
+  fallback.
+
+This is the opposite of splitting one model across machines. Slancha-Mesh
+places different specialists on different nodes and routes requests between
+them.
+
+## Automatic and semantic routing are optional
+
+### Built-in offline classifier
+
+Install the classifier extra to resolve `model: "auto"` without Docker. Its
+assets are bundled for offline use; it maps prompt signals to catalog
+specialists, then live Mesh readiness chooses the node.
 
 ```bash
-ollama pull qwen2.5-coder:7b-instruct-q4_K_M
-SLANCHA_AUTH_REQUIRED=false \
-  slancha-mesh up --specialist qwen2.5-coder-7b-q4-ollama --node-info-host 0.0.0.0
+python -m pip install -e ".[classifier]"
+slancha-mesh router --peer 127.0.0.1 --port 8080 --auto-route
 ```
 
-From either box (or your laptop), federate:
+Leave that router running. From another activated terminal:
 
 ```bash
-slancha-mesh discover --peer 192.168.1.10 --peer 192.168.1.20
+curl -i http://127.0.0.1:8080/v1/chat/completions \
+  -H 'Content-Type: application/json' \
+  -d '{"model":"auto","messages":[{"role":"user","content":"write a Python parser"}]}'
 ```
 
-You get a routing table that knows box A is good at small/easy prompts
-and box B is good at code. The router takes a classifier verdict and
-picks the right node from `domain` + `difficulty_tiers` + live queue
-depth + measured p95 latency.
+Success is HTTP 200 with `X-Slancha-Specialist`, `X-Slancha-Node`, and
+`X-Slancha-Reason` headers naming the resolved local route. Roll back by
+stopping this router and restarting the explicit-model command from Terminal 2;
+the bundled classifier assets do not run outside `--auto-route`.
 
-See [`docs/HOMELAB.md`](docs/HOMELAB.md) for the longer walkthrough
-(2-GPU rigs, mixed Mac+Linux, fault-tolerant routing).
+### vLLM Semantic Router front door
 
-## Why not just…
+[vLLM Semantic Router](https://github.com/vllm-project/semantic-router) is an
+optional caller-facing layer, not a serving engine replacement and not a
+first-run dependency. The `v0.3.0` multi-architecture image is pinned to OCI
+digest `sha256:667c4d45e03fcee84d33792e6901fa3ac0e6a1f53e6a2674ecb1174e1decea64`.
+The composition listens on `:8888` and forwards to Mesh on `:8080`:
 
-| Existing tool | What it does well | What Slancha-Mesh adds |
-|---|---|---|
-| **Ollama / LM Studio** | Easy single-box model serving; great UX. | Federating *N* such boxes into one routed endpoint with hardware-aware specialist allocation. Ollama is a first-class backend here. |
-| **exo / petals** | Splits *one* model's layers across nodes for memory-bound inference. | The opposite topology: route *different models* to *different nodes*. Complementary — use exo to run one 70B split across 4 Macs; use Slancha-Mesh to size each box for a specialist and route which specialist answers. |
-| **vLLM / llama.cpp directly** | Best-in-class single-engine throughput. | The mesh treats them as backends behind one `/v1/chat/completions` seam; the engine choice happens behind that seam. |
-| **LiteLLM / OpenRouter** | Unified API across N hosted providers. | The same OpenAI-compatible surface, but every node is yours on your hardware — no third-party billing, no data egress. |
-| **llama-swap** | OpenAI-compatible proxy that hot-swaps which local model process runs on one box — good for VRAM-constrained model-juggling. | Cross-node discovery and federation: the router picks *which node* answers, not just which model is loaded on the one box. Complementary if you already run llama-swap on a node. |
-| **SGLang** | High-performance serving engine (RadixAttention prefix caching, structured output, strong tool-call throughput). | It's an engine, not an orchestrator. Backends are a pluggable seam here; SGLang is a natural fit for that seam and is on the roadmap, not yet wired. |
+```text
+client :8888 -> vLLM Semantic Router -> Mesh :8080 -> local specialist
+```
 
-## Components
+Start Mesh with `--auto-route`, then in another terminal with Docker running:
 
-| Module | What it does |
+```bash
+slancha-mesh semantic-router install \
+  --config examples/oss-routing/vllm-semantic-router.yaml
+slancha-mesh semantic-router validate
+slancha-mesh semantic-router serve
+```
+
+Send `model: "MoM"` (model-of-models) to `http://127.0.0.1:8888`. The bundled
+profile uses a **static** decision that maps MoM to Mesh `model: "auto"`; Mesh
+then applies live fleet readiness. It does not enable learned semantic model
+selection by default. Configure a vLLM Semantic Router decision with multiple
+model candidates when you want that router to own semantic selection.
+
+See [`examples/oss-routing/`](examples/oss-routing/) for the exact topology,
+port-offset behavior, and rollback. Media calls bypass this alpha front door
+and go directly to Mesh `:8080`.
+
+## Local-first cloud escalation
+
+When no eligible local binding can serve a request, Mesh returns HTTP 503 with
+a stable machine-readable contract:
+
+```http
+HTTP/1.1 503 Service Unavailable
+X-Slancha-Outcome: punt
+X-Slancha-Reason: <bounded local diagnostic>
+Content-Type: application/json
+
+{"error":{"type":"slancha_punt","code":"local_route_unavailable",
+"message":"Every attempted local route failed.",
+"details":{"local_attempts":2,"suggested_class":"cloud","retryable":true}}}
+```
+
+The caller may queue, ask for consent, or make a separate request through an
+external gateway. A 503 without `X-Slancha-Outcome: punt` is an ordinary
+failure, not permission to spend.
+
+A private Barkeep adapter in the reference deployment consumes this policy
+boundary: it reads the typed punt, applies subscription/free/paid lane policy,
+and requires an explicit spend decision before one cloud request. It is not a
+public Mesh dependency or an installable OSS integration. Provider credentials
+stay in the caller's credential boundary and never enter Mesh. Inference
+Gateway, LiteLLM, or another caller-controlled executor can implement the same
+external role.
+
+## Optional multimodal routes
+
+Core Mesh can proxy bounded, capability-advertised media protocols, but it
+does not bundle LocalAI, vLLM-Omni, media models, CUDA, codecs, or a populated
+media card in the built-in catalog. Operators run and pin an optional runtime,
+copy an example card, and advertise only routes proven by that loaded model.
+
+Supported direct-Mesh `:8080` routes in this alpha:
+
+| Request shape | Routes |
 |---|---|
-| `mesh/cli.py` | The `slancha-mesh` CLI: `up` / `discover` / `status` / `serve` / `doctor` / `plan`. |
-| `mesh/discovery.py` | Pull discovery: walk a tailnet or an explicit `--peer` list into routes with host-pinned `node_url`s. |
-| `mesh/node_server.py` | `build_node()` — the daemon and `/models` self-description share one registry. |
-| `mesh/registry.py` | Event-sourced, thread-safe, deterministic replay. |
-| `mesh/backends.py` | `VLLMBackend`, `OllamaBackend`, `LlamaCppBackend`, `MLXBackend`, `NullBackend`. The `BaseBackend` protocol is the seam — one class per engine. |
-| `mesh/serve.py` | `ServeDaemon` boots backends and runs the heartbeat loop. |
-| `mesh/select.py` | `select_mesh_route` — classifier verdict + snapshot → ranked routes with cloud fallback. |
-| `mesh/allocator.py` | `model_fit_score` plus three cluster-allocation strategies. |
-| `mesh/probe.py` | Hardware/network probe with GB10 unified-memory detection. |
-| `mesh/catalog/*.toml` | 11 specialist cards (1 validated + 10 draft). |
-| `mesh/tests/` | ~1,000 hermetic unit tests plus live-vLLM integration tests (gated by `VLLM_LIVE_URL`). |
+| JSON | `POST /v1/images/generations`, `/v1/audio/speech`, `/v1/audio/generate`, LocalAI `/video` |
+| Multipart | `POST /v1/images/edits`, `/v1/audio/transcriptions` |
+| Async video jobs | `POST /v1/videos`, then `GET /v1/videos/{id}`, `GET /v1/videos/{id}/content`, `DELETE /v1/videos/{id}` |
 
-## Backend support
+Async video jobs are owner-pinned: Mesh keeps a durable SQLite owner map so
+poll, content, and delete calls return to the node and upstream origin that
+created the job, including after a router restart. The alpha does not route
+WebSocket video or vLLM-Omni `/v1/videos/sync`.
 
-| Backend | Status | How to use |
-|---|---|---|
-| `ollama` | Wired | Mac, AMD, Windows + NVIDIA, GB10, small NVIDIA. Adopts your running Ollama daemon at `127.0.0.1:11434` (or `OLLAMA_HOST=0.0.0.0:11434` for LAN). `OLLAMA_PORT` honored. |
-| `vllm` | Wired (kernel-gated on Blackwell) | Linux/WSL + CUDA. Native FP8 on Hopper/Ada; Marlin weight-only fallback on Blackwell consumer (sm_120/sm_121). |
-| `llamacpp` | Wired | Any box with a GGUF — the CPU-only / no-CUDA-no-Metal path. Owns (or adopts) a `llama-server` subprocess. Set `gguf_path` on the card (local path or `repo:file` HF id); needs `llama-server` on `PATH`. |
-| `mlx` | Wired | Apple Silicon native (Metal). Owns an `mlx_lm.server` subprocess. Set `mlx_repo` on the card (an `mlx-community/...` HF repo); needs `mlx_lm` installed. Refuses on non-Darwin/arm64 hosts. |
+See [`examples/multimodal/`](examples/multimodal/) for pinned LocalAI and
+vLLM-Omni integration seams, protocol maps, security boundaries, and curl
+examples. The adapters have real-socket proxy tests against synthetic
+runtime-shaped upstreams; they have not completed a live LocalAI or vLLM-Omni
+model request. An operator-provided runtime and model remain required.
 
-## Multi-machine over Tailscale
+## Add machines safely
 
-Once you outgrow a single LAN — boxes on different networks, no port
-forwarding, encrypted transport — Slancha-Mesh's pull discovery walks a
-Tailscale / Headscale tailnet for `tag:specialist` peers and pulls each
-node's `/models` over WireGuard. The tailnet ACL is the credential;
-nothing is exposed to the open internet.
+Start with a preflight on every candidate node:
 
 ```bash
-slancha-mesh up --tailnet --auto --key tskey-...
-slancha-mesh discover --tailnet
+slancha-mesh plan --json
 ```
 
-See [`ONBOARDING.md`](ONBOARDING.md) for the full tailnet bring-up
-(tagging, ACL shape, MagicDNS resolution, the `tag:specialist` membrane).
+The plan reports the detected backend, hardware fit, recommended specialist,
+mesh state, and next steps. Catalog capacity and throughput values are
+estimates until a live bring-up records them; choose a smaller model when the
+runtime has insufficient memory or storage.
 
-## Running and operating
+| Hardware | Preferred backend | Practical starting point |
+|---|---|---|
+| Apple Silicon | MLX or Ollama | 7B Q4 on a 16 GB machine |
+| Windows + NVIDIA | Ollama | 7B Q4 on an 8 GB GPU |
+| Linux + NVIDIA, 24 GB or more | vLLM | Throughput-oriented serving; choose a quantization supported by the GPU |
+| Linux + NVIDIA, under 24 GB | Ollama | GGUF models sized to available VRAM |
+| GB10 / unified memory | Ollama | Size from free unified memory; verify architecture-specific engine support |
+| CPU-only | llama.cpp or Ollama | Small GGUF models; expect lower throughput |
+
+The planner prefers native MLX on Apple Silicon, llama.cpp for a local GGUF on
+CPU, Ollama for broad compatibility, and vLLM on supported Linux/CUDA hosts.
+Run [`slancha-mesh plan --json`](NODE_SETUP.md) before installing a heavy
+engine or downloading large weights.
+
+### Trusted LAN
+
+A LAN is a trust boundary, not authentication. `SLANCHA_NODE_TOKEN` protects
+Mesh node-info and router endpoints; it does **not** protect Ollama's model
+port. Never bind Ollama to `0.0.0.0` on a multihomed host. The example below is
+Linux-only and requires a private node address plus an input firewall that
+permits only the gateway. On macOS or Windows, use the tailnet path unless you
+have an equivalent tested host-firewall rule.
+
+On the node, replace both addresses, install the two temporary `iptables`
+rules, verify their order, then bind Ollama only to the private address:
 
 ```bash
-# Unit tests (~3s)
-uv run pytest mesh/tests/ -v
-
-# Live vLLM integration tests (require a running vLLM)
-VLLM_LIVE_URL=http://127.0.0.1:8001 \
-  uv run pytest mesh/tests/test_integration_vllm.py -v
-
-# Probe the local machine
-uv run python -m mesh.probe --pretty
-
-# What would the mesh allocate to this box?
-slancha-mesh plan
-
-# Diagnose tagged-but-undiscoverable nodes, ACL gaps, etc.
-slancha-mesh doctor
-
-# Run the node boot-persistent (systemd / launchd / Windows task) — see NODE_SETUP.md
-slancha-mesh service install   # defaults to `up --auto`
-
-# Bring up a Spark node end-to-end (probe → vLLM serve → smoke test).
-# --trust-remote-code and HF-revision pinning are opt-in (supply-chain safe by default):
-#   MESH_TRUST_REMOTE_CODE=1 MESH_MODEL_REVISION=<sha> bash mesh/scripts/bring-up-spark.sh ...
-bash mesh/scripts/bring-up-spark.sh qwen3-coder-30b-a3b-fp8 8001
+NODE_LAN_IP=192.168.50.10
+GATEWAY_LAN_IP=192.168.50.5
+sudo iptables -I INPUT 1 -p tcp -d "$NODE_LAN_IP" --dport 11434 ! -s "$GATEWAY_LAN_IP" -j REJECT
+sudo iptables -I INPUT 1 -p tcp -s "$GATEWAY_LAN_IP" -d "$NODE_LAN_IP" --dport 11434 -j ACCEPT
+sudo iptables -L INPUT --line-numbers -n | head
+OLLAMA_HOST="$NODE_LAN_IP:11434" ollama serve
 ```
 
-On GB10 (Blackwell sm_121), vLLM has no official FP8 GEMM kernel yet, so
-the 30B-FP8 weights currently OOM. The validated bring-up served a
-smaller cached model under the catalog's `--served-model-name` to
-exercise the routing, discovery, and backend-lifecycle path — all of
-which are model-agnostic.
+From a non-gateway LAN host, `curl --connect-timeout 2
+http://192.168.50.10:11434/` must fail. From the gateway it must return HTTP
+200. Do not continue until both checks behave that way. Leave Ollama running;
+in another node terminal set the Mesh token:
 
-## Two control planes share `:8088` — pick one
+```bash
+# Silent input keeps the value out of shell history.
+printf 'Node token: '
+read -rs SLANCHA_NODE_TOKEN
+printf '\n'
+export SLANCHA_NODE_TOKEN
+slancha-mesh up --specialist qwen3-14b-q4-ollama \
+  --node-info-host 0.0.0.0
+```
 
-Discovery and the optional central registry both default to `:8088` but
-mean opposite things:
+On the router box:
 
-- **Pull / per-node `/models`** (the default; what `slancha-mesh up`
-  runs): each node serves its own self-description, and a consumer walks
-  the tailnet or your `--peer` list and pulls. No central server, no
-  shared write token.
-- **Push / central registry** (optional, for ops dashboards or
-  slancha-api integration): one shared `MeshRegistry` behind
-  `POST /heartbeat` + `GET /registry`. Run it standalone with the
-  [`docker/`](docker/docker-compose.yml) image, or mount
-  `mesh.registry_app` into slancha-api
-  ([Wire to slancha-api](#wire-to-slancha-api)).
+```bash
+printf 'Node token: '
+read -rs SLANCHA_NODE_TOKEN
+printf '\n'
+export SLANCHA_NODE_TOKEN
+slancha-mesh router --peer 192.168.1.10 --peer 192.168.1.20
+```
 
-There is exactly **one default per role**. Mixing them on the same path
-produces a node that's alive but invisible (in nobody's routing table) or
-one that shows up twice.
+Enter the same high-entropy value from a secret manager at each prompt. Unset
+it after the process inherits it; never paste the value into a command, config,
+service argument, or tracked file.
 
-| | **Pull** (discover) — the local default | **Push** (registry) — the service tier |
+`SLANCHA_AUTH_REQUIRED=false` disables the bind guard. Use it only on a
+deliberately isolated, fully trusted network after accepting that node-info
+and router endpoints have no application-layer authentication:
+
+```bash
+SLANCHA_AUTH_REQUIRED=false slancha-mesh up \
+  --specialist <id> --node-info-host 0.0.0.0
+```
+
+For a multi-box walkthrough, see [`docs/HOMELAB.md`](docs/HOMELAB.md).
+
+### Tailscale or Headscale
+
+Tailnet mode uses membership plus restricted role tags as the credential. It
+exposes model and node-info ports only to tagged gateways, not to the public
+Internet. Before joining anything, adapt this HuJSON fragment in the Tailscale
+policy editor; keep the tailnet's other rules and tests intact:
+
+```jsonc
+{
+  "tagOwners": {
+    "tag:specialist": ["autogroup:admin"],
+    "tag:gateway": ["autogroup:admin"]
+  },
+  "acls": [
+    {
+      "action": "accept",
+      "src": ["tag:gateway"],
+      "proto": "tcp",
+      "dst": ["tag:specialist:8003,8004,8088"]
+    }
+  ]
+}
+```
+
+Tailscale recommends grants for new policies; this ACL form remains supported
+and keeps the port boundary visible. Validate it in the policy editor before
+continuing. See the official [policy syntax](https://tailscale.com/kb/1337/policy-syntax)
+and [tag guide](https://tailscale.com/docs/features/tags).
+
+Enroll the specialist interactively so no auth key appears in process
+arguments or shell history:
+
+```bash
+sudo tailscale up --advertise-tags=tag:specialist
+```
+
+After browser login/admin approval, use two node terminals. Terminal A binds
+Ollama only to the Tailscale address and the ACL-open model port:
+
+```bash
+TAILSCALE_IP=$(tailscale ip -4)
+OLLAMA_HOST="$TAILSCALE_IP:8003" ollama serve
+```
+
+Terminal B exposes pull discovery on that same private interface. The explicit
+auth opt-out is safe only because the policy above limits the listener to the
+tagged gateway role:
+
+```bash
+TAILSCALE_IP=$(tailscale ip -4)
+SLANCHA_AUTH_REQUIRED=false OLLAMA_PORT=8003 \
+  slancha-mesh up --tailnet --specialist qwen3-14b-q4-ollama \
+  --node-info-host "$TAILSCALE_IP"
+```
+
+Enroll a separate gateway interactively, then use one terminal for the router:
+
+```bash
+sudo tailscale up --advertise-tags=tag:gateway
+slancha-mesh discover
+slancha-mesh router --port 8080
+```
+
+From another gateway terminal, send the Terminal 3 request to
+`http://127.0.0.1:8080`. Success requires HTTP 200 plus the expected
+`X-Slancha-Specialist` and a remote `X-Slancha-Node` value.
+
+Without `:8088`, discovery fails. Without the model port, a node can appear in
+discovery but remain unroutable. Keep SSH and all other specialist ports denied
+to `tag:gateway`. See [`ONBOARDING.md`](ONBOARDING.md) and
+[`NODE_SETUP.md`](NODE_SETUP.md) for Headscale, tagged-key automation, MagicDNS,
+and durable services.
+
+## Backends
+
+| Backend | Status | Boundary |
 |---|---|---|
-| **Use when** | one box, a LAN, or a tailnet you can name | a multi-tenant gateway, ops dashboards, or slancha-api — anything aggregating nodes it doesn't control |
-| **Who decides membership** | the consumer walks the network and finds live nodes | the node announces itself to a central registry and heartbeats |
-| **Central server** | none | a `MeshRegistry` control plane |
-| **A dead node** | silently drops out of discovery | stops heartbeating; the registry ages it out |
+| Ollama | Wired | Adopts an existing daemon; supports macOS, Linux, Windows, NVIDIA, and unified-memory hosts. |
+| vLLM | Wired | Linux/WSL + supported CUDA hardware; engine and quantization compatibility remains operator-owned. |
+| llama.cpp | Wired | Owns or adopts `llama-server`; the card supplies a local or Hugging Face GGUF path. |
+| MLX | Wired | Apple Silicon only; owns `mlx_lm.server`; the card supplies an MLX repository. |
 
-The only time both run at once is when a node lives on the local mesh and
-also pushes to a separate hosted gateway for a different audience — and
-even then, each consumer builds its routing table from exactly one plane,
-so the node is counted once.
+Mesh does not stop a model daemon it did not start. vLLM, llama.cpp, and MLX
+processes that Mesh spawns remain Mesh-owned; a process found on an already
+busy port is health-tracked but detached on shutdown. Backend health degrades a
+binding instead of crashing the router, and requests can fall through to the
+next eligible replica.
 
-**Rule of thumb:** local / LAN / tailnet → pull. service / cloud / ops → push.
+## Operations and rollback
 
-## Port convention
+Install node, router, or semantic-router roles as boot-persistent services on
+supported platforms after a foreground request succeeds:
 
-On a tailnet the ACL is deny-by-default, so ports are not interchangeable.
-One rule the rest of the docs assume:
+```bash
+slancha-mesh service install --kind node
+slancha-mesh service install --kind router -- --peer node.example.ts.net
+slancha-mesh service install --kind semantic-router
+slancha-mesh service status
+```
 
-> If a node reports itself as discoverable, its advertised model URL must
-> be reachable from the documented gateway under the documented ACL.
+Remove each managed role explicitly:
 
-On a Tailscale / Headscale mesh:
+```bash
+slancha-mesh service uninstall --kind semantic-router
+slancha-mesh service uninstall --kind router
+slancha-mesh service uninstall --kind node
+```
 
-- **`:8003` (vLLM) / `:8004` (HF)** — the model ports, and the only ones
-  the gateway ACL opens (`tag:gateway -> tag:specialist:8003,8004`).
-  `--base-port` defaults to `8003`, so you land here automatically.
-- **`:8088`** — node-info / discovery only (the `/models` self-description
-  the gateway pulls). Never a model port.
-- **`:8000` (slancha-local) / `:8001` (vLLM dev)** — off-ACL. A node
-  serving here registers fine but is unroutable: the gateway can't dial
-  it. Re-serve on `:8003` (`slancha-mesh up --base-port 8003`).
-  `slancha-mesh doctor` warns on exactly this.
+For foreground setup, press Ctrl-C in the router and node terminals; adopted
+model daemons remain running. To roll back the semantic front door, first run
+`slancha-mesh semantic-router stop` and point clients back to
+`http://127.0.0.1:8080`. If no asynchronous video jobs remain, archive router
+state instead of deleting it:
 
-LAN mode (`--peer`, no Tailscale) has no ACL membrane, so any reachable
-port is fine; the invariant only binds where an ACL gates reachability.
+```bash
+mv ~/.local/state/slancha-mesh/router \
+  ~/.local/state/slancha-mesh/router.rollback.$(date +%Y%m%d%H%M%S)
+```
 
-## Design decisions
+PowerShell equivalent:
 
-- **Bandwidth, not just VRAM, decides where the interactive hot path
-  goes.** Measured (zero-install ctypes bench, MBU 0.82): an RTX PRO 6000
-  Blackwell sustains ~1467 GB/s against GB10's 273 GB/s datasheet figure.
-  Live on GB10, a small resident model decodes at 46 tok/s while a large
-  one on the same box drops to 8 tok/s — a 30 tok/s interactive floor
-  discriminates correctly between the two. Full derivation:
-  [`docs/SIZING_BANDWIDTH_BRIEF.md`](docs/SIZING_BANDWIDTH_BRIEF.md).
-- **Unified-memory nodes get `RAM − 8GB OS reserve`** as their effective
-  model-fit budget. GB10 reports `[N/A]` for VRAM via nvidia-smi; the
-  probe detects this and falls back to RAM with a warning.
-- **The tiered allocator diversifies before duplicating.** A 2-Spark
-  cluster gets one math and one code specialist; a 5-Spark cluster gets
-  three tier-1 specialists plus two replicas of the highest-traffic domain.
-- **Routes are pre-ranked at snapshot time**, not per request.
-- **Snapshot replay is pure** from the event log, and the registry is
-  thread-safe under concurrent `POST /heartbeat`.
-- **The backend abstraction swaps engines without router changes.**
-  `ServeDaemon` doesn't know vLLM or Ollama exists — only `BaseBackend`
-  does.
-- **Adopt, don't own, the local daemon.** `VLLMBackend` adopts a
-  port-busy `vllm serve`; `OllamaBackend` adopts your running Ollama
-  daemon. The mesh never SIGTERMs a process it didn't spawn.
-- **Heartbeats report degraded, never crash the daemon.** A backend death
-  becomes `health="degraded"` with `loaded_models=[]` on the next
-  heartbeat, and the router falls through to the next route.
+```powershell
+$state = Join-Path $HOME '.local\state\slancha-mesh\router'
+Rename-Item $state ("router.rollback." + (Get-Date -Format yyyyMMddHHmmss))
+```
 
-## Extending
+On the Linux LAN example, remove the two firewall rules in reverse order:
 
-### Add a specialist
+```bash
+NODE_LAN_IP=192.168.50.10
+GATEWAY_LAN_IP=192.168.50.5
+sudo iptables -D INPUT -p tcp -s "$GATEWAY_LAN_IP" -d "$NODE_LAN_IP" --dport 11434 -j ACCEPT
+sudo iptables -D INPUT -p tcp -d "$NODE_LAN_IP" --dport 11434 ! -s "$GATEWAY_LAN_IP" -j REJECT
+! sudo iptables -C INPUT -p tcp -s "$GATEWAY_LAN_IP" -d "$NODE_LAN_IP" --dport 11434 -j ACCEPT
+! sudo iptables -C INPUT -p tcp -d "$NODE_LAN_IP" --dport 11434 ! -s "$GATEWAY_LAN_IP" -j REJECT
+```
 
-Drop a TOML into `mesh/catalog/` matching the `SpecialistCard` schema. To
-actually serve, set `required_backend` to a wired engine and provide the
-matching field (`ollama_tag`, `model_id`, `mlx_repo`, or `gguf_path`).
-Working examples: `mesh/catalog/qwen2.5-coder-7b-q4-ollama.toml` (Ollama)
-and `mesh/catalog/qwen3-coder-30b-a3b-fp8.toml` (vLLM).
+For tailnet rollback, first press Ctrl-C in the dedicated Ollama Terminal A and
+confirm a gateway can no longer connect to `<specialist-magicdns>:8003`. Then
+remove the device's specialist/gateway tag in the tailnet admin console. Run
+`tailscale logout` only when the whole device was enrolled solely for Mesh.
+`ollama rm qwen3:14b` is optional and deletes the downloaded model; normal
+rollback leaves it in the Ollama cache.
 
-### Add a backend
+Before enabling identity or peer-verification flags across a mixed-version
+fleet, follow the ordered migration and rollback steps in
+[`docs/UPGRADE.md`](docs/UPGRADE.md). The node setup guide covers systemd,
+launchd, Windows Scheduled Tasks, verification, and troubleshooting:
+[`NODE_SETUP.md`](NODE_SETUP.md).
 
-1. Append to the `Backend` literal in `mesh/models.py`.
-2. Add detection to `mesh/probe.py:_detect_backends`.
-3. Implement the `BaseBackend` protocol in `mesh/backends.py` (mirror
-   `OllamaBackend` for adopt-the-daemon, or `VLLMBackend` for
-   own-the-subprocess).
-4. Add a branch in `mesh/serve.py:build_backend()`.
+Optional usage telemetry is off by default. Setting
+`SLANCHA_USAGE_SINK_URL` emits routing metadata and token counts—not prompt or
+completion bodies—to a receiver you run through a local, retrying JSONL spool.
+If the request supplies an OpenAI-compatible `user` identifier, telemetry also
+records and forwards that value. Mesh does not price events.
 
-### Wire to slancha-api
+## Optional tuning add-on
 
-This is an optional central-registry (push) mode; the standalone mesh
-above is pull-only and needs none of it. `mesh/registry.py` exposes the
-FastAPI request/response shapes (`HeartbeatPostRequest`,
-`RegistryGetResponse`). Mount
-`mesh.registry_app.create_mesh_app(registry=shared_registry)` on
-slancha-api at `/mesh/v1`.
+Fine-tuning, replay evaluation, promotion gates, corpus tooling, and the
+dashboard ship in `slancha-mesh-tune`. The core package neither imports nor
+starts them.
 
-### Plug into an existing selector
+```bash
+python -m pip install -e ./packages/slancha-mesh-tune
+slancha-mesh-tune check
 
-`mesh/select.py:select_mesh_route` returns a `MeshSelectionResult` that
-extends slancha-api's `SelectionResult`. Call it before falling through to
-`select_model_lmarena`; on `cluster_coverage_used=False`, defer to the
-existing cloud selector.
+# Only on a machine intended to train:
+python -m pip install -e "./packages/slancha-mesh-tune[train]"
+```
 
-## License
+See [`packages/slancha-mesh-tune/README.md`](packages/slancha-mesh-tune/README.md).
 
-Apache-2.0. See [`LICENSE`](LICENSE).
+## Why this layer exists
+
+| Tool | Its strength | Mesh's separate job |
+|---|---|---|
+| Ollama / LM Studio | Easy single-box serving | Discover and route specialists across boxes. Ollama is a first-class backend. |
+| vLLM / llama.cpp / SGLang | High-performance serving engines | Keep engine choice behind one fleet endpoint. SGLang is not wired yet. |
+| exo / Petals | Split one model across nodes | Route different models to different nodes. The approaches are complementary. |
+| vLLM Semantic Router | Caller-side semantic policy | Supply a changing, request-ready private fleet behind that policy. |
+| Inference Gateway / LiteLLM / OpenRouter | Unified hosted-provider access | Return a typed local outcome; let the caller authorize provider spend and egress. |
+| llama-swap | Swap local model processes on one constrained host | Choose which host and specialist receives the request. |
+
+The narrow boundary is intentional: serving engines serve, semantic policy
+expresses intent, Mesh federates private hardware, and the caller owns cloud
+cost and credentials.
+
+## Extend and contribute
+
+- Add a specialist by copying a TOML card in [`mesh/catalog/`](mesh/catalog/)
+  and advertising only a wired backend and verified capabilities.
+- Add an engine by implementing the `BaseBackend` protocol and wiring backend
+  detection and construction.
+- Use the optional push registry only when a service or operations dashboard
+  needs a central view. Home, LAN, and tailnet meshes default to pull discovery.
+
+Development setup and checks live in [`CONTRIBUTING.md`](CONTRIBUTING.md).
+Small, test-backed pull requests are welcome. Use GitHub Issues for reproducible
+bugs and feature proposals; support is best-effort and carries no SLA.
+
+## Security and license
+
+Slancha-Mesh is a trusted-LAN or private-tailnet component, not a hardened
+public-Internet gateway. Keep router, node-info, model, and media-runtime ports
+behind that boundary. Report vulnerabilities through GitHub private
+vulnerability reporting as described in [`SECURITY.md`](SECURITY.md).
+
+Release-facing changes are recorded in [`CHANGELOG.md`](CHANGELOG.md).
+Slancha-Mesh is licensed under Apache-2.0; see [`LICENSE`](LICENSE) and
+[`NOTICE`](NOTICE).

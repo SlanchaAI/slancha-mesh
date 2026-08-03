@@ -53,7 +53,7 @@ _MEMORY_BANDWIDTH_GBS: dict[str, float] = {
     "NVIDIA H100": 3350.0,
     "NVIDIA H200": 4800.0,
     "NVIDIA L40": 864.0,
-    # Measured achieved DtoD on dellpromax 2026-06-27 (1467 GB/s, MBU 0.82 of the
+    # Measured achieved DtoD on a reference RTX PRO 6000 (1467 GB/s, MBU 0.82 of the
     # 1792 GB/s GDDR7 datasheet peak) — a better fallback than peak for the
     # bandwidth-bound decode estimate. The live bench (§4) overrides per-node.
     # Keyed by the family name; _lookup_chip_table prefix-matches the full

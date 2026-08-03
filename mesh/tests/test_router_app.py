@@ -30,6 +30,7 @@ from mesh.models import (
     SpecialistCard,
 )
 from mesh.router_app import NODE_TOKEN_ENV, create_router_app
+from mesh.runtime_health import RouterRuntimeHealth
 
 
 # ---------------------------------------------------------------------------
@@ -109,7 +110,12 @@ def _snapshot(
     )
 
 
-def _client(snapshot: RegistrySnapshot, handler) -> TestClient:
+def _client(
+    snapshot: RegistrySnapshot,
+    handler,
+    *,
+    runtime_health: RouterRuntimeHealth | None = None,
+) -> TestClient:
     """Build a TestClient over a router app whose http_client is an AsyncMockTransport.
 
     `handler` is called per upstream request and returns either:
@@ -128,7 +134,11 @@ def _client(snapshot: RegistrySnapshot, handler) -> TestClient:
         return httpx.Response(status_code, content=payload, headers=headers or {})
 
     upstream = httpx.AsyncClient(transport=httpx.MockTransport(transport_handler))
-    app = create_router_app(snapshot_source=lambda: snapshot, http_client=upstream)
+    app = create_router_app(
+        snapshot_source=lambda: snapshot,
+        http_client=upstream,
+        runtime_health=runtime_health,
+    )
     return TestClient(app)
 
 
@@ -285,9 +295,9 @@ def test_chat_completions_external_rewrites_model_to_served_model_name():
         bindings={
             "qwen3.6-27b-fp8-dot": [
                 _binding(
-                    node_id="dellpromax",
+                    node_id="gpu-node",
                     specialist_id="qwen3.6-27b-fp8-dot",
-                    node_url="http://dellpromax:8011",
+                    node_url="http://gpu-node:8011",
                 )
             ]
         },
@@ -447,11 +457,11 @@ def test_chat_completions_404_when_no_specialist_known():
         json={"model": "nope-7b", "messages": []},
     )
     assert r.status_code == 404
-    assert "no reachable node" in r.json()["detail"]
+    assert "unknown specialist" in r.json()["detail"]
 
 
 def test_chat_completions_404_when_only_unreachable_bindings():
-    """All bindings marked `unreachable` = same as no specialist."""
+    """A known specialist with no reachable binding punts to outer policy."""
     snap = _snapshot(
         cards=[_card(specialist_id="qwen2.5-coder-7b-q4-ollama")],
         bindings={
@@ -468,7 +478,10 @@ def test_chat_completions_404_when_only_unreachable_bindings():
         "/v1/chat/completions",
         json={"model": "qwen2.5-coder-7b-q4-ollama", "messages": []},
     )
-    assert r.status_code == 404
+    assert r.status_code == 503
+    assert r.headers["X-Slancha-Outcome"] == "punt"
+    assert r.json()["error"]["code"] == "local_route_unavailable"
+    assert r.json()["error"]["details"]["local_attempts"] == 0
 
 
 def test_chat_completions_skips_unreachable_picks_healthy_next():
@@ -499,8 +512,8 @@ def test_chat_completions_skips_unreachable_picks_healthy_next():
     assert r.headers["X-Slancha-Node"] == "live-node"
 
 
-def test_chat_completions_502_on_upstream_connect_failure():
-    """Upstream death must turn into 502, not a 5xx FastAPI traceback."""
+def test_chat_completions_punts_on_upstream_connect_failure():
+    """Exhausted local transport punts without executing a cloud request."""
     snap = _snapshot(
         cards=[_card(specialist_id="qwen2.5-coder-7b-q4-ollama")],
         bindings={
@@ -518,11 +531,11 @@ def test_chat_completions_502_on_upstream_connect_failure():
         "/v1/chat/completions",
         json={"model": "qwen2.5-coder-7b-q4-ollama", "messages": []},
     )
-    assert r.status_code == 502
-    detail = r.json()["detail"]
-    # New fallback-chain message shape ("all N reachable node(s) failed");
-    # still surfaces the underlying error class.
-    assert "failed" in detail and "ConnectError" in detail
+    assert r.status_code == 503
+    assert r.headers["X-Slancha-Outcome"] == "punt"
+    assert r.json()["error"]["code"] == "local_route_unavailable"
+    assert r.json()["error"]["details"]["local_attempts"] == 1
+    assert "ConnectError" in r.headers["X-Slancha-Reason"]
 
 
 def test_chat_completions_forwards_upstream_non_200_verbatim():
@@ -611,8 +624,8 @@ def test_chat_completions_stream_true_passes_through_sse_chunks():
     assert r.content == sse_body
 
 
-def test_chat_completions_stream_502_on_upstream_connect_failure():
-    """Streaming connect failure → same 502 contract as the non-streaming path."""
+def test_chat_completions_stream_punts_on_upstream_connect_failure():
+    """Streaming failure before response bytes uses the same typed punt."""
     snap = _snapshot(
         cards=[_card(specialist_id="qwen2.5-coder-7b-q4-ollama")],
         bindings={
@@ -634,11 +647,10 @@ def test_chat_completions_stream_502_on_upstream_connect_failure():
             "stream": True,
         },
     )
-    assert r.status_code == 502
-    detail = r.json()["detail"]
-    # New fallback-chain message shape ("all N reachable node(s) failed");
-    # still surfaces the underlying error class.
-    assert "failed" in detail and "ConnectError" in detail
+    assert r.status_code == 503
+    assert r.headers["X-Slancha-Outcome"] == "punt"
+    assert r.json()["error"]["code"] == "local_route_unavailable"
+    assert r.json()["error"]["details"]["local_attempts"] == 1
 
 
 # ---------------------------------------------------------------------------
@@ -753,9 +765,8 @@ def test_chat_completions_does_not_retry_on_4xx_client_error():
     assert upstream_calls == ["10.0.0.5"]  # NOT retried on the next node
 
 
-def test_chat_completions_502_when_all_bindings_fail():
-    """All reachable bindings 5xx / connect-fail → 502 with the last cause
-    surfaced. Detail names how many were tried."""
+def test_chat_completions_punts_when_all_bindings_fail():
+    """All local bindings fail before a response; caller gets one typed punt."""
     snap = _snapshot(
         cards=[_card(specialist_id="qwen2.5-coder-7b-q4-ollama")],
         bindings={
@@ -780,12 +791,13 @@ def test_chat_completions_502_when_all_bindings_fail():
         "/v1/chat/completions",
         json={"model": "qwen2.5-coder-7b-q4-ollama", "messages": []},
     )
-    assert r.status_code == 502
+    assert r.status_code == 503
     # All three bindings must have been tried before giving up.
     assert calls == ["10.0.0.1", "10.0.0.2", "10.0.0.3"]
-    detail = r.json()["detail"]
-    assert "all 3" in detail
-    assert "last_status=503" in detail
+    assert r.headers["X-Slancha-Outcome"] == "punt"
+    assert r.json()["error"]["code"] == "local_route_unavailable"
+    assert r.json()["error"]["details"]["local_attempts"] == 3
+    assert "last_status=503" in r.headers["X-Slancha-Reason"]
 
 
 def test_chat_completions_stream_falls_through_on_upstream_502():
@@ -956,6 +968,78 @@ def test_health_is_unauthenticated_and_reports_auth_required(monkeypatch):
     assert payload["status"] == "ok"
     assert payload["auth_required"] is True
     assert payload["specialists_reachable"] == 1
+    assert payload["specialists_routable"] == 1
+
+
+def test_failed_binding_stays_discovered_but_becomes_unroutable():
+    sid = "qwen2.5-coder-7b-q4-ollama"
+    snap = _snapshot(
+        cards=[_card(specialist_id=sid)],
+        bindings={sid: [_binding(specialist_id=sid, queue_depth=3)]},
+    )
+    runtime = RouterRuntimeHealth(failure_threshold=1, cooldown_s=60)
+    upstream_calls = 0
+
+    def handler(request: httpx.Request):
+        nonlocal upstream_calls
+        upstream_calls += 1
+        return httpx.Response(503, json={"error": "busy"})
+
+    client = _client(snap, handler, runtime_health=runtime)
+    body = {"model": sid, "messages": [{"role": "user", "content": "secret"}]}
+
+    first = client.post("/v1/chat/completions", json=body)
+    second = client.post("/v1/chat/completions", json=body)
+    health = client.get("/health").json()
+
+    assert first.json()["error"]["details"]["local_attempts"] == 1
+    assert second.json()["error"]["details"]["local_attempts"] == 0
+    assert upstream_calls == 1
+    assert health["status"] == "degraded"
+    assert health["specialists_reachable"] == 1
+    assert health["specialists_routable"] == 0
+    assert health["bindings_routable"] == 0
+    assert health["queue_depth"] == 0
+    assert health["open_circuits"] == 1
+    assert health["requests_failed"] == 1
+    assert health["punts"] == 2
+    assert "secret" not in repr(health)
+
+
+def test_successful_half_open_request_restores_routable_capacity():
+    class Clock:
+        now = 10.0
+
+        def __call__(self) -> float:
+            return self.now
+
+    clock = Clock()
+    sid = "qwen2.5-coder-7b-q4-ollama"
+    snap = _snapshot(
+        cards=[_card(specialist_id=sid)],
+        bindings={sid: [_binding(specialist_id=sid)]},
+    )
+    runtime = RouterRuntimeHealth(
+        failure_threshold=1,
+        cooldown_s=5,
+        clock=clock,
+    )
+    status_codes = iter((503, 200))
+
+    def handler(request: httpx.Request):
+        return httpx.Response(next(status_codes), json={"id": "ok"})
+
+    client = _client(snap, handler, runtime_health=runtime)
+    body = {"model": sid, "messages": []}
+
+    assert client.post("/v1/chat/completions", json=body).status_code == 503
+    clock.now += 5
+    assert client.post("/v1/chat/completions", json=body).status_code == 200
+
+    health = client.get("/health").json()
+    assert health["specialists_routable"] == 1
+    assert health["open_circuits"] == 0
+    assert health["requests_succeeded"] == 1
 
 
 def test_upstream_content_type_is_allowlisted(monkeypatch):
@@ -1013,5 +1097,5 @@ def test_fallback_is_capped(monkeypatch):
     client = _client(snap, handler)
     r = client.post("/v1/chat/completions",
                     json={"model": "qwen2.5-coder-7b-q4-ollama", "messages": []})
-    assert r.status_code == 502          # all (capped) attempts failed
+    assert r.status_code == 503          # all (capped) local attempts punt
     assert hits["n"] == 2                # NOT 5 — fan-out capped

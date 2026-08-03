@@ -18,9 +18,11 @@ from mesh.cli import build_parser, cmd_service, main
 from mesh.service_install import (
     UnsupportedOSError,
     build_service_plan,
+    parse_service_environment,
     render_launchd_plist,
     render_systemd_unit,
     render_windows_task_command,
+    service_argv,
     service_label,
     up_argv,
 )
@@ -36,6 +38,25 @@ EXEC = "/home/u/.local/bin/slancha-mesh"
 def test_up_argv_defaults_to_auto_and_passes_through():
     assert up_argv(None) == ["up", "--auto"]
     assert up_argv(["up", "--specialist", "x"]) == ["up", "--specialist", "x"]
+
+
+def test_service_argv_prefixes_role_command_and_preserves_old_full_argv():
+    assert service_argv("node", ["--specialist", "x"]) == ["up", "--specialist", "x"]
+    assert service_argv("router", ["--peer", "spark", "--port", "8080"]) == [
+        "router",
+        "--peer",
+        "spark",
+        "--port",
+        "8080",
+    ]
+    assert service_argv("node", ["up", "--auto"]) == ["up", "--auto"]
+    assert service_argv("semantic-router", None) == ["semantic-router", "supervise"]
+    assert service_argv("semantic-router", ["serve", "--state-dir", "/tmp/sr"]) == [
+        "semantic-router",
+        "serve",
+        "--state-dir",
+        "/tmp/sr",
+    ]
 
 
 def test_service_label_reverse_dns():
@@ -54,6 +75,36 @@ def test_systemd_unit_has_execstart_with_exec_and_args():
 def test_systemd_unit_defaults_to_up_auto():
     unit = render_systemd_unit(EXEC, None)
     assert f"ExecStart={EXEC} up --auto" in unit
+
+
+def test_systemd_unit_can_run_router_role():
+    unit = render_systemd_unit(
+        EXEC,
+        ["--peer", "spark", "--port", "8080"],
+        role="router",
+        kind="router",
+    )
+    assert f"ExecStart={EXEC} router --peer spark --port 8080" in unit
+    assert "Description=slancha-mesh router (router)" in unit
+
+
+def test_systemd_unit_persists_non_secret_environment():
+    unit = render_systemd_unit(
+        EXEC,
+        ["--specialist", "code-7b"],
+        environment={"SLANCHA_AUTH_REQUIRED": "false"},
+    )
+    assert 'Environment="SLANCHA_AUTH_REQUIRED=false"' in unit
+
+
+def test_service_environment_parser_rejects_malformed_assignments():
+    assert parse_service_environment(["SLANCHA_AUTH_REQUIRED=false"]) == {
+        "SLANCHA_AUTH_REQUIRED": "false"
+    }
+    with pytest.raises(ValueError, match="NAME=VALUE"):
+        parse_service_environment(["SLANCHA_AUTH_REQUIRED"])
+    with pytest.raises(ValueError, match="invalid environment name"):
+        parse_service_environment(["BAD-NAME=value"])
 
 
 def test_launchd_plist_has_program_arguments_vector():
@@ -75,6 +126,53 @@ def test_launchd_plist_is_xml_parseable():
 
     plist = render_launchd_plist(EXEC, None, role="node")
     minidom.parseString(plist)  # raises on malformed XML
+
+
+def test_launchd_plist_can_keep_router_alive():
+    plist = render_launchd_plist(
+        EXEC,
+        ["--peer", "spark", "--port", "8080"],
+        role="router",
+        kind="router",
+    )
+    assert "<string>router</string>" in plist
+    assert "<string>--peer</string>" in plist
+    assert "<string>spark</string>" in plist
+
+
+def test_launchd_plist_can_keep_vllm_semantic_router_alive():
+    plist = render_launchd_plist(
+        EXEC,
+        ["serve", "--state-dir", "/tmp/sr"],
+        role="semantic-router",
+        kind="semantic-router",
+    )
+    assert "<string>ai.slancha.mesh.semantic-router</string>" in plist
+    assert "<string>semantic-router</string>" in plist
+    assert "<string>serve</string>" in plist
+    assert "<string>/tmp/sr</string>" in plist
+
+
+def test_launchd_plist_defaults_vllm_semantic_router_to_supervisor():
+    plist = render_launchd_plist(
+        EXEC,
+        None,
+        role="semantic-router",
+        kind="semantic-router",
+    )
+    assert "<string>semantic-router</string>" in plist
+    assert "<string>supervise</string>" in plist
+
+
+def test_launchd_plist_persists_non_secret_environment():
+    plist = render_launchd_plist(
+        EXEC,
+        None,
+        environment={"SLANCHA_AUTH_REQUIRED": "false"},
+    )
+    assert "<key>EnvironmentVariables</key>" in plist
+    assert "<key>SLANCHA_AUTH_REQUIRED</key>" in plist
+    assert "<string>false</string>" in plist
 
 
 def test_windows_task_command_has_onstart_and_tr_with_args():
@@ -127,11 +225,35 @@ def test_unknown_os_raises_unsupported_not_crash():
 
 
 def test_service_subcommand_parses_action_and_flags():
-    args = build_parser().parse_args(["service", "install", "--role", "gb10", "--dry-run"])
+    args = build_parser().parse_args(
+        ["service", "install", "--kind", "router", "--role", "gb10", "--dry-run"]
+    )
     assert args.action == "install"
+    assert args.kind == "router"
     assert args.role == "gb10"
     assert args.dry_run is True
     assert args.func is cmd_service
+
+
+def test_service_subcommand_accepts_semantic_router_kind():
+    args = build_parser().parse_args(
+        ["service", "install", "--kind", "semantic-router", "--dry-run"]
+    )
+    assert args.kind == "semantic-router"
+
+
+def test_router_kind_defaults_service_role_to_router(monkeypatch, capsys, tmp_path):
+    monkeypatch.setattr("mesh.service_install.platform.system", lambda: "Linux")
+    monkeypatch.setattr("pathlib.Path.home", lambda: tmp_path)
+    monkeypatch.setattr("mesh.cli._resolve_exec_path", lambda: EXEC)
+
+    rc = main(["service", "install", "--kind", "router", "--dry-run"])
+
+    assert rc == 0
+    output = capsys.readouterr().out
+    assert "label=ai.slancha.mesh.router" in output
+    assert "ai.slancha.mesh.router.service" in output
+    assert "ai.slancha.mesh.node.service" not in output
 
 
 def test_service_passthrough_after_double_dash_routes_to_up_args(monkeypatch):
@@ -142,9 +264,19 @@ def test_service_passthrough_after_double_dash_routes_to_up_args(monkeypatch):
     monkeypatch.setattr("mesh.cli._resolve_exec_path", lambda: EXEC)
     seen = {}
 
-    def fake_build(os_name, exec_path, up_args=None, role="node", home=None):
+    def fake_build(
+        os_name,
+        exec_path,
+        up_args=None,
+        role="node",
+        home=None,
+        kind="node",
+        environment=None,
+    ):
         seen["up_args"] = up_args
         seen["role"] = role
+        seen["kind"] = kind
+        seen["environment"] = environment
         raise UnsupportedOSError("stop before side effects")
 
     monkeypatch.setattr("mesh.cli.build_service_plan", fake_build, raising=False)
@@ -155,7 +287,33 @@ def test_service_passthrough_after_double_dash_routes_to_up_args(monkeypatch):
     rc = main(["service", "install", "--role", "gb10", "--", "--specialist", "code-7b"])
     assert rc == 2  # UnsupportedOSError → clean exit
     assert seen["role"] == "gb10"
-    assert seen["up_args"] == ["up", "--specialist", "code-7b"]
+    assert seen["kind"] == "node"
+    assert seen["up_args"] == ["--specialist", "code-7b"]
+
+
+def test_service_cli_forwards_environment_to_plan(monkeypatch):
+    monkeypatch.setattr("mesh.service_install.platform.system", lambda: "Linux")
+    monkeypatch.setattr("mesh.cli._resolve_exec_path", lambda: EXEC)
+    seen = {}
+
+    def fake_build(*args, **kwargs):
+        seen.update(kwargs)
+        raise UnsupportedOSError("stop before side effects")
+
+    monkeypatch.setattr("mesh.service_install.build_service_plan", fake_build)
+    rc = main(
+        [
+            "service",
+            "install",
+            "--env",
+            "SLANCHA_AUTH_REQUIRED=false",
+            "--",
+            "--specialist",
+            "code-7b",
+        ]
+    )
+    assert rc == 2
+    assert seen["environment"] == {"SLANCHA_AUTH_REQUIRED": "false"}
 
 
 def test_service_install_dry_run_renders_but_does_not_install(monkeypatch, capsys, tmp_path):
@@ -173,6 +331,29 @@ def test_service_install_dry_run_renders_but_does_not_install(monkeypatch, capsy
     assert "<string>--specialist</string>" in out
     # No plist actually written.
     assert not (tmp_path / "Library/LaunchAgents/ai.slancha.mesh.node.plist").exists()
+
+
+def test_service_install_fails_when_registration_command_fails(
+    monkeypatch, capsys, tmp_path
+):
+    monkeypatch.setattr("mesh.service_install.platform.system", lambda: "Linux")
+    monkeypatch.setattr("pathlib.Path.home", lambda: tmp_path)
+    monkeypatch.setattr("mesh.cli._resolve_exec_path", lambda: EXEC)
+    calls = []
+
+    def fail(command):
+        calls.append(command)
+        return 9
+
+    monkeypatch.setattr("subprocess.call", fail)
+
+    rc = main(["service", "install"])
+
+    assert rc == 9
+    assert len(calls) == 1
+    output = capsys.readouterr().out
+    assert "registration failed" in output
+    assert "installed. The node will start on boot" not in output
 
 
 def test_service_unsupported_os_prints_message_and_exits_clean(monkeypatch, capsys):

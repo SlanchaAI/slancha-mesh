@@ -1,0 +1,37 @@
+# Medium general/vision lane — external GB10 deployment template.
+# An existing vLLM service owns Qwen/Qwen3-VL-8B-Instruct-FP8 under served
+# name `qwen3-vl-8b`; Mesh only advertises and routes to it. Keep this card on
+# the node that owns the loopback service: its URL relies on --peer host-pinning.
+model_id = "Qwen/Qwen3-VL-8B-Instruct-FP8"
+specialist_id = "qwen3-vl-8b-fp8-gb10"
+domain = "general"
+# Medium only in the validated topology; vision callers can also select this
+# specialist explicitly. Operators may change tiers after measuring their fleet.
+difficulty_tiers = ["medium"]
+languages = ["en", "zh", "es", "fr", "de", "ja", "ko"]
+required_backend = "external"
+# A node-local forward may proxy loopback :8003 to the existing vLLM service;
+# expose only the convention port on the private interface. This keeps vLLM
+# loopback-only and inside the gateway ACL.
+static_base_url = "http://127.0.0.1:8003"
+served_model_name = "qwen3-vl-8b"
+storage_gb = 9.9
+runtime_gb = 12.0
+min_vram_gb = 10.0
+# The live server deliberately caps the upstream model's 262K window at 64K.
+context_window = 65536
+n_layers = 36
+hidden_size = 4096
+n_kv_heads = 8
+head_dim = 128
+kv_arch = "gqa"
+capabilities = ["streaming", "system_prompt", "tools", "vision"]
+supports_lora_finetune = false
+upstream_model_card = "Qwen/Qwen3-VL-8B-Instruct-FP8"
+license = "Apache-2.0"
+coverage_tier = 1
+
+# MEASURED on this endpoint 2026-08-02: an 8-token warm completion in 0.70s
+# end-to-end. This small sample is deployment evidence, not a throughput claim.
+[estimated_tps_at]
+gb10 = 11.4

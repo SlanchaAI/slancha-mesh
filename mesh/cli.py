@@ -31,6 +31,7 @@ from mesh.discovery import (
     parse_specialist_peers,
     synthesize_lan_status,
 )
+from mesh.job_store import DEFAULT_VIDEO_JOB_DB
 from mesh.router_app import _RefreshingSnapshot, create_router_app
 from mesh.tailnet import (
     DEFAULT_SPECIALIST_TAG,
@@ -50,17 +51,21 @@ NODE_TOKEN_ENV = "SLANCHA_NODE_TOKEN"
 def _tailnet_from_args(args: argparse.Namespace) -> TailnetConfig:
     """Build a TailnetConfig from env defaults + CLI overrides.
 
-    Tailnet is enabled when any tailnet-shaped flag is present (a key, an
-    explicit advertise host, or --tailnet), else falls back to the
-    SLANCHA_TAILNET_* env defaults.
+    Tailnet is enabled when a tailnet-shaped flag is present (a key or
+    --tailnet), else falls back to the SLANCHA_TAILNET_* env defaults.
+    --advertise-host alone does NOT enable tailnet: a LAN node (explicit
+    --peer discovery, no tailscale) must be able to advertise its LAN
+    hostname without being forced through ensure_joined.
     """
     cfg = TailnetConfig.from_env()
-    want = bool(getattr(args, "key", None) or getattr(args, "advertise_host", None) or getattr(args, "tailnet", False))
+    advertise = getattr(args, "advertise_host", None)
+    if advertise:
+        cfg = replace(cfg, advertise_host=advertise)
+    want = bool(getattr(args, "key", None) or getattr(args, "tailnet", False))
     if want:
         cfg = replace(
             cfg,
             enabled=True,
-            advertise_host=getattr(args, "advertise_host", None) or cfg.advertise_host,
             control_plane=getattr(args, "control_plane", None) or cfg.control_plane,
             login_server=getattr(args, "login_server", None) or cfg.login_server,
         )
@@ -450,7 +455,14 @@ def cmd_router(args: argparse.Namespace) -> int:
     )
 
     # Build the refresher closure: one call → DiscoveryResult.
-    token = args.token or os.environ.get(NODE_TOKEN_ENV) or None
+    listener_token = os.environ.get(NODE_TOKEN_ENV, "").strip()
+    token = args.token or listener_token or None
+    # ``--token`` authenticates outbound node-info discovery only. The router
+    # dependency reads SLANCHA_NODE_TOKEN, so only that value can satisfy the
+    # non-loopback listener guard. Check before starting the refresh thread.
+    from mesh.auth import assert_bind_safe
+
+    assert_bind_safe(args.bind, token_present=bool(listener_token))
     fetch = make_http_fetch(token=token, timeout=args.timeout)
     explicit_peers = list(args.peer)
 
@@ -513,16 +525,15 @@ def cmd_router(args: argparse.Namespace) -> int:
                f"(spool={usage_sink.spool})")
 
     app = create_router_app(
-        snapshot_source=holder.get, auto_router=auto_router, usage_sink=usage_sink
+        snapshot_source=holder.get,
+        auto_router=auto_router,
+        usage_sink=usage_sink,
+        video_job_db_path=args.video_job_db or DEFAULT_VIDEO_JOB_DB,
     )
-
-    # Fail-closed (#97): don't expose the router on a public interface unauthenticated.
-    from mesh.auth import assert_bind_safe
-    assert_bind_safe(args.bind, token_present=bool(token or os.environ.get(NODE_TOKEN_ENV)))
 
     _print(f"[router] starting on http://{args.bind}:{args.port}  "
            f"(refresh={args.refresh_s}s, peers={len(explicit_peers) or 'tailnet'}, "
-           f"auth={'on' if token or os.environ.get(NODE_TOKEN_ENV) else 'off'})")
+           f"auth={'on' if listener_token else 'off'})")
 
     try:
         import uvicorn  # local import: keeps `slancha-mesh --help` fast
@@ -537,73 +548,6 @@ def cmd_router(args: argparse.Namespace) -> int:
         uvicorn.run(app, host=args.bind, port=args.port, log_level=args.log_level)
     finally:
         holder.stop()
-    return 0
-
-
-# ---------------------------------------------------------------------------
-# loop — supervised autonomous loop-runner around the champion gate (#82)
-# ---------------------------------------------------------------------------
-
-
-def _loop_runner_from_args(args: argparse.Namespace):
-    """Build a LoopRunner wired to the real execute leg (train+eval→gate).
-
-    THIN: imports the runner lazily (keeps `--help` fast and the import
-    torch-free), wires the IdleDetector seam so a `train` experiment only
-    fires when the node is idle, and leaves the heavy `execute_fn` to the
-    operator binding (the default raises until wired — the runner never
-    pulls in torch just to construct). The `run` path here drives ticks;
-    `status`/`enqueue` don't need an execute_fn at all.
-    """
-    from mesh.idle import IdleDetector
-    from mesh.loop_runner import ExperimentResult, LoopRunner
-
-    def _unwired(spec: dict, preempt) -> "ExperimentResult":  # noqa: ANN001
-        return ExperimentResult(
-            ok=False,
-            error=(
-                "no execute_fn wired: the train+eval execute leg is the "
-                "operator/deployment binding (TrainingPass(...).run + an eval "
-                "pass). Wire it via the LoopRunner API; the CLI ships the "
-                "queue/idle-gate/gate/circuit-break shell."
-            ),
-        )
-
-    return LoopRunner(
-        run_dir=Path(args.run_dir),
-        execute_fn=_unwired,
-        idle_detector=IdleDetector(),
-    )
-
-
-def cmd_loop(args: argparse.Namespace) -> int:
-    """`slancha-mesh loop {run,status,enqueue}` — thin wrap of mesh.loop_runner."""
-    from mesh.loop_runner import enqueue as loop_enqueue
-    from mesh.loop_runner import read_queue
-
-    run_dir = Path(args.run_dir)
-
-    if args.loop_action == "status":
-        status_path = run_dir / "status.json"
-        if not status_path.exists():
-            _print(f"[loop] no status.json under {run_dir} (runner not started yet)")
-            return 1
-        _print(status_path.read_text())
-        return 0
-
-    if args.loop_action == "enqueue":
-        spec = json.loads(args.spec_json) if args.spec_json else json.loads(sys.stdin.read())
-        added = loop_enqueue(run_dir / "queue.jsonl", spec)
-        _print(f"[loop] {'enqueued' if added else 'skipped (dup id)'}: {spec.get('id')}")
-        _print(f"[loop] queue depth: {len(read_queue(run_dir / 'queue.jsonl'))}")
-        return 0 if added else 1
-
-    # run
-    runner = _loop_runner_from_args(args)
-    _print(f"[loop] starting runner; run_dir={run_dir} "
-           f"max_ticks={args.max_ticks if args.max_ticks else 'unbounded'}")
-    ticks = runner.run_forever(max_ticks=args.max_ticks or None)
-    _print(f"[loop] ran {ticks} tick(s); paused={runner.paused}")
     return 0
 
 
@@ -630,7 +574,7 @@ def _resolve_exec_path() -> str:
 
 
 def cmd_service(args: argparse.Namespace) -> int:
-    """Install / uninstall / status of a boot-persistent node service.
+    """Install / uninstall / status of a boot-persistent node or router.
 
     THIN wrapper: renders the OS-specific unit/plist/task for
     `slancha-mesh up <pass-through args>` via mesh.service_install (pure
@@ -644,16 +588,25 @@ def cmd_service(args: argparse.Namespace) -> int:
         UnsupportedOSError,
         build_service_plan,
         current_os,
+        parse_service_environment,
     )
 
     os_name = current_os()
     exec_path = _resolve_exec_path()
-    # Trailing args (after the action) are forwarded to `slancha-mesh up`.
-    up_args = ["up", *args.up_args] if args.up_args else None
+    service_args = args.up_args or None
+    role = args.role or args.kind
 
     try:
-        plan = build_service_plan(os_name, exec_path, up_args=up_args, role=args.role)
-    except UnsupportedOSError as exc:
+        environment = parse_service_environment(args.environment)
+        plan = build_service_plan(
+            os_name,
+            exec_path,
+            up_args=service_args,
+            role=role,
+            kind=args.kind,
+            environment=environment,
+        )
+    except (UnsupportedOSError, ValueError) as exc:
         _print(f"[service] {exc}")
         return 2
 
@@ -701,11 +654,22 @@ def cmd_service(args: argparse.Namespace) -> int:
         plan.path.parent.mkdir(parents=True, exist_ok=True)
         plan.path.write_text(plan.text)
         _print(f"[service] wrote: {plan.path}")
-    for cmd in plan.install_cmds:
+    for index, cmd in enumerate(plan.install_cmds):
         # launchd's pre-unload (idempotency) is allowed to fail on a fresh
         # install; the subsequent load is the one that matters.
-        subprocess.call(cmd)
-    _print("[service] installed. The node will start on boot.")
+        rc = subprocess.call(cmd)
+        tolerated_pre_unload = (
+            plan.os_name == "Darwin"
+            and index == 0
+            and len(cmd) > 1
+            and cmd[1] == "unload"
+        )
+        if rc != 0 and not tolerated_pre_unload:
+            _print(
+                f"[service] registration failed (exit {rc}): {' '.join(cmd)}"
+            )
+            return rc if rc > 0 else 1
+    _print(f"[service] installed. The {args.kind} will start on boot.")
     return 0
 
 
@@ -722,7 +686,6 @@ SIBLING_TOOLS = (
     ("mesh-gpu", "GPU coordination (also `slancha-mesh gpu ...`)"),
     ("mesh-doctor", "Push/central-registry deployment diagnostics (also `slancha-mesh doctor` for tailnet nodes)"),
     ("slancha-mesh-validate", "Lint SpecialistCard TOMLs (`mesh.validate_card`)"),
-    ("slancha-mesh-gate", "Promotion gate: ACCEPT/REJECT a challenger router_version (`mesh.eval.gate`)"),
 )
 
 
@@ -768,6 +731,29 @@ def cmd_node(args: argparse.Namespace) -> int:
     _print(f"[node] did: {did_for(node_id, pk_b64)}")
     _print(f"[node] enable: export SLANCHA_NODE_KEY_FILE={out}  (then `slancha-mesh up`)")
     return 0
+
+
+def cmd_semantic_router(args: argparse.Namespace) -> int:
+    """Manage the pinned vLLM Semantic Router front door."""
+
+    from mesh.vllm_semantic_router import (
+        DEFAULT_STATE_ROOT,
+        VllmSemanticRouterPaths,
+        run_action,
+    )
+
+    state_root = Path(args.state_dir) if args.state_dir else DEFAULT_STATE_ROOT
+    source_config = Path(args.config) if args.config else None
+    try:
+        return run_action(
+            args.action,
+            VllmSemanticRouterPaths.from_root(state_root),
+            source_config=source_config,
+            dry_run=args.dry_run,
+        )
+    except (OSError, RuntimeError, ValueError) as exc:
+        _print(f"[semantic-router] {exc}")
+        return 2
 
 
 def _sibling_tools_epilog() -> str:
@@ -914,33 +900,48 @@ def build_parser() -> argparse.ArgumentParser:
     rt.add_argument("--auto-route", action="store_true",
                     help='Resolve `model: "auto"` per-prompt via the built-in classifier '
                          "(requires the [classifier] extra).")
-    rt.set_defaults(func=cmd_router)
-
-    # loop — supervised autonomous loop-runner around the champion gate (#82)
-    lp = sub.add_parser(
-        "loop",
+    rt.add_argument(
+        "--video-job-db",
+        default=None,
+        metavar="PATH",
         help=(
-            "Supervised autonomous loop-runner around the champion gate: "
-            "queue → idle-gate → execute → gate → promote/archive, with a "
-            "circuit-breaker + idle-WAIT. Subactions: run / status / enqueue."
+            "SQLite owner map for asynchronous video jobs "
+            "(default ~/.local/state/slancha-mesh/router/video-jobs.sqlite3)."
         ),
     )
-    lp.add_argument("--run-dir", default="loop_run",
-                    help="Dir for queue.jsonl / status.json / decisions.jsonl / runner.log "
-                         "(default: ./loop_run).")
-    loop_sub = lp.add_subparsers(dest="loop_action", required=True)
+    rt.set_defaults(func=cmd_router)
 
-    lp_run = loop_sub.add_parser("run", help="Drive the loop (long-lived; pair with systemd Restart=always).")
-    lp_run.add_argument("--max-ticks", type=int, default=0,
-                        help="Stop after N ticks (0 = unbounded). For a one-shot drain / smoke test.")
-
-    loop_sub.add_parser("status", help="Print status.json (the runner heartbeat).")
-
-    lp_enq = loop_sub.add_parser("enqueue", help="Append an experiment spec (deduped by id).")
-    lp_enq.add_argument("spec_json", nargs="?", default=None,
-                        help="Experiment spec as a JSON object. Omit to read JSON from stdin.")
-
-    lp.set_defaults(func=cmd_loop)
+    # semantic-router — supported vLLM Semantic Router front door
+    sr = sub.add_parser(
+        "semantic-router",
+        help=(
+            "Install and run pinned vLLM Semantic Router as the caller-facing "
+            "front door over the local mesh."
+        ),
+    )
+    sr.add_argument(
+        "action",
+        choices=["install", "validate", "serve", "supervise", "status", "stop"],
+    )
+    sr.add_argument(
+        "--state-dir",
+        default=None,
+        help=(
+            "Runtime root (default ~/.local/state/slancha-mesh/"
+            "vllm-semantic-router)."
+        ),
+    )
+    sr.add_argument(
+        "--config",
+        default=None,
+        help="Config copied into the runtime root during install.",
+    )
+    sr.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Print exact paths and commands without changing runtime state.",
+    )
+    sr.set_defaults(func=cmd_semantic_router)
 
     # service — boot-persistent OS service (systemd / launchd / schtasks)
     svc = sub.add_parser(
@@ -953,16 +954,41 @@ def build_parser() -> argparse.ArgumentParser:
     )
     svc.add_argument("action", choices=["install", "uninstall", "status"],
                      help="install (default happy path), uninstall, or status.")
-    svc.add_argument("--role", default="node",
-                     help="Service role suffix → label ai.slancha.mesh.<role> (default 'node').")
+    svc.add_argument(
+        "--role",
+        default=None,
+        help=(
+            "Service label suffix ai.slancha.mesh.<role> "
+            "(default: selected --kind)."
+        ),
+    )
+    svc.add_argument(
+        "--kind",
+        choices=["node", "router", "semantic-router"],
+        default="node",
+        help=(
+            "Persistent process: node (`up`), internal mesh router, or "
+            "vLLM semantic-router front door (default node)."
+        ),
+    )
     svc.add_argument("--dry-run", action="store_true",
                      help="Render the unit/plist/task + print the commands; touch nothing.")
-    # Args forwarded to `slancha-mesh up` go after a literal `--` so they
+    svc.add_argument(
+        "--env",
+        dest="environment",
+        action="append",
+        default=[],
+        metavar="NAME=VALUE",
+        help=(
+            "Persist a non-secret environment setting in systemd/launchd "
+            "(repeatable; unsupported by Windows Scheduled Tasks)."
+        ),
+    )
+    # Args forwarded to the selected `slancha-mesh` command go after `--` so they
     # don't collide with `service`'s own flags, e.g.
-    #   slancha-mesh service install --role gb10 -- --specialist code-7b
+    #   slancha-mesh service install --kind router --role router -- --port 8080
     # main() splits argv on the first `--` and stashes the tail in `up_args`
-    # before argparse runs (argparse can't reliably route a flag-bearing
-    # passthrough past a preceding optional). Default empty = `up --auto`.
+    # before argparse runs. Default node args = `up --auto`; router = `router`.
     svc.set_defaults(func=cmd_service, up_args=[])
 
     return ap
@@ -971,7 +997,7 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     if argv is None:
         argv = sys.argv[1:]
-    # `service` forwards everything after a literal `--` to `slancha-mesh up`.
+    # `service` forwards everything after `--` to its selected mesh command.
     # Split it out before argparse so a flag-bearing passthrough (e.g.
     # `service install -- --specialist x`) can't collide with `service`'s own
     # flags or get swallowed by a REMAINDER positional.

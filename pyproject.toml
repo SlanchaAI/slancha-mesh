@@ -7,8 +7,8 @@ build-backend = "hatchling.build"
 
 [project]
 name = "slancha-mesh"
-version = "0.0.6"
-description = "Mesh of specialist small models on user hardware, fronted by Slancha's classifier-driven router."
+version = "0.1.0a1"
+description = "Discover, serve, and route local model specialists across a private fleet."
 readme = "README.md"
 license = {text = "Apache-2.0"}
 authors = [{name = "SlanchaAi", email = "team@slancha.ai"}]
@@ -30,6 +30,7 @@ dependencies = [
   "httpx>=0.27",
   "pydantic>=2.5",
   "fastapi>=0.110",
+  "python-multipart>=0.0.29",
   "uvicorn>=0.27",
   "psutil>=5.9",
 ]
@@ -38,31 +39,18 @@ dependencies = [
 Homepage = "https://slancha.ai"
 Repository = "https://github.com/SlanchaAi/slancha-mesh"
 "Bug Tracker" = "https://github.com/SlanchaAi/slancha-mesh/issues"
+Documentation = "https://github.com/SlanchaAi/slancha-mesh#readme"
+Changelog = "https://github.com/SlanchaAi/slancha-mesh/blob/main/CHANGELOG.md"
 
 [project.scripts]
 slancha-mesh = "mesh.cli:main"
 slancha-mesh-validate = "mesh.validate_card:main"
-slancha-mesh-gate = "mesh.eval.gate:main"
 mesh-gpu = "mesh.gpu.cli:main"
 mesh-doctor = "mesh.scripts.mesh_doctor:main"
 
 [project.optional-dependencies]
 serve = [
   "vllm>=0.17",
-]
-train = [
-  # Real LoRA/PEFT fine-tune leg (issue #65). Heavy + GPU-oriented, so it
-  # is an opt-in extra: the package imports and the test suite run without
-  # it installed (the real training path imports these lazily). Install with
-  #   pip install -e ".[train]"
-  "torch>=2.2",
-  "transformers>=4.40",
-  "peft>=0.10",
-  "datasets>=2.18",
-  "accelerate>=0.29",
-]
-dashboard = [
-  "streamlit>=1.30",
 ]
 signing = [
   # Ed25519 for node identity (#102) + eval-row/holdout signing (#104). Opt-in:
@@ -83,18 +71,6 @@ classifier = [
   "tokenizers>=0.20",
   "treelite>=4.0",
 ]
-loop = [
-  # The traffic-cluster → experiment-spec generator (issue #87) reuses the
-  # embedding/clustering substrate from the PUBLIC slancha-local package rather
-  # than vendoring ~1000 lines of ML code (which would be a second parity-mirror
-  # to drift, after the gate mirror). (The classifier perception layer is the
-  # deliberate exception: mesh/classifier/ is its canonical home now, and
-  # slancha-local is slated to import it from here — see the [classifier] extra.) "Everything in the container": this extra
-  # bundles slancha-local INTO the mesh image so the whole loop is one
-  # deployable unit. `mesh.generator` imports it lazily — the package + test
-  # suite run without this extra installed.
-  "slancha-local @ git+https://github.com/SlanchaAi/slancha-local",
-]
 dev = [
   "pytest>=8.0",
   "pytest-asyncio>=0.23",
@@ -104,12 +80,45 @@ dev = [
 
 [tool.hatch.build.targets.wheel]
 packages = ["mesh"]
+exclude = ["mesh/tests/**", "mesh/__pycache__/**", "mesh/.runtime/**"]
 
-[tool.hatch.metadata]
-# The `[loop]` extra pins slancha-local by git URL (a direct reference) so the
-# generator's clustering substrate bundles into the image without a PyPI
-# release. Hatchling requires this opt-in to allow a non-PyPI dependency.
-allow-direct-references = true
+[tool.hatch.build.targets.wheel.force-include]
+"LICENSE" = "LICENSE"
+"NOTICE" = "NOTICE"
+
+[tool.hatch.build.targets.sdist]
+include = [
+  "mesh",
+  "README.md",
+  "LICENSE",
+  "NOTICE",
+  "CHANGELOG.md",
+  "CONTRIBUTING.md",
+  "SECURITY.md",
+  "pyproject.toml",
+]
+exclude = [
+  ".venv-router/**",
+  ".venv/**",
+  "venv/**",
+  "venv_*/**",
+  "env/**",
+  "mesh/tests/**",
+  "mesh/__pycache__/**",
+  "mesh/.runtime/**",
+  "**/__pycache__/**",
+  "**/.cache/**",
+  "**/.pytest_cache/**",
+  "**/.ruff_cache/**",
+  "**/.mypy_cache/**",
+  "packages/**",
+  "docs/**",
+  "corpus/**",
+  "SESSION_LOG*.md",
+]
+
+[tool.uv.workspace]
+members = ["packages/slancha-mesh-tune"]
 
 [tool.ruff]
 # Pin the parse target so the `ruff check mesh/` CI gate behaves the same
