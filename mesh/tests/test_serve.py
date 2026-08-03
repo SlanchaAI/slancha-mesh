@@ -395,6 +395,50 @@ def test_build_backend_ollama_respects_OLLAMA_PORT_env(monkeypatch):
     assert be.base_url.endswith(":11500")
 
 
+def test_build_backend_ollama_respects_private_interface_endpoint(monkeypatch):
+    monkeypatch.setenv("OLLAMA_HOST", "100.64.0.42:8003")
+    monkeypatch.setenv("OLLAMA_PORT", "11500")
+    card = SpecialistCard(
+        model_id="Qwen/Qwen3-14B",
+        specialist_id="qwen3-14b-q4-ollama",
+        domain="general",
+        difficulty_tiers=["easy"],
+        required_backend="ollama",
+        storage_gb=9.3,
+        runtime_gb=11.0,
+        min_vram_gb=12.0,
+        context_window=32768,
+        n_layers=40,
+        estimated_tps_at={"gb10": 20.0},
+        ollama_tag="qwen3:14b",
+    )
+
+    be = build_backend(card, port=8013, bind_host="0.0.0.0")
+
+    assert be.base_url == "http://100.64.0.42:8003"
+
+
+def test_build_backend_ollama_rejects_host_with_path(monkeypatch):
+    monkeypatch.setenv("OLLAMA_HOST", "http://100.64.0.42:8003/not-an-origin")
+    card = SpecialistCard(
+        model_id="Qwen/Qwen3-14B",
+        specialist_id="qwen3-14b-q4-ollama",
+        domain="general",
+        difficulty_tiers=["easy"],
+        required_backend="ollama",
+        storage_gb=9.3,
+        runtime_gb=11.0,
+        min_vram_gb=12.0,
+        context_window=32768,
+        n_layers=40,
+        estimated_tps_at={"gb10": 20.0},
+        ollama_tag="qwen3:14b",
+    )
+
+    with pytest.raises(ValueError, match="OLLAMA_HOST"):
+        build_backend(card, port=8013, bind_host="0.0.0.0")
+
+
 def test_build_daemon_raises_on_unknown_specialist():
     with pytest.raises(KeyError):
         build_daemon(specialist_ids=["nonexistent"], probe=_probe())

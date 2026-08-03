@@ -27,6 +27,7 @@ import threading
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 from pathlib import Path
+from urllib.parse import urlsplit
 
 from mesh.backends import (
     DEFAULT_OLLAMA_PORT,
@@ -299,16 +300,42 @@ def build_backend(
         # Ollama multiplexes every loaded model on one daemon port (default
         # 11434), so the per-specialist `port` from the serve loop is
         # informational here — we advertise the daemon URL. The card needs
-        # an `ollama_tag` (validated inside the backend) and `OLLAMA_PORT`
-        # in the env wins if a non-default port is in use.
+        # an `ollama_tag` (validated inside the backend). Honor Ollama's own
+        # host setting so a daemon bound to one private interface is probed at
+        # that reachable origin instead of 127.0.0.1 / 0.0.0.0.
         ollama_port = int(os.environ.get("OLLAMA_PORT", DEFAULT_OLLAMA_PORT))
+        ollama_host = bind_host
+        configured_host = os.environ.get("OLLAMA_HOST", "").strip()
+        if configured_host:
+            parsed = urlsplit(
+                configured_host
+                if "://" in configured_host
+                else f"//{configured_host}"
+            )
+            try:
+                configured_port = parsed.port
+            except ValueError as exc:
+                raise ValueError("OLLAMA_HOST must contain a valid host and port") from exc
+            if (
+                parsed.scheme not in ("", "http")
+                or not parsed.hostname
+                or parsed.username is not None
+                or parsed.password is not None
+                or parsed.path not in ("", "/")
+                or parsed.query
+                or parsed.fragment
+            ):
+                raise ValueError("OLLAMA_HOST must be an HTTP origin without credentials or a path")
+            ollama_host = parsed.hostname
+            if configured_port is not None:
+                ollama_port = configured_port
         # `card.ollama_tag` missing → NullBackend with a clear log line so
         # mixed-catalog serve still boots and the operator gets a hint.
         if card.ollama_tag is None:
             return NullBackend(card=card)
         return OllamaBackend(
             card=card,
-            host=bind_host,
+            host=ollama_host,
             port=ollama_port,
             log_path=log_path,
         )
