@@ -1348,6 +1348,13 @@ def test_video_create_failed_compensation_persists_hidden_cleanup_work(
         raise sqlite3.OperationalError("store failed")
 
     monkeypatch.setattr("mesh.job_store.VideoJobStore.create", fail_create)
+    # This test owns the synchronous compensation + durable-enqueue contract.
+    # The cleanup worker has dedicated tests below; prevent it from racing the
+    # final call-count assertion by claiming the freshly enqueued row.
+    monkeypatch.setattr(
+        "mesh.job_store.VideoJobStore.claim_cleanup",
+        lambda *args, **kwargs: None,
+    )
     with TestClient(
         _video_app(_snapshot(capabilities=[VIDEO_JOB_CAPABILITY]), handler, db_path)
     ) as client:
