@@ -48,7 +48,7 @@ live-validated.
 ```bash
 git clone https://github.com/SlanchaAI/slancha-mesh.git
 cd slancha-mesh
-git checkout --detach OSS_READY_CODE_REF
+git checkout --detach 530a6e66aa3bd1a2649344a8cb5ef759afe6a0db
 python3 -m venv .venv
 source .venv/bin/activate
 python -m pip install -e .
@@ -129,7 +129,11 @@ bring-up data.
 
 After the same specialist is healthy on two machines, confirm both names
 resolve from the gateway and both node-info endpoints answer before replacing
-the one-peer router:
+the one-peer router. The commands below assume the ACL-gated tailnet setup
+later in this README, where application-layer auth is deliberately disabled.
+For the token-protected LAN setup, add
+`-H "Authorization: Bearer $SLANCHA_NODE_TOKEN"` to every `curl` here and in
+Terminal 3; `discover` and `router` read the same exported token themselves.
 
 ```bash
 getent hosts node-a node-b                 # Linux; use `dscacheutil -q host -a name ...` on macOS
@@ -149,7 +153,8 @@ node afterward. The zero-retention setting makes this a deterministic failover
 test; production defaults retain a missed binding for two refresh cycles to
 smooth brief discovery loss. Stopping `up` removes the node description while
 leaving an adopted Ollama daemon running. Use the token or tailnet setup below
-before doing this across machines.
+before doing this across machines, including the bearer header above when the
+token path is active.
 
 This manual path proves discovery failover after a node disappears. The
 separate request-time retry path handles connection failures and upstream
@@ -157,7 +162,8 @@ separate request-time retry path handles connection failures and upstream
 bounded behavior without faulting a live model:
 
 ```bash
-uv run pytest -q \
+python -m pip install 'pytest>=8,<10'
+python -m pytest -q \
   mesh/tests/test_router_app.py::test_chat_completions_falls_through_on_connect_failure_to_next_binding \
   mesh/tests/test_router_app.py::test_chat_completions_retries_on_upstream_502_503_504
 ```
@@ -366,7 +372,9 @@ printf 'Node token: '
 read -rs SLANCHA_NODE_TOKEN
 printf '\n'
 export SLANCHA_NODE_TOKEN
-slancha-mesh up --specialist qwen3-14b-q4-ollama \
+NODE_LAN_IP=192.168.50.10
+OLLAMA_HOST="$NODE_LAN_IP:11434" slancha-mesh up \
+  --specialist qwen3-14b-q4-ollama \
   --node-info-host 0.0.0.0
 ```
 
@@ -377,7 +385,8 @@ printf 'Node token: '
 read -rs SLANCHA_NODE_TOKEN
 printf '\n'
 export SLANCHA_NODE_TOKEN
-slancha-mesh router --peer 192.168.1.10 --peer 192.168.1.20
+NODE_LAN_IP=192.168.50.10
+slancha-mesh router --peer "$NODE_LAN_IP"
 ```
 
 Enter the same high-entropy value from a secret manager at each prompt. Unset
@@ -445,7 +454,7 @@ tagged gateway role:
 
 ```bash
 TAILSCALE_IP=$(tailscale ip -4)
-SLANCHA_AUTH_REQUIRED=false OLLAMA_PORT=8003 \
+SLANCHA_AUTH_REQUIRED=false OLLAMA_HOST="$TAILSCALE_IP:8003" \
   slancha-mesh up --tailnet --specialist qwen3-14b-q4-ollama \
   --node-info-host "$TAILSCALE_IP"
 ```
@@ -486,10 +495,18 @@ next eligible replica.
 ## Operations and rollback
 
 Install node, router, or semantic-router roles as boot-persistent services on
-supported platforms after a foreground request succeeds:
+supported platforms after a foreground request succeeds. Mesh adopts Ollama,
+so persist the private Ollama listener separately using the platform-specific
+steps in [`NODE_SETUP.md`](NODE_SETUP.md#running-it-as-a-service-survives-reboots):
 
 ```bash
-slancha-mesh service install --kind node
+# macOS/Linux tailnet node; substitute the stable device address if needed.
+TAILSCALE_IP=$(tailscale ip -4)
+slancha-mesh service install --kind node \
+  --env SLANCHA_AUTH_REQUIRED=false \
+  --env OLLAMA_HOST="$TAILSCALE_IP:8003" \
+  -- --tailnet --specialist qwen3-14b-q4-ollama \
+  --node-info-host "$TAILSCALE_IP"
 slancha-mesh service install --kind router -- --peer node.example.ts.net
 slancha-mesh service install --kind semantic-router
 slancha-mesh service status
@@ -521,7 +538,9 @@ $state = Join-Path $HOME '.local\state\slancha-mesh\router'
 Rename-Item $state ("router.rollback." + (Get-Date -Format yyyyMMddHHmmss))
 ```
 
-On the Linux LAN example, remove the two firewall rules in reverse order:
+For the Linux LAN example, first press Ctrl-C in the dedicated Ollama terminal
+and confirm the gateway can no longer connect to `192.168.50.10:11434`. Only
+then remove the two firewall rules in reverse order:
 
 ```bash
 NODE_LAN_IP=192.168.50.10
@@ -538,6 +557,15 @@ remove the device's specialist/gateway tag in the tailnet admin console. Run
 `tailscale logout` only when the whole device was enrolled solely for Mesh.
 `ollama rm qwen3:14b` is optional and deletes the downloaded model; normal
 rollback leaves it in the Ollama cache.
+
+The canonical source install lives entirely in its clone and `.venv`. After
+stopping every role above, archive both recoverably from the clone's parent:
+
+```bash
+deactivate 2>/dev/null || true
+cd ..
+mv slancha-mesh "slancha-mesh.rollback.$(date +%Y%m%d%H%M%S)"
+```
 
 Before enabling identity or peer-verification flags across a mixed-version
 fleet, follow the ordered migration and rollback steps in
