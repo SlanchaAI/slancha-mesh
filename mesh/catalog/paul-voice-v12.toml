@@ -1,0 +1,26 @@
+# Paul V12 is an immutable, externally supervised vLLM service on Spark.
+# The mesh adopts the loopback side of a Tailscale-only socket proxy on :8004;
+# it does not own the model process or substitute another checkpoint.
+model_id = "paul-v12-hyperfit-merged"
+specialist_id = "paul-voice-v12"
+domain = "writing"
+difficulty_tiers = ["easy", "medium", "hard"]
+languages = ["en"]
+required_backend = "external"
+static_base_url = "http://127.0.0.1:8004"
+served_model_name = "v12"
+storage_gb = 52.0
+runtime_gb = 60.0
+min_vram_gb = 52.0
+context_window = 4096
+n_layers = 64
+hidden_size = 5120
+capabilities = ["streaming", "system_prompt", "seed"]
+supports_lora_finetune = false
+license = "Apache-2.0"
+coverage_tier = 3
+
+# Median observed completion throughput was approximately 4 tokens/s during
+# the 2026-08-22 six-register direct-service audit on this Spark.
+[estimated_tps_at]
+gb10 = 4.0

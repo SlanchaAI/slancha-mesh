@@ -150,6 +150,16 @@ def test_catalog_spans_engines_after_ollama_cards():
     assert {"vllm", "ollama"}.issubset(backends), backends
 
 
+def test_paul_voice_v12_adopts_the_private_stable_endpoint():
+    """The voice route must adopt V12 without owning or substituting its runtime."""
+    cards = {c.specialist_id: c for c in load_catalog()}
+    card = cards["paul-voice-v12"]
+    assert card.required_backend == "external"
+    assert card.static_base_url == "http://127.0.0.1:8004"
+    assert card.served_model_name == "v12"
+    assert card.model_id == "paul-v12-hyperfit-merged"
+
+
 def test_ollama_cards_have_no_duplicate_specialist_ids():
     """Catalog IDs are the routing keys; uniqueness is a hard invariant."""
     cards = load_catalog()
