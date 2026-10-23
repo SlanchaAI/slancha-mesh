@@ -12,13 +12,20 @@ OpenAI-compatible surface.
 
 from __future__ import annotations
 
+import json
 import threading
 import time
 from datetime import datetime, timedelta, timezone
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-from mesh.discovery import DiscoveredSpecialist, DiscoveryResult
+from fastapi.testclient import TestClient
+
+from mesh.discovery import (
+    DiscoveredSpecialist, DiscoveryResult, discover_specialists,
+    make_http_fetch, synthesize_lan_status,
+)
 from mesh.models import NodeBinding, NodeSummary, RegistrySnapshot, SpecialistCard
-from mesh.router_app import _RefreshingSnapshot, discovery_to_snapshot
+from mesh.router_app import _RefreshingSnapshot, create_router_app, discovery_to_snapshot
 
 
 def _card(specialist_id: str, *, ollama_tag: str | None = "qwen2.5-coder:7b") -> SpecialistCard:
@@ -105,6 +112,61 @@ def test_discovery_to_snapshot_keeps_node_summary_per_node():
 # ---------------------------------------------------------------------------
 # _RefreshingSnapshot
 # ---------------------------------------------------------------------------
+
+
+def test_refreshing_snapshot_follows_node_models_between_polls(monkeypatch):
+    """Real node-info polls update the same router, even inside retention."""
+    monkeypatch.delenv("SLANCHA_NODE_TOKEN", raising=False)
+    state = {"models": ["old"], "status": 200}
+    paths = []
+
+    class NodeInfo(BaseHTTPRequestHandler):
+        def do_GET(self):
+            paths.append(self.path)
+            payload = json.dumps({"data": [
+                {"id": sid, "routing_meta": {
+                    "node_urls": ["http://127.0.0.1:11434"],
+                }} for sid in state["models"]
+            ]}).encode()
+            self.send_response(state["status"])
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(payload)
+
+        def log_message(self, *args):
+            pass
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), NodeInfo)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    fetch = make_http_fetch(verify_peers=False)
+    holder = _RefreshingSnapshot(
+        lambda: discover_specialists(
+            synthesize_lan_status(["127.0.0.1"]), fetch,
+            node_info_port=server.server_port,
+        ),
+        retain_s=3600,
+    )
+    try:
+        with TestClient(create_router_app(snapshot_source=holder.get)) as client:
+            for models, status, expected in [
+                (["old"], 200, {"old"}),
+                (["old", "new"], 200, {"old", "new"}),
+                ([], 503, {"old", "new"}),  # failed poll retains routes
+                (["new"], 200, {"new"}),
+                ([], 200, set()),  # successful empty list drains the node
+            ]:
+                state.update(models=models, status=status)
+                holder.refresh_once()
+                assert set(holder.get().specialists) == expected
+                response = client.get("/v1/models")
+                assert response.status_code == 200
+                assert {m["id"] for m in response.json()["data"]} == expected
+        assert paths == ["/models?include=routing_meta"] * 5
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=2)
 
 
 def test_refreshing_snapshot_cold_get_runs_refresher_synchronously():
