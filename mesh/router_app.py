@@ -1160,18 +1160,24 @@ class _RefreshingSnapshot:
         this pass transiently missed are carried over until they are
         `retain_s` old, so one missed discovery pass can't 404 a live route.
         """
-        fresh = discovery_to_snapshot(self._refresher(), catalog=self._catalog)
+        discovery = self._refresher()
+        fresh = discovery_to_snapshot(discovery, catalog=self._catalog)
         with self._lock:
-            self._snapshot = self._merge_retaining_recent(self._snapshot, fresh)
+            self._snapshot = self._merge_retaining_recent(
+                self._snapshot, fresh, reachable_hosts=set(discovery.reachable)
+            )
 
     def _merge_retaining_recent(
-        self, prior: RegistrySnapshot | None, fresh: RegistrySnapshot
+        self, prior: RegistrySnapshot | None, fresh: RegistrySnapshot,
+        *, reachable_hosts: set[str] | None = None,
     ) -> RegistrySnapshot:
         """Fresh discovery wins; carry over prior bindings it transiently missed.
 
         A prior ``(specialist_id, node_url)`` binding absent from ``fresh`` is
-        retained iff it was last seen within ``retain_s`` — bridging a single
-        missed discovery pass. Genuinely-gone nodes age out (their ``last_seen``
+        retained only if its host did not answer and it was last seen within
+        ``retain_s`` — bridging a single missed discovery pass. A successful
+        poll is authoritative, including an empty model list. Genuinely-gone
+        nodes age out (their ``last_seen``
         stops advancing once discovery no longer reports them); until then the
         chat fallback chain skips a retained-but-dead node on connect error, so
         the cost of retention is a bounded connect attempt, not a wrong answer.
@@ -1179,6 +1185,7 @@ class _RefreshingSnapshot:
         if prior is None or self._retain_s <= 0:
             return fresh
         cutoff = fresh.snapshot_ts - timedelta(seconds=self._retain_s)
+        responding = {host.lower() for host in (reachable_hosts or set())}
         fresh_keys = {
             (sid, b.node_url)
             for sid, bindings in fresh.specialists.items()
@@ -1190,6 +1197,8 @@ class _RefreshingSnapshot:
         for sid, bindings in prior.specialists.items():
             for b in bindings:
                 if (sid, b.node_url) in fresh_keys or b.last_seen < cutoff:
+                    continue
+                if b.node_url and urlsplit(b.node_url).hostname in responding:
                     continue
                 merged.setdefault(sid, []).append(b)
                 retained += 1
