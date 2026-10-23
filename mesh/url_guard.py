@@ -21,9 +21,11 @@ addresses, so a blanket private-IP block would break the normal topology):
     • ``SLANCHA_NODE_URL_BLOCK_LOOPBACK=1``  — also reject 127.0.0.0/8 / ::1
     • ``SLANCHA_NODE_URL_BLOCK_PRIVATE=1``   — also reject RFC-1918 / CGNAT
 
-DNS names are allowed (MagicDNS ``*.ts.net``, LAN hostnames) — they are not
-resolved here (cheap, no network, no resolve-time TOCTOU); DNS-rebinding defense
-is a documented follow-up.
+DNS names are allowed without resolution by default. Opt in with
+``SLANCHA_NODE_URL_RESOLVE_DNS=1`` to resolve non-tailnet names on every
+validation and check every answer with the same IP policy. ``*.ts.net`` names
+remain exempt. Call immediately before dialing: this check does not pin the
+connection's address, so a subsequent client resolution can still race (#143).
 """
 
 from __future__ import annotations
@@ -54,7 +56,7 @@ def _as_ip(host: str) -> ipaddress._BaseAddress | None:
 
     ``socket.inet_aton`` accepts exactly these legacy numeric forms and rejects a
     genuine hostname (→ OSError), so we use it to normalize before the IP checks.
-    Returns None for a real DNS name (allowed, not resolved here)."""
+    Returns None for a real DNS name."""
     try:
         return ipaddress.ip_address(host)  # dotted-quad IPv4 or any IPv6 literal
     except ValueError:
@@ -75,7 +77,25 @@ def validate_node_url(url: str) -> str:
         raise NodeUrlError("node_url must include a host")
     ip = _as_ip(host)
     if ip is None:
-        return url  # a DNS name — allowed, not resolved here (DNS-rebinding is a documented follow-up)
+        if not _flag("SLANCHA_NODE_URL_RESOLVE_DNS") or host.rstrip(".").endswith(".ts.net"):
+            return url
+        try:
+            answers = socket.getaddrinfo(
+                host, parts.port or (443 if parts.scheme == "https" else 80),
+                type=socket.SOCK_STREAM,
+            )
+        except (OSError, ValueError) as exc:
+            raise NodeUrlError(f"node_url host {host!r} could not be resolved") from exc
+        if not answers:
+            raise NodeUrlError(f"node_url host {host!r} resolved to no addresses")
+        for _, _, _, _, address in answers:
+            _validate_ip(ipaddress.ip_address(address[0]), host)
+    else:
+        _validate_ip(ip, host)
+    return url
+
+
+def _validate_ip(ip: ipaddress._BaseAddress, host: str) -> None:
     # An IPv4-mapped IPv6 literal (::ffff:a.b.c.d) is judged by its embedded IPv4,
     # so a mapped link-local/loopback can't slip past the IPv6 property checks.
     mapped = getattr(ip, "ipv4_mapped", None)
@@ -87,12 +107,11 @@ def validate_node_url(url: str) -> str:
     if ip.is_loopback:
         if _flag("SLANCHA_NODE_URL_BLOCK_LOOPBACK"):
             raise NodeUrlError(f"node_url host {host!r} is loopback (blocked by SLANCHA_NODE_URL_BLOCK_LOOPBACK)")
-        return url
+        return
     if ip.is_link_local or ip.is_unspecified or ip.is_multicast or ip.is_reserved:
         raise NodeUrlError(f"node_url host {host!r} is not a routable node address (link-local/IMDS/reserved)")
     if ip.is_private and _flag("SLANCHA_NODE_URL_BLOCK_PRIVATE"):
         raise NodeUrlError(f"node_url host {host!r} is private (blocked by SLANCHA_NODE_URL_BLOCK_PRIVATE)")
-    return url
 
 
 __all__ = ["validate_node_url", "NodeUrlError"]
