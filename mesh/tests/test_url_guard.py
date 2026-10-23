@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import socket
+from unittest.mock import Mock
+
 import pytest
 
 from mesh.url_guard import NodeUrlError, validate_node_url
@@ -91,3 +94,100 @@ def test_loaded_model_ingest_rejects_poisoned_node_url():
     for bad in ("http://169.254.169.254/", "file:///etc/passwd"):
         with pytest.raises(ValidationError):
             LoadedModel(**base, node_url=bad)
+
+
+@pytest.fixture
+def dns_guard(monkeypatch):
+    monkeypatch.setenv("SLANCHA_NODE_URL_RESOLVE_DNS", "1")
+    monkeypatch.delenv("SLANCHA_NODE_URL_BLOCK_LOOPBACK", raising=False)
+    monkeypatch.delenv("SLANCHA_NODE_URL_BLOCK_PRIVATE", raising=False)
+    resolver = Mock()
+    monkeypatch.setattr(socket, "getaddrinfo", resolver)
+    return resolver
+
+
+def _answers(*ips):
+    return [(socket.AF_INET6 if ":" in ip else socket.AF_INET,
+             socket.SOCK_STREAM, socket.IPPROTO_TCP, "", (ip, 8003)) for ip in ips]
+
+
+@pytest.mark.parametrize("ip", [
+    "169.254.169.254", "fe80::1", "0.0.0.0", "::", "224.0.0.1", "ff02::1",
+    "240.0.0.1", "100::1", "::ffff:169.254.169.254",
+])
+@pytest.mark.parametrize("first", [True, False])
+def test_dns_rejects_any_unsafe_answer(dns_guard, ip, first):
+    ips = [ip, "8.8.8.8"] if first else ["8.8.8.8", ip]
+    dns_guard.return_value = _answers(*ips)
+    with pytest.raises(NodeUrlError):
+        validate_node_url("http://node.example:8003/v1")
+
+
+@pytest.mark.parametrize("ip,flag", [
+    ("127.0.0.1", "LOOPBACK"), ("::1", "LOOPBACK"),
+    ("::ffff:127.0.0.1", "LOOPBACK"),
+    ("10.0.0.1", "PRIVATE"), ("fd00::1", "PRIVATE"),
+])
+def test_dns_uses_existing_flags(dns_guard, monkeypatch, ip, flag):
+    dns_guard.return_value = _answers(ip, "8.8.8.8")
+    url = "http://node.example:8003/v1"
+    assert validate_node_url(url) == url
+    monkeypatch.setenv(f"SLANCHA_NODE_URL_BLOCK_{flag}", "1")
+    with pytest.raises(NodeUrlError):
+        validate_node_url(url)
+
+
+@pytest.mark.parametrize("url,port", [
+    ("http://node.example/v1", 80), ("https://node.example/v1", 443),
+    ("http://node.example:8003/v1", 8003),
+])
+def test_dns_public_answers_and_port(dns_guard, url, port):
+    dns_guard.return_value = _answers("8.8.8.8", "2606:4700:4700::1111")
+    assert validate_node_url(url) == url
+    dns_guard.assert_called_once_with("node.example", port, type=socket.SOCK_STREAM)
+
+
+@pytest.mark.parametrize("url", [
+    "http://node.ts.net", "http://NODE.TS.NET.:8003", "http://127.1:8003",
+    "http://[::1]", "http://100.64.0.9", "http://8.8.8.8",
+])
+def test_dns_exempt_hosts_do_not_resolve(dns_guard, url):
+    assert validate_node_url(url) == url
+    dns_guard.assert_not_called()
+
+
+def test_dns_default_does_not_resolve(dns_guard, monkeypatch):
+    monkeypatch.delenv("SLANCHA_NODE_URL_RESOLVE_DNS")
+    assert validate_node_url("http://node.example") == "http://node.example"
+    dns_guard.assert_not_called()
+
+
+@pytest.mark.parametrize("host", ["ts.net.attacker.example", "notts.net", "ts.net"])
+def test_dns_tailnet_exemption_is_suffix_bounded(dns_guard, host):
+    dns_guard.return_value = _answers("169.254.169.254")
+    with pytest.raises(NodeUrlError):
+        validate_node_url(f"http://{host}")
+
+
+@pytest.mark.parametrize("result", [[], socket.gaierror("no address")])
+def test_dns_resolution_failure_rejected(dns_guard, result):
+    if isinstance(result, Exception):
+        dns_guard.side_effect = result
+    else:
+        dns_guard.return_value = result
+    with pytest.raises(NodeUrlError, match="resolved"):
+        validate_node_url("http://node.example")
+
+
+def test_probe_redirect_rechecks_dns_at_dial(dns_guard):
+    from urllib.error import HTTPError
+    from urllib.request import Request
+
+    from mesh.quality_probe import _SsrfGuardedRedirect
+
+    url = "http://node.example:8003/v1"
+    dns_guard.side_effect = [_answers("8.8.8.8"), _answers("169.254.169.254")]
+    assert validate_node_url(url) == url
+    with pytest.raises(HTTPError, match="unsafe redirect blocked"):
+        _SsrfGuardedRedirect().redirect_request(Request(url), None, 302, "Found", {}, url)
+    assert dns_guard.call_count == 2
