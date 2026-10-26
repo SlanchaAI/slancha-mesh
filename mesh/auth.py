@@ -37,6 +37,7 @@ enterprise authenticator supplies via granular ``roles`` + ``extra['tenant']``.
 from __future__ import annotations
 
 import hmac
+import ipaddress
 import os
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -161,7 +162,12 @@ def require_role(role: str, *, permit_disabled: bool = False) -> Callable[..., P
 
 def _is_loopback_bind(host: str) -> bool:
     h = (host or "").strip().lower()
-    return h in ("127.0.0.1", "localhost", "::1", "") or h.startswith("127.")
+    if h in ("localhost", "::1", ""):
+        return True
+    try:
+        return ipaddress.IPv4Address(h).is_loopback
+    except ipaddress.AddressValueError:
+        return False
 
 
 def assert_bind_safe(bind_host: str, *, token_present: bool | None = None) -> None:
