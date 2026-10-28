@@ -150,6 +150,12 @@ Baseline evidence: `mesh/router_app.py:1153` unconditionally publishes a cold `.
 
 **Fixed:** publish the cold result only if the cache remains empty, otherwise return the already-published snapshot. An event-coordinated two-thread regression first failed, with no timing sleeps; it proves the completed refresh remains authoritative. Discovery/live-socket/backend/daemon verification: 61 passed.
 
+### P2 — Router shutdown leaks its owned HTTP connection pool
+
+Baseline evidence: `mesh/router_app.py:1454` creates an AsyncClient for production, but the lifespan shutdown at baseline lines 1489–1506 only stops video cleanup and closes telemetry. The router command at `mesh/cli.py:527` uses that internally owned client. Repeated app startup/shutdown retains its connection pool and sockets.
+
+**Fixed:** close the owned client during shutdown while preserving injected client ownership. A lifecycle regression failed before the fix; a companion case proves injected clients remain open for their caller. No network or live service involved.
+
 ### P3 — Corrupt sidecar encoding blocks classifier startup
 
 Baseline evidence: `mesh/classifier/cluster_head.py:220` reads UTF-8 but catches only OSError. Invalid UTF-8 escapes the documented inert-on-load-failure contract and reaches auto-router startup (`mesh/classifier/auto.py:122`).

@@ -147,6 +147,26 @@ def _client(
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.asyncio
+async def test_router_lifespan_closes_owned_http_client():
+    snap = _snapshot(cards=[], bindings={})
+    app = create_router_app(snapshot_source=lambda: snap)
+    upstream = app.state.http_client
+    async with app.router.lifespan_context(app):
+        assert not upstream.is_closed
+    assert upstream.is_closed
+
+
+@pytest.mark.asyncio
+async def test_router_lifespan_preserves_injected_http_client():
+    snap = _snapshot(cards=[], bindings={})
+    async with httpx.AsyncClient(transport=httpx.MockTransport(lambda r: httpx.Response(200))) as upstream:
+        app = create_router_app(snapshot_source=lambda: snap, http_client=upstream)
+        async with app.router.lifespan_context(app):
+            assert app.state.http_client is upstream
+        assert not upstream.is_closed
+
+
 def test_create_router_app_refuses_with_neither_source():
     with pytest.raises(ValueError, match="registry"):
         create_router_app()

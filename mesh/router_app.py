@@ -1498,6 +1498,8 @@ def create_router_app(
                     await sink.aclose()
                 except Exception as exc:  # noqa: BLE001
                     _log.warning("[router] usage sink aclose failed: %s", exc)
+            if http_client is None:
+                await client.aclose()
 
     app = FastAPI(
         title="Slancha-Mesh OpenAI-compatible router",
