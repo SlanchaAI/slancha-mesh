@@ -2056,3 +2056,41 @@ def test_video_delete_requires_exact_upstream_200_and_releases_claim(tmp_path) -
 
     assert first.status_code == 502
     assert second.status_code == 502
+
+
+@pytest.mark.parametrize("invalid_payload", [b"{", b'{"id":"wrong","deleted":true,"object":"video.deleted"}'])
+def test_invalid_video_delete_reopens_half_open_circuit(tmp_path, invalid_payload):
+    from mesh.runtime_health import RouterRuntimeHealth, binding_key
+
+    now = [10.0]
+    runtime = RouterRuntimeHealth(failure_threshold=1, cooldown_s=5, clock=lambda: now[0])
+    delete_calls = 0
+
+    def handler(request):
+        nonlocal delete_calls
+        if request.method == "POST":
+            return httpx.Response(200, json={"id": "upstream-id", "status": "queued", "created_at": 1})
+        assert request.method == "DELETE"
+        delete_calls += 1
+        if delete_calls == 1:
+            return httpx.Response(200, content=invalid_payload, headers={"content-type": "application/json"})
+        return httpx.Response(200, json={"id": "upstream-id", "deleted": True, "object": "video.deleted"})
+
+    snapshot = _snapshot(capabilities=[VIDEO_JOB_CAPABILITY])
+    upstream = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    app = create_router_app(
+        snapshot_source=lambda: snapshot, http_client=upstream,
+        runtime_health=runtime, video_job_db_path=tmp_path / "video.sqlite3",
+    )
+    key = binding_key(SPECIALIST_ID, "media-node")
+    with TestClient(app) as client:
+        created = client.post("/v1/videos", files=[("model", (None, SPECIALIST_ID)), ("prompt", (None, "prompt"))])
+        assert created.status_code == 200
+        runtime.record_failure(key, "timeout")
+        now[0] += 5
+        path = f"/v1/videos/{created.json()['id']}"
+        assert client.delete(path).status_code == 502
+        assert runtime.snapshot()["bindings"][key]["state"] == "open"
+        now[0] += 5
+        assert client.delete(path).status_code == 200
+    assert delete_calls == 2

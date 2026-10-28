@@ -2597,6 +2597,7 @@ def create_router_app(
             try:
                 payload = json.loads(content)
             except (TypeError, ValueError) as exc:
+                resolved_runtime.record_failure(key, "invalid_delete_response")
                 raise HTTPException(
                     status_code=status.HTTP_502_BAD_GATEWAY,
                     detail="upstream video delete response is invalid",
@@ -2608,6 +2609,7 @@ def create_router_app(
                 or payload.get("deleted") is not True
                 or payload.get("object") != "video.deleted"
             ):
+                resolved_runtime.record_failure(key, "invalid_delete_response")
                 raise HTTPException(
                     status_code=status.HTTP_502_BAD_GATEWAY,
                     detail="upstream video delete response is invalid",
@@ -2668,12 +2670,7 @@ def create_router_app(
                 status_code=413,
                 detail=f"request body exceeds {MAX_REQUEST_BYTES} bytes",
             )
-        raw = await request.body()
-        if len(raw) > MAX_REQUEST_BYTES:
-            raise HTTPException(
-                status_code=413,
-                detail=f"request body exceeds {MAX_REQUEST_BYTES} bytes",
-            )
+        raw = await _read_bounded_request(request, max_bytes=MAX_REQUEST_BYTES)
         try:
             import json as _json
             body = _json.loads(raw)

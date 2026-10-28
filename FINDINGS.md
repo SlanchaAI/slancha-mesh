@@ -158,9 +158,21 @@ Baseline evidence: `mesh/router_app.py:1454` creates an AsyncClient for producti
 
 ### P2 — Source archives include unrelated local files
 
-Baseline evidence: `pyproject.toml:118` and `packages/slancha-mesh-tune/pyproject.toml:67` use unanchored source-distribution include patterns. Hatch treats them as gitignore patterns: `mesh` matches nested directories anywhere, and `LICENSE` matches unrelated nested license files. Local build-cache licenses appeared in the core source archive. A private scratch tree containing `tests/mesh/local_only.py` was included in both source archives; the existing release validator rejected all three sentinel paths before the fix.
+Baseline evidence: `pyproject.toml:91` and `packages/slancha-mesh-tune/pyproject.toml:55` use unanchored source-distribution include patterns. Hatch treats them as gitignore patterns: `mesh` matches nested directories anywhere, and `LICENSE` matches unrelated nested license files. Local build-cache licenses appeared in the core source archive. A private scratch tree containing `tests/mesh/local_only.py` was included in both source archives; the existing release validator rejected all three sentinel paths before the fix.
 
 **Fixed:** anchor source-distribution includes at each package root. Extend the existing CI package-boundary test with unrelated nested license and mesh sentinels. No build dependency changed. Rebuild both wheels from their source distributions and run the existing archive validator to verify the real release path.
+
+### P2 — Chat size limits apply only after buffering the entire request
+
+Baseline evidence: `mesh/router_app.py:2667` checks declared Content-Length, then line 2672 calls `request.body()` before enforcing the actual byte cap. Missing or understated length permits an arbitrarily large streamed body to occupy memory before rejection.
+
+**Fixed:** reuse the existing bounded streaming reader. Two regressions failed first: missing and understated lengths both consumed all 100 chunks; they now stop on the second chunk at a 64-byte cap. The actual chat ASGI route returns 413 without routing upstream.
+
+### P2 — Invalid video delete responses permanently strand recovery probes
+
+Baseline evidence: `mesh/router_app.py:2580` and `mesh/router_app.py:2595` reject malformed JSON or mismatched delete acknowledgments without recording a failed attempt. When selected as a half-open recovery probe, the owner remains half-open forever and all later requests punt.
+
+**Fixed:** record those two failure paths before returning 502. Two deterministic regressions failed first; both exercise create → opened circuit → invalid delete → cooldown → successful delete through the actual application and a stubbed owner. Ownership claims remain retryable.
 
 ### P3 — Corrupt sidecar encoding blocks classifier startup
 

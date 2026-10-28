@@ -1129,6 +1129,35 @@ def test_oversized_body_rejected_413(monkeypatch):
     assert client.post("/v1/chat/completions", json=big).status_code == 413
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("content_length", [None, "1"])
+async def test_chunked_chat_stops_reading_at_body_limit(monkeypatch, content_length):
+    import mesh.router_app as ra
+
+    monkeypatch.delenv(NODE_TOKEN_ENV, raising=False)
+    monkeypatch.setattr(ra, "MAX_REQUEST_BYTES", 64)
+    consumed = 0
+
+    async def chunks():
+        nonlocal consumed
+        for _ in range(100):
+            consumed += 1
+            yield b"x" * 64
+
+    snap = _snapshot(cards=[], bindings={})
+    async with httpx.AsyncClient(transport=httpx.MockTransport(
+        lambda request: pytest.fail("oversized request reached upstream")
+    )) as upstream:
+        app = create_router_app(snapshot_source=lambda: snap, http_client=upstream)
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://router") as client:
+            response = await client.post(
+                "/v1/chat/completions", content=chunks(),
+                headers={"content-length": content_length} if content_length else {},
+            )
+    assert response.status_code == 413
+    assert consumed == 2
+
+
 def test_fallback_is_capped(monkeypatch):
     """#101: fan-out is bounded — a request hits at most MAX_FALLBACK_ATTEMPTS nodes."""
     import mesh.router_app as ra
