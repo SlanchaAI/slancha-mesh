@@ -62,6 +62,21 @@ def test_proposal_rejects_out_of_range_value():
         ConfigProposal(target="c_0427", diff={"pref.quality_weight": 1.5})
 
 
+def test_proposal_rejects_nan_quality_weight():
+    with pytest.raises(ConfigProposalError, match="finite"):
+        ConfigProposal(target="c", diff={"pref.quality_weight": float("nan")})
+
+
+@pytest.mark.parametrize("value", [1.5, True, float("nan")])
+def test_apply_revalidates_mutated_proposal(value):
+    proposal = ConfigProposal(target="c", diff={"pref.quality_weight": 0.4})
+    proposal.diff["pref.quality_weight"] = value
+    current = {"pref.quality_weight": 0.5}
+    with pytest.raises(ConfigProposalError):
+        apply_proposal(current, proposal)
+    assert current == {"pref.quality_weight": 0.5}
+
+
 def test_proposal_rejects_bool_where_float_expected():
     """bool is a subclass of int; quality_weight=True must not slip through."""
     with pytest.raises(ConfigProposalError, match="expected float"):
@@ -250,6 +265,22 @@ def test_promote_if_accepted_leaves_champion_on_reject(tmp_path: Path):
     active = promote_if_accepted(p, v, reg, current_config=base)
     assert active == base            # unchanged
     assert reg.current() is None     # nothing promoted
+
+
+def test_promotion_rejects_proposal_changed_after_gate(tmp_path: Path):
+    registry = ConfigChampionRegistry(tmp_path)
+    current = {"pref.quality_weight": 0.5}
+    registry.promote(current, target="c")
+    proposal = ConfigProposal(target="c", diff={"pref.quality_weight": 0.4})
+    verdict = gate_config_proposal(
+        proposal, champion_row=_row(3.5), challenger_row=_row(3.8)
+    )
+    assert verdict.accept
+    proposal.diff["pref.quality_weight"] = 0.1  # valid, but never evaluated
+    with pytest.raises(ConfigProposalError, match="artifact"):
+        promote_if_accepted(proposal, verdict, registry, current_config=current)
+    assert registry.current() == current
+    assert registry.previous() is None
 
 
 # ───────────────────────── human-gated proposal store ────────────────────────

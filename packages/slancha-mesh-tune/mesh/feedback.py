@@ -32,6 +32,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 from collections.abc import Callable
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
@@ -75,6 +76,8 @@ class FieldSpec:
             raise ConfigProposalError(
                 f"{key!r}: {value!r} not in allowed choices {self.choices}"
             )
+        if isinstance(value, float) and not math.isfinite(value):
+            raise ConfigProposalError(f"{key!r}: value must be finite")
         if self.lo is not None and value < self.lo:
             raise ConfigProposalError(f"{key!r}: {value!r} below minimum {self.lo}")
         if self.hi is not None and value > self.hi:
@@ -184,8 +187,10 @@ def apply_proposal(config: dict[str, Any], proposal: ConfigProposal) -> dict[str
     construction, but `apply_proposal` is also a public entry point)."""
     out = dict(config)
     for key, value in proposal.diff.items():
-        if key not in ALLOWED_FIELDS:  # unreachable for a valid proposal
+        spec = ALLOWED_FIELDS.get(key)
+        if spec is None:
             raise ConfigProposalError(f"{key!r} is not an editable field")
+        spec.validate(key, value)
         out[key] = value
     return out
 
@@ -444,6 +449,8 @@ def promote_if_accepted(
     the now-active config either way."""
     if not verdict.accept:
         return current_config
+    if verdict.artifact_sha256_challenger != proposal.config_hash():
+        raise ConfigProposalError("accepted artifact does not match config proposal")
     new_config = apply_proposal(current_config, proposal)
     return registry.promote(new_config, target=proposal.target)
 

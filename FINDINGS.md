@@ -174,6 +174,12 @@ Baseline evidence: `mesh/router_app.py:2580` and `mesh/router_app.py:2595` rejec
 
 **Fixed:** record those two failure paths before returning 502. Two deterministic regressions failed first; both exercise create → opened circuit → invalid delete → cooldown → successful delete through the actual application and a stubbed owner. Ownership claims remain retryable.
 
+### P2 — Mutable config proposals bypass bounds and accepted-artifact identity
+
+Baseline evidence: `packages/slancha-mesh-tune/mesh/feedback.py:77` compares numeric bounds without rejecting NaN; line 187 checks only key names when applying a mutable diff; line 446 promotes any accepting verdict without checking the artifact it accepted. A valid diff can change after evaluation and still become the champion.
+
+**Fixed:** reject non-finite float values, revalidate values at application, and match the proposal hash against the accepted verdict before any registry write. Five regressions failed first, including gate → diff mutation → promotion against a private registry. Focused feedback/gate/loop checks: 87 passed. This existing optional API currently has test callers only; no new production integration or auto-promotion added.
+
 ### P3 — Corrupt sidecar encoding blocks classifier startup
 
 Baseline evidence: `mesh/classifier/cluster_head.py:220` reads UTF-8 but catches only OSError. Invalid UTF-8 escapes the documented inert-on-load-failure contract and reaches auto-router startup (`mesh/classifier/auto.py:122`).
