@@ -111,6 +111,38 @@ def test_already_graded_entries_are_skipped():
     assert _entry(s, "p1").judge_score == 3.0  # untouched
 
 
+@pytest.mark.parametrize(
+    "response,domain,specialist",
+    [("new answer", "code", "a"), ("old answer", "math", "a"),
+     ("old answer", "code", "b")],
+)
+def test_changed_replay_observation_is_regraded(response, domain, specialist):
+    store = TrafficReplayStore()
+    entry = store.add("prompt", "old answer", "code", "easy", served_by_specialist="a")
+    grade_replay_corpus(store, _RecordingScorer(score=5.0), _FakeRegistry())
+    store.add("prompt", response, domain, "easy", served_by_specialist=specialist)
+    assert entry.judge_score is None
+    assert entry.judge_source is None
+    registry = _FakeRegistry()
+    scorer = _RecordingScorer(score=1.0)
+    result = grade_replay_corpus(store, scorer, registry)
+    assert result["graded"] == 1
+    assert scorer.calls[0][1] == response
+    assert scorer.calls[0][0].domain == domain
+    assert registry.calls[0]["specialist_id"] == specialist
+    assert entry.judge_score == 1.0
+
+
+def test_identical_replay_observation_preserves_grade():
+    store = TrafficReplayStore()
+    entry = store.add("prompt", "answer", "code", "easy", served_by_specialist="a")
+    grade_replay_corpus(store, _RecordingScorer(score=5.0), _FakeRegistry())
+    store.add("prompt", "answer", "code", "easy", served_by_specialist="a")
+    result = grade_replay_corpus(store, _RecordingScorer(score=1.0), _FakeRegistry())
+    assert result["graded"] == 0
+    assert entry.judge_score == 5.0
+
+
 # ── Sink (a): registry observation ───────────────────────────────────────────
 
 
