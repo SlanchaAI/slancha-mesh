@@ -528,3 +528,63 @@ def test_main_returns_1_on_registry_fetch_failure(monkeypatch, caplog):
         rc = _main(["--base-url", "http://registry.test", "--token", "t"])
     assert rc == 1
     assert any("failed to fetch registry" in r.message for r in caplog.records)
+
+
+@pytest.mark.parametrize('reply', ['0.5', '4.5', '-1', '-0', '1e3', '2e-1', '42 out of 5', '9 out of 5'])
+def test_judge_rejects_invalid_first_number(monkeypatch, reply):
+    _stub_httpx_post(monkeypatch, content=reply)
+    scorer = LocalJudgeScorer(base_url='http://judge.test', model='judge')
+    with pytest.raises(ScorerError):
+        scorer.score(DEFAULT_PROBE_SET[0], 'response')
+
+
+@pytest.mark.parametrize('node_url', ['http://node.test:8001', 'http://node.test:8001/', 'http://node.test:8001/v1', 'http://node.test:8001/v1/'])
+def test_probe_uses_versioned_chat_endpoint(monkeypatch, node_url):
+    import io
+    import json
+    from mesh.quality_probe import _SSRF_OPENER
+
+    requests = []
+
+    def open_stub(req, **kwargs):
+        requests.append(req.full_url)
+        return io.BytesIO(json.dumps({'choices': [{'message': {'content': 'healthy answer'}}]}).encode())
+
+    monkeypatch.setattr(_SSRF_OPENER, 'open', open_stub)
+    obs = ProbeRunner().probe_one(specialist_id='spec', model_id='spec', node_url=node_url, domain='general')
+    assert obs.score > 0
+    assert requests == ['http://node.test:8001/v1/chat/completions']
+
+
+@pytest.mark.parametrize(('backend', 'alias', 'tag', 'expected'), [
+    ('vllm', None, None, 'spec'),
+    ('vllm', 'unused-alias', 'unused-tag', 'spec'),
+    ('ollama', None, 'local:7b', 'local:7b'),
+    ('external', 'adopted-model', None, 'adopted-model'),
+])
+def test_probe_cli_uses_served_model_name(monkeypatch, backend, alias, tag, expected):
+    import io
+    import json
+    from mesh.quality_probe import _SSRF_OPENER, _main
+
+    snapshot = {'catalog': {'spec': {'model_id': 'org/weights', 'required_backend': backend,
+                                   'served_model_name': alias, 'ollama_tag': tag, 'domain': 'general'}},
+                'specialists': {'spec': [{'node_url': 'http://node.test:8001/v1'}]}}
+    chats, observations = [], []
+
+    def open_stub(req, **kwargs):
+        if req.full_url.endswith('/registry'):
+            body = {'snapshot': snapshot}
+        elif req.full_url.endswith('/chat/completions'):
+            chats.append(json.loads(req.data))
+            body = {'choices': [{'message': {'content': 'healthy answer'}}]}
+        else:
+            assert req.full_url == 'http://registry.test/quality_observation'
+            observations.append(json.loads(req.data))
+            body = {'ack': True}
+        return io.BytesIO(json.dumps(body).encode())
+
+    monkeypatch.setattr(_SSRF_OPENER, 'open', open_stub)
+    assert _main(['--base-url', 'http://registry.test', '--token', 'test-token']) == 0
+    assert [chat['model'] for chat in chats] == [expected]
+    assert observations[0]['score'] > 0

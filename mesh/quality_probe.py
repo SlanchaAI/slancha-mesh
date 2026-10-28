@@ -147,29 +147,21 @@ class ScorerError(Exception):
     """
 
 
-# Match a STANDALONE 0–5 digit (not part of a larger number / decimal). The
-# judge is instructed to reply with only the integer; this is the parse of THAT
-# constrained output — not an attempt to grade adversarial prose with a regex.
-_SCORE_DIGIT = re.compile(r"(?<!\d)([0-5])(?!\d)")
+# Tokenize numbers, then validate the first token against the integer contract.
+# This is syntax validation of judge output, not semantic grading of prose.
+_SCORE_NUMBER = re.compile(r"[-+]?(?:\d+(?:\.\d+)?|\.\d+)(?:[eE][-+]?\d+)?")
 
 
 def _parse_judge_score(content: str) -> float:
-    """Extract the 0–5 score from a judge reply (#103).
+    """Accept a 0–5 integer, allowing prose such as "3 out of 5".
 
-    The old parse — first integer ANYWHERE, then clamp to 0–5 — silently turned a
-    bogus "42"/"9" into 5 (masking a judge that ignored the 0–5 contract). Now: a
-    clean integer-only reply wins; otherwise the first STANDALONE 0–5 digit (so
-    "3 out of 5" → 3, while "42" / "0.5" / "9" have no standalone 0–5 digit and
-    raise rather than silently clamp). The judge is instructed to reply with only
-    the integer; structured/function-call output is the stronger long-term fix
-    (tracked) — this just makes the parse of that constrained reply unambiguous."""
-    s = content.strip()
-    if s in {"0", "1", "2", "3", "4", "5"}:
-        return float(s)
-    matches = _SCORE_DIGIT.findall(s)
-    if not matches:
+    Reject an invalid first number rather than using a digit inside a decimal,
+    negative number or exponent, or falling through to the scale's maximum.
+    """
+    match = _SCORE_NUMBER.search(content.strip())
+    if match is None or match.group() not in {"0", "1", "2", "3", "4", "5"}:
         raise ScorerError(f"no 0-5 score in judge reply: {content!r}")
-    return float(matches[0])
+    return float(match.group())
 
 
 class LocalJudgeScorer:
@@ -178,7 +170,7 @@ class LocalJudgeScorer:
     Sends a short deterministic judge prompt (temperature 0) asking the
     model to rate, as a single integer 0–5, how well a probe response
     answers the probe — judged against `probe.reference` when one is set.
-    Parses the first integer from the reply and clamps to [0.0, 5.0].
+    Requires the first numeric token to be an integer from 0 to 5.
 
     Satisfies the `Scorer` protocol structurally. Scoring failures raise
     `ScorerError`; the module never raises at import (httpx is imported
@@ -351,8 +343,11 @@ class ProbeRunner:
                 "max_tokens": 256,
             }
         ).encode("utf-8")
+        base = node_url.rstrip("/")
+        if not base.endswith("/v1"):
+            base += "/v1"
         req = urllib.request.Request(
-            f"{node_url.rstrip('/')}/chat/completions",
+            f"{base}/chat/completions",
             method="POST",
             data=body,
             headers={"Content-Type": "application/json"},
@@ -500,9 +495,15 @@ def _main(argv: list[str] | None = None) -> int:
         node_url = nodes[0].get("node_url")
         if not node_url:
             continue
+        # Match the names used by mesh-spawned engines and the router.
+        model = specialist_id
+        if card.get("required_backend") == "ollama" and card.get("ollama_tag"):
+            model = card["ollama_tag"]
+        elif card.get("required_backend") == "external" and card.get("served_model_name"):
+            model = card["served_model_name"]
         obs = runner.probe_one(
             specialist_id=specialist_id,
-            model_id=card.get("model_id", specialist_id),
+            model_id=model,
             node_url=node_url,
             domain=card.get("domain", "general"),
             observation_source=args.observation_source,

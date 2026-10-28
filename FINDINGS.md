@@ -66,6 +66,18 @@ Baseline evidence: `mesh/registry.py:545` reconstructs hardware from heartbeats 
 
 Verification for discovery, circuit recovery and departed-node allocation: 11 cases failed before fixes; full suite now passes (1,291 passed, 19 skipped, six existing warnings). Changed-file lint and whitespace checks pass.
 
+### P2 — Quality probes target the wrong endpoint and model name
+
+Baseline evidence: `mesh/quality_probe.py:356` appends `/chat/completions` to an origin URL while backends expose `/v1/chat/completions`. Baseline line 508 sends the catalog's weight repository ID, although `mesh/backends.py:170` serves the specialist ID and `mesh/router_app.py:277` rewrites Ollama/external aliases. Healthy nodes can be recorded as zero-quality after HTTP errors.
+
+**Fixed:** accept both origin and existing `/v1` bases, and use engine-served names in the CLI. Tests execute the real probe/CLI through a stubbed transport, inspect request paths and model names, and observe quality writes. No inference endpoint called.
+
+### P2 — Judge parser silently accepts invalid numeric scores
+
+Baseline evidence: `mesh/quality_probe.py:153` matches individual digits inside decimals, negatives and exponents; `42 out of 5` falls through to 5. This violates the stated integer-only contract and corrupts routing quality.
+
+**Fixed:** tokenize the first number and require an exact 0–5 integer token. This is output syntax validation, not semantic grading or an adversarial-output defense. Existing supported prose remains accepted. Fourteen regressions across these quality-probe findings failed before fixes.
+
 ## Module map
 
 - Entry points: `mesh/cli.py`, `mesh/serve.py`, `mesh/service_install.py`, `mesh/router_bootstrap.py`.
