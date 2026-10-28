@@ -1150,8 +1150,11 @@ class _RefreshingSnapshot:
         # later if the background loop has started by then.
         snap = discovery_to_snapshot(self._refresher(), catalog=self._catalog)
         with self._lock:
-            self._snapshot = snap
-        return snap
+            # A background refresh or another cold request may have published
+            # while this discovery pass was in flight. Keep that result.
+            if self._snapshot is None:
+                self._snapshot = snap
+            return self._snapshot
 
     def refresh_once(self) -> None:
         """Run one discovery pass + swap the snapshot under the lock.

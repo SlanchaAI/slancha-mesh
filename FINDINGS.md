@@ -144,6 +144,12 @@ Baseline evidence: `mesh/backends.py:545` assumes an object containing a list of
 
 **Fixed:** validate both container levels, skip malformed entries, and compare names without hashing untrusted values. Six regressions failed first, including a mixed list proving valid entries remain usable. Backend/daemon verification: 78 passed. All HTTP responses stubbed; no backend process started or stopped.
 
+### P2 — Cold discovery overwrites a completed background refresh
+
+Baseline evidence: `mesh/router_app.py:1153` unconditionally publishes a cold `.get()` result after network discovery without checking whether the background refresher already populated the cache. A slow request can replace current bindings with an older discovery result until the next refresh. The router uses this getter directly at `mesh/cli.py:528`.
+
+**Fixed:** publish the cold result only if the cache remains empty, otherwise return the already-published snapshot. An event-coordinated two-thread regression first failed, with no timing sleeps; it proves the completed refresh remains authoritative. Discovery/live-socket/backend/daemon verification: 61 passed.
+
 ### P3 — Corrupt sidecar encoding blocks classifier startup
 
 Baseline evidence: `mesh/classifier/cluster_head.py:220` reads UTF-8 but catches only OSError. Invalid UTF-8 escapes the documented inert-on-load-failure contract and reaches auto-router startup (`mesh/classifier/auto.py:122`).

@@ -139,6 +139,38 @@ def test_refreshing_snapshot_caches_after_first_get():
     assert len(calls) == 1
 
 
+def test_cold_get_does_not_overwrite_completed_background_refresh():
+    cold_started = threading.Event()
+    release_cold = threading.Event()
+    results = []
+
+    def refresher() -> DiscoveryResult:
+        if not cold_started.is_set():
+            cold_started.set()
+            assert release_cold.wait(timeout=2.0)
+            sid = "old"
+        else:
+            sid = "current"
+        return DiscoveryResult(specialists={
+            sid: DiscoveredSpecialist(specialist_id=sid, node_urls=("http://h:80",))
+        })
+
+    holder = _RefreshingSnapshot(refresher, retain_s=0)
+    cold = threading.Thread(target=lambda: results.append(holder.get()))
+    cold.start()
+    try:
+        assert cold_started.wait(timeout=2.0)
+        holder.refresh_once()
+        current = holder.get()
+        assert set(current.specialists) == {"current"}
+    finally:
+        release_cold.set()
+        cold.join(timeout=2.0)
+    assert not cold.is_alive()
+    assert results == [current]
+    assert holder.get() is current
+
+
 def test_refreshing_snapshot_background_loop_swaps_snapshot():
     """Start the loop; the snapshot the router sees must reflect new
     discovery results without anyone calling .get() again."""
