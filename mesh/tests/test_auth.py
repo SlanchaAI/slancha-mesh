@@ -109,6 +109,23 @@ def test_assert_bind_safe(monkeypatch):
         assert_bind_safe("0.0.0.0", token_present=False)
 
 
+@pytest.mark.parametrize("host", ["", "   ", "127.attacker.example", "127.0.0.1.example"])
+def test_unauthenticated_bind_requires_actual_loopback(host, monkeypatch):
+    from mesh.auth import assert_bind_safe
+
+    monkeypatch.delenv("SLANCHA_AUTH_REQUIRED", raising=False)
+    with pytest.raises(SystemExit, match="refusing to bind"):
+        assert_bind_safe(host, token_present=False)
+
+
+@pytest.mark.parametrize("host", ["localhost", "127.0.0.2", "127.255.255.254", "::1", "0:0:0:0:0:0:0:1"])
+def test_actual_loopback_bind_remains_available_without_auth(host, monkeypatch):
+    from mesh.auth import assert_bind_safe
+
+    monkeypatch.delenv("SLANCHA_AUTH_REQUIRED", raising=False)
+    assert_bind_safe(host, token_present=False)
+
+
 def test_override_authenticator_enforces_rbac():
     """The enterprise pattern: inject an authenticator via dependency_overrides;
     a principal without the role gets 403, with it gets 200 — no global mutation."""

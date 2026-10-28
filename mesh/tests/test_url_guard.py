@@ -78,6 +78,25 @@ def test_block_private_when_flag_set(monkeypatch):
         validate_node_url("http://10.0.0.5:8003")
 
 
+@pytest.mark.parametrize("host", [
+    "100.64.0.0", "100.127.255.255", "0x64400001", "[::ffff:100.64.0.9]",
+])
+def test_block_private_includes_carrier_grade_nat(host, monkeypatch):
+    url = f"http://{host}:8003"
+    monkeypatch.delenv("SLANCHA_NODE_URL_BLOCK_PRIVATE", raising=False)
+    assert validate_node_url(url) == url
+    monkeypatch.setenv("SLANCHA_NODE_URL_BLOCK_PRIVATE", "1")
+    with pytest.raises(NodeUrlError, match="BLOCK_PRIVATE"):
+        validate_node_url(url)
+
+
+@pytest.mark.parametrize("host", ["100.63.255.255", "100.128.0.0"])
+def test_private_guard_does_not_block_addresses_outside_carrier_grade_nat(host, monkeypatch):
+    monkeypatch.setenv("SLANCHA_NODE_URL_BLOCK_PRIVATE", "1")
+    url = f"http://{host}:8003"
+    assert validate_node_url(url) == url
+
+
 def test_loaded_model_ingest_rejects_poisoned_node_url():
     """The node-supplied ingest model refuses a poisoned node_url at the boundary."""
     from pydantic import ValidationError

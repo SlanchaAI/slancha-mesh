@@ -34,6 +34,23 @@ def test_missing_command_errors():
         _parse([])
 
 
+def test_up_refuses_public_bind_with_whitespace_token(monkeypatch):
+    from types import SimpleNamespace
+
+    def run(**kwargs):
+        pytest.fail("unauthenticated public node reached server startup")
+
+    node = SimpleNamespace(
+        daemon=SimpleNamespace(advertise_host=None, backends=[]), run=run,
+    )
+    monkeypatch.setenv("SLANCHA_TAILNET_ENABLED", "false")
+    monkeypatch.setenv("SLANCHA_NODE_TOKEN", "   ")
+    monkeypatch.delenv("SLANCHA_AUTH_REQUIRED", raising=False)
+    monkeypatch.setattr("mesh.node_server.build_node", lambda **kwargs: node)
+    with pytest.raises(SystemExit, match="SLANCHA_NODE_TOKEN"):
+        main(["up", "--node-info-host", "0.0.0.0"])
+
+
 # ---------------------------------------------------------------------------
 # tailnet inference
 # ---------------------------------------------------------------------------

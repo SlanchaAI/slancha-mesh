@@ -90,7 +90,8 @@ def validate_node_url(url: str) -> str:
         return url
     if ip.is_link_local or ip.is_unspecified or ip.is_multicast or ip.is_reserved:
         raise NodeUrlError(f"node_url host {host!r} is not a routable node address (link-local/IMDS/reserved)")
-    if ip.is_private and _flag("SLANCHA_NODE_URL_BLOCK_PRIVATE"):
+    is_cgnat = isinstance(ip, ipaddress.IPv4Address) and ip in ipaddress.IPv4Network("100.64.0.0/10")
+    if (ip.is_private or is_cgnat) and _flag("SLANCHA_NODE_URL_BLOCK_PRIVATE"):
         raise NodeUrlError(f"node_url host {host!r} is private (blocked by SLANCHA_NODE_URL_BLOCK_PRIVATE)")
     return url
 

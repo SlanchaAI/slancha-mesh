@@ -12,6 +12,20 @@ Review base: `2bf3305` (main), branch `qc/burn1027-slancha-mesh`.
 
 ## Severity-ranked findings (investigation in progress)
 
+### P1 — Authentication guard accepts unsafe listener configuration
+
+Baseline evidence: `mesh/auth.py:164` treats an empty bind and any `127.*` hostname as loopback. An empty socket host is a wildcard bind; a hostname such as `127.attacker.example` need not resolve to loopback. Separately, baseline `mesh/cli.py:174` treats a whitespace-only token as configured while endpoint authentication strips it to empty.
+
+**Fixed:** classify numeric loopback addresses structurally and reuse the central stripped-token check from `up`. Tests exercise the CLI startup caller without starting a server, reject empty/deceptive hosts, and retain legitimate IPv4/IPv6 loopback binds. Ten cases failed before the guard changes (including the private-range finding below).
+
+### P2 — Private-address policy omits carrier-grade NAT addresses
+
+Baseline evidence: `mesh/url_guard.py:93` checks only `ip.is_private`, which excludes `100.64.0.0/10`, despite the module's documented policy. Hardened deployments therefore still accept tailnet/CGNAT destinations with `SLANCHA_NODE_URL_BLOCK_PRIVATE=1`.
+
+**Fixed:** include that exact range after canonicalizing numeric/mapped addresses. Tests cover both range endpoints, hexadecimal IPv4, mapped IPv6, default allowance, and adjacent public ranges.
+
+Verification: focused authentication/CLI/URL/probe/registry API suite passed (133); changed-file lint and whitespace checks passed. Read-only caller review confirmed router startup already strips tokens and node startup now uses the same central policy. GitNexus change detection remains unavailable; explicit diff scope checked before commit.
+
 ### P2 — Failed heartbeat writes mutate registry identity and URL state
 
 Baseline evidence: `mesh/registry.py:285` pins identity before `_record`; `mesh/registry.py:296` changes the URL before durable append. The durable-first contract at baseline `mesh/registry.py:255` promises failed appends leave the read model untouched. A failed first heartbeat could reserve an identity that was never committed; a failed update could publish an uncommitted URL.

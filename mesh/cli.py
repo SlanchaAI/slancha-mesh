@@ -171,7 +171,7 @@ def cmd_up(args: argparse.Namespace) -> int:
     # router path uses. Loopback binds and token-present binds pass; a public
     # bind with no token raises unless SLANCHA_AUTH_REQUIRED=false.
     from mesh.auth import assert_bind_safe
-    assert_bind_safe(args.node_info_host, token_present=bool(os.environ.get(NODE_TOKEN_ENV)))
+    assert_bind_safe(args.node_info_host)
 
     node.run(
         node_info_host=args.node_info_host,
