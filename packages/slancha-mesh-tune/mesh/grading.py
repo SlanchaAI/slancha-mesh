@@ -14,10 +14,9 @@ network probe, just score the stored oracle_response against its prompt.
 
 Pure orchestration over injected collaborators (store, scorer, registry):
 unit-tests with fakes, no HTTP, no daemon, no hot-path change. The store's
-ReplayEntry is a mutable dataclass and recent() returns live references, so
-the per-entry label is stamped in place; judge_* fields are disjoint from
-anything TrafficReplayStore.add() mutates, so this is safe alongside the
-serving path for an offline batch.
+ReplayEntry is mutable and recent() returns live references. Grades are
+published conditionally under the store lock, so capture cannot attach an
+old answer's grade to a replacement observation.
 """
 
 from __future__ import annotations
@@ -86,29 +85,35 @@ def grade_replay_corpus(
     for entry in entries:
         if entry.judge_score is not None:
             continue  # already graded — idempotent re-runs skip it
+        response = entry.oracle_response
+        domain_name = entry.domain
+        specialist_id = entry.served_by_specialist
         probe = ProbePrompt(
             prompt_id=entry.prompt_hash,
-            domain=entry.domain,
+            domain=domain_name,
             text=entry.prompt_text,
             reference=None,  # captured traffic carries no gold reference
         )
         try:
-            score = scorer.score(probe, entry.oracle_response)
+            score = scorer.score(probe, response)
         except ScorerError as exc:
             logger.warning("grade skipped for %s: %s", entry.prompt_hash, exc)
             errors.append({"prompt_hash": entry.prompt_hash, "error": str(exc)})
             continue
 
-        # Sink (b): per-entry quality label, stamped in place on the live
-        # entry reference returned by recent().
-        entry.judge_score = score
-        entry.judge_source = judge_source
+        if not store.record_grade(
+            entry, oracle_response=response, domain=domain_name,
+            served_by_specialist=specialist_id, score=score, source=judge_source,
+        ):
+            errors.append({"prompt_hash": entry.prompt_hash,
+                           "error": "observation changed during grading"})
+            continue
         graded += 1
 
-        if entry.served_by_specialist is None:
+        if specialist_id is None:
             skipped_no_specialist += 1
             continue
-        by_specialist.setdefault(entry.served_by_specialist, []).append(score)
+        by_specialist.setdefault(specialist_id, []).append(score)
 
     # Sink (a): one registry observation per specialist, mean over its
     # freshly-graded entries.

@@ -171,6 +171,30 @@ class TrafficReplayStore:
             items = [e for e in items if e.domain == domain]
         return items[:n]
 
+    def record_grade(
+        self,
+        entry: ReplayEntry,
+        *,
+        oracle_response: str,
+        domain: str,
+        served_by_specialist: str | None,
+        score: float,
+        source: str,
+    ) -> bool:
+        """Publish a grade only if the scored observation is still current."""
+        with self._lock:
+            if (
+                self._entries.get(entry.prompt_hash) is not entry
+                or entry.oracle_response != oracle_response
+                or entry.domain != domain
+                or entry.served_by_specialist != served_by_specialist
+                or entry.judge_score is not None
+            ):
+                return False
+            entry.judge_score = score
+            entry.judge_source = source
+            return True
+
     def __iter__(self) -> Iterator[ReplayEntry]:
         """Snapshot iteration; safe for concurrent add."""
         with self._lock:

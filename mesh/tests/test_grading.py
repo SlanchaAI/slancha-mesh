@@ -143,6 +143,28 @@ def test_identical_replay_observation_preserves_grade():
     assert entry.judge_score == 5.0
 
 
+def test_capture_during_scoring_does_not_label_replacement_answer():
+    store = TrafficReplayStore()
+    entry = store.add("prompt", "old answer", "code", "easy", served_by_specialist="a")
+
+    class UpdatingScorer:
+        def score(self, probe, response_text):
+            assert response_text == "old answer"
+            store.add("prompt", "new answer", "math", "hard", served_by_specialist="b")
+            return 5.0
+
+    registry = _FakeRegistry()
+    result = grade_replay_corpus(store, UpdatingScorer(), registry)
+    assert entry.judge_score is None
+    assert registry.calls == []
+    assert result["graded"] == 0
+    assert result["errors"]
+    result = grade_replay_corpus(store, _RecordingScorer(score=1.0), registry)
+    assert result["graded"] == 1
+    assert entry.judge_score == 1.0
+    assert registry.calls[0]["specialist_id"] == "b"
+
+
 # ── Sink (a): registry observation ───────────────────────────────────────────
 
 
