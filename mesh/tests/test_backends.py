@@ -98,6 +98,25 @@ def test_parse_vllm_metrics_keeps_valid_when_one_value_malformed():
     assert out["running"] == 0  # malformed one falls back to default
 
 
+@pytest.mark.parametrize("value", ["NaN", "+Inf", "-Inf", "1e999"])
+@pytest.mark.parametrize("metric", ["num_requests_waiting", "num_requests_running", "gpu_cache_usage_perc"])
+def test_nonfinite_metrics_do_not_break_heartbeat(monkeypatch, spark_node, value, metric):
+    import httpx
+
+    from mesh.serve import ServeDaemon
+
+    body = f'vllm:{metric}{{model_name="test"}} {value}\n'
+    monkeypatch.setattr("mesh.backends.httpx.get", lambda *a, **k: httpx.Response(200, text=body))
+    monkeypatch.setattr(VLLMBackend, "is_alive", lambda self: True)
+    backend = VLLMBackend(card=_card())
+
+    heartbeat = ServeDaemon(backends=[backend], probe=spark_node).heartbeat()
+
+    assert heartbeat.health == "healthy"
+    assert heartbeat.util.queue_depth == 0
+    assert backend.utilization() == {"queue_depth": 0, "running": 0, "gpu_cache_pct": 0.0}
+
+
 def test_vllm_backend_base_url_and_health_url():
     be = VLLMBackend(card=_card(), host="127.0.0.1", port=8123)
     assert be.base_url == "http://127.0.0.1:8123"

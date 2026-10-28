@@ -126,6 +126,18 @@ Baseline evidence: `mesh/discovery.py:117` and `mesh/discovery.py:129` perform m
 
 **Fixed:** require the JSON array shape before tag membership for Self and Peer. Ten discovery regressions failed before the fix; tests verify a valid peer still fetches and aggregates while malformed peers are ignored. Combined engine/discovery/CLI checks: 78 passed.
 
+### P2 — Non-finite backend metrics interrupt heartbeats
+
+Baseline evidence: `mesh/backends.py:317` accepts NaN/infinity as floats, then lines 338/342 convert them to integers. ValueError/OverflowError escapes `ServeDaemon.heartbeat` at `mesh/serve.py:196`, interrupting heartbeat updates. Non-finite cache ratios also leak into utilization output.
+
+**Fixed:** ignore non-finite metric values. Twelve cases first failed through the real daemon heartbeat caller, using stubbed HTTP responses; ordinary valid metrics retain existing coverage.
+
+### P2 — Malformed Ollama model lists escape best-effort polling
+
+Baseline evidence: `mesh/backends.py:545` assumes an object containing a list of objects. Line 577 additionally builds a set from unchecked names. Wrong containers, scalar entries or unhashable names raise during heartbeat utilization or model-readiness checks.
+
+**Fixed:** validate both container levels, skip malformed entries, and compare names without hashing untrusted values. Six regressions failed first, including a mixed list proving valid entries remain usable. Backend/daemon verification: 78 passed. All HTTP responses stubbed; no backend process started or stopped.
+
 ### P3 — Corrupt sidecar encoding blocks classifier startup
 
 Baseline evidence: `mesh/classifier/cluster_head.py:220` reads UTF-8 but catches only OSError. Invalid UTF-8 escapes the documented inert-on-load-failure contract and reaches auto-router startup (`mesh/classifier/auto.py:122`).

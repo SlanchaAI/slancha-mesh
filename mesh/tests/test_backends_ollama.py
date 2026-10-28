@@ -246,6 +246,30 @@ def test_utilization_swallows_daemon_errors(monkeypatch):
     assert be.utilization() == {"queue_depth": 0, "running": 0, "gpu_cache_pct": 0.0}
 
 
+@pytest.mark.parametrize("payload", [[], 1, {"models": 1}, {"models": "bad"}, {"models": [None, 1, "bad"]}])
+def test_model_polling_ignores_malformed_payloads(monkeypatch, payload):
+    daemon = _MockDaemon()
+    daemon.reply("GET", "/api/ps", body=payload)
+    daemon.reply("GET", "/api/tags", body=payload)
+    daemon.install(monkeypatch)
+    backend = _make(daemon)
+
+    assert backend.utilization() == {"queue_depth": 0, "running": 0, "gpu_cache_pct": 0.0}
+    assert backend._model_pulled() is False
+
+
+def test_model_polling_keeps_valid_entries_among_malformed_ones(monkeypatch):
+    daemon = _MockDaemon()
+    payload = {"models": [None, {"name": [], "model": {}}, {"name": "qwen2.5-coder:7b"}]}
+    daemon.reply("GET", "/api/ps", body=payload)
+    daemon.reply("GET", "/api/tags", body=payload)
+    daemon.install(monkeypatch)
+    backend = _make(daemon)
+
+    assert backend.utilization()["running"] == 1
+    assert backend._model_pulled() is True
+
+
 def test_utilization_with_malformed_size_does_not_raise(monkeypatch):
     """Future Ollama could ship strings or nulls — we degrade to 0.0, not raise."""
     daemon = _MockDaemon()

@@ -26,6 +26,7 @@ Why this split? Two reasons:
 
 from __future__ import annotations
 
+import math
 import os
 import shutil
 import signal
@@ -313,7 +314,8 @@ def _trailing_float(line: str) -> float | None:
     fall back to defaults, never raise into the heartbeat path.
     """
     try:
-        return float(line.rsplit(" ", 1)[-1])
+        value = float(line.rsplit(" ", 1)[-1])
+        return value if math.isfinite(value) else None
     except (ValueError, IndexError):
         return None
 
@@ -542,7 +544,12 @@ class OllamaBackend:
             data = r.json()
         except (httpx.HTTPError, OSError, ValueError):
             return out
-        for entry in data.get("models", []) or []:
+        models = data.get("models") if isinstance(data, dict) else None
+        if not isinstance(models, list):
+            return out
+        for entry in models:
+            if not isinstance(entry, dict):
+                continue
             if entry.get("name") == self.card.ollama_tag or entry.get("model") == self.card.ollama_tag:
                 out["running"] = 1
                 size_vram = entry.get("size_vram")
@@ -573,9 +580,14 @@ class OllamaBackend:
             data = r.json()
         except (httpx.HTTPError, OSError, ValueError):
             return False
-        tags = {m.get("name") for m in (data.get("models") or [])}
-        tags.update(m.get("model") for m in (data.get("models") or []) if m.get("model"))
-        return self.card.ollama_tag in tags
+        models = data.get("models") if isinstance(data, dict) else None
+        if not isinstance(models, list):
+            return False
+        return any(
+            isinstance(model, dict)
+            and self.card.ollama_tag in (model.get("name"), model.get("model"))
+            for model in models
+        )
 
     def _kick_pull(self) -> None:
         """Fire-and-forget `/api/pull`. wait_ready polls until it lands."""
