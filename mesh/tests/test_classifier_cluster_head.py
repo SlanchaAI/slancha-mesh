@@ -96,3 +96,21 @@ def test_load_from_dir_garbage_bin_is_inert(tmp_path):
         json.dumps({"schema_version": "v1", "routes": {"0": "coding"}})
     )
     assert load_from_dir(tmp_path) is None
+
+
+@pytest.mark.parametrize("confidence", [float("nan"), float("inf"), 1.01])
+def test_invalid_confidence_does_not_override_classifier(confidence):
+    from mesh.classifier.heads import SignalClassifier
+
+    selector = ClusterHeadSelector(_FakeHead(3, confidence), {3: "coding"})
+    classifier = SignalClassifier.__new__(SignalClassifier)
+    classifier._cluster_head_selector = selector
+
+    assert classifier._apply_cluster_override(_x(), "math") == ("math", None)
+
+
+def test_load_from_dir_non_utf8_sidecar_is_inert(tmp_path):
+    (tmp_path / "mmbert_tl_cluster.bin").write_bytes(b"not-a-model")
+    (tmp_path / "cluster_id_to_route.json").write_bytes(b"\xff")
+
+    assert load_from_dir(tmp_path) is None

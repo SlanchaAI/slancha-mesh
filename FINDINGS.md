@@ -102,6 +102,18 @@ Baseline evidence: `packages/slancha-mesh-tune/mesh/eval/holdout.py:107` rounds 
 
 **Fixed:** allocate fractional remainders together with deterministic tie order. Tests cover small/large odd sizes, exact totals, quota error below one and unique sampling; existing insufficient-bucket behavior remains covered.
 
+### P2 — Invalid cluster-head confidence bypasses the routing gate
+
+Baseline evidence: `mesh/classifier/cluster_head.py:187` checks only `conf < threshold`. NaN and positive infinity pass that check; probabilities above one also override the six-head domain classifier. The caller at `mesh/classifier/heads.py:197` then changes the routing domain.
+
+**Fixed:** require confidence within the inclusive threshold–1 range. Tests execute the real domain-override caller with NaN, infinity and 1.01 and verify the original domain survives. NumPy 2.3.5 from the Python 3.12 lock resolution enables these tests without inference runtimes.
+
+### P3 — Corrupt sidecar encoding blocks classifier startup
+
+Baseline evidence: `mesh/classifier/cluster_head.py:220` reads UTF-8 but catches only OSError. Invalid UTF-8 escapes the documented inert-on-load-failure contract and reaches auto-router startup (`mesh/classifier/auto.py:122`).
+
+**Fixed:** handle UnicodeError as a sidecar load failure. Four cluster regressions failed before these two fixes; only the optional selector and its startup loader are affected. GitNexus remains unavailable; callers and explicit diff reviewed directly.
+
 ### P3 — Malformed signatures escape the verifier error contract
 
 Baseline evidence: `packages/slancha-mesh-tune/mesh/eval/row_sign.py:40` passes non-ASCII strings to `hmac.compare_digest`, which raises TypeError instead of returning False. `eval/seed_verify.py:100` catches only bad signature contents; a wrong-length Ed25519 signature raises ValueError instead of SeedVerificationError. Both fail closed, but callers receive unhandled exceptions rather than their documented rejection paths.

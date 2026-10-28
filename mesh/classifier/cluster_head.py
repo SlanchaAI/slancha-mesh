@@ -184,7 +184,7 @@ class ClusterHeadSelector:
         except Exception as e:  # pragma: no cover - defensive
             logger.warning("cluster-head predict() raised %s; falling through", e)
             return None
-        if conf < threshold:
+        if not threshold <= conf <= 1.0:
             return None
         cap = self._mapping.get(int(cid))
         if cap is None:
@@ -218,7 +218,7 @@ def _load_mapping(sidecar_path: Path) -> dict[int, str]:
     to an inert selector."""
     try:
         raw = sidecar_path.read_text(encoding="utf-8")
-    except OSError as e:
+    except (OSError, UnicodeError) as e:
         raise _ClusterHeadLoadError(f"sidecar read failed: {e}") from e
     try:
         data = json.loads(raw)
