@@ -249,6 +249,40 @@ def test_allocate_unknown_strategy_errors_quietly(spark_node, catalog):
     assert spark_node.node_id in sugg
 
 
+def test_best_per_machine_is_independent_of_other_nodes(spark_node):
+    cards = [_kv_card(specialist_id="code", domain="code"), _kv_card(specialist_id="math", domain="math")]
+    second = spark_node.model_copy(update={"node_id": "second"})
+    alone = allocate_cluster([second], cards, strategy="best_per_machine")["second"]
+    together = allocate_cluster([spark_node, second], cards, strategy="best_per_machine")
+
+    assert together["second"].primary == alone.primary
+    assert together["second"].fit_score == alone.fit_score
+
+
+@pytest.mark.parametrize("share", [0.0, 0.049, 0.05])
+def test_tiered_replica_fill_respects_tier_three_traffic_gate(spark_node, share):
+    card = _kv_card(specialist_id="vision", domain="vision")
+    suggestion = allocate_cluster(
+        [spark_node], [card], strategy="tiered", traffic_mix={"vision": share}
+    )[spark_node.node_id]
+
+    assert (suggestion.primary is not None) == (share >= 0.05)
+
+
+@pytest.mark.parametrize("disk_gb", [100.0, 120.0])
+def test_secondary_storage_fits_alongside_primary(spark_node, disk_gb):
+    cards = [
+        _kv_card(specialist_id="code", domain="code", storage_gb=60.0),
+        _kv_card(specialist_id="math", domain="math", storage_gb=60.0),
+    ]
+    node = spark_node.model_copy(update={"disk_free_gb": disk_gb})
+    suggestion = allocate_cluster([node], cards, strategy="tiered")[node.node_id]
+
+    assert suggestion.primary is not None
+    assert bool(suggestion.secondaries) == (disk_gb >= 120.0)
+    assert sum(card.storage_gb for card in [suggestion.primary, *suggestion.secondaries]) <= disk_gb
+
+
 # ---------------------------------------------------------------------------
 # Synthetic combo tests — 3 (node, spec) pairs covering filter paths
 # ---------------------------------------------------------------------------

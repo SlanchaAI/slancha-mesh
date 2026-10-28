@@ -108,6 +108,12 @@ Baseline evidence: `mesh/classifier/cluster_head.py:187` checks only `conf < thr
 
 **Fixed:** require confidence within the inclusive threshold–1 range. Tests execute the real domain-override caller with NaN, infinity and 1.01 and verify the original domain survives. NumPy 2.3.5 from the Python 3.12 lock resolution enables these tests without inference runtimes.
 
+### P2 — Placement recommendations violate strategy and capacity constraints
+
+Baseline evidence: `mesh/allocator.py:259` updates cluster coverage while computing supposedly independent `best_per_machine` recommendations, changing an identical node's selection when another node precedes it. Line 398 ranks the entire catalog during replica fill, bypassing the tier-three 5% traffic gate. Lines 482–488 check secondary memory but omit aggregate primary-plus-secondary storage, recommending 120 GB on a 100 GB disk.
+
+**Fixed:** keep independent rankings independent, filter replica candidates through the existing traffic gate, and check combined storage. Four regressions failed first. Seven new cases cover ordering, traffic threshold and exact disk boundaries; the real registry allocator caller records an unassigned node when only a cold tier-three model is available. Focused allocator/registry verification: 52 passed.
+
 ### P3 — Corrupt sidecar encoding blocks classifier startup
 
 Baseline evidence: `mesh/classifier/cluster_head.py:220` reads UTF-8 but catches only OSError. Invalid UTF-8 escapes the documented inert-on-load-failure contract and reaches auto-router startup (`mesh/classifier/auto.py:122`).

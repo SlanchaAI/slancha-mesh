@@ -124,6 +124,18 @@ def test_run_allocator_uses_latest_hardware(spark_node, catalog, fresh_now):
     assert out[spark_node.node_id] is not None
 
 
+def test_allocator_records_no_cold_tier_three_assignment(spark_node, catalog, fresh_now):
+    vision = catalog[0].model_copy(update={"specialist_id": "vision", "domain": "vision"})
+    reg = MeshRegistry(catalog=[vision])
+    hb = make_heartbeat(spark_node, fresh_now, [], [vision])
+    reg.record_heartbeat(HeartbeatPostRequest(heartbeat=hb))
+
+    out = reg.run_allocator(strategy="tiered", traffic_mix={"vision": 0.0})
+
+    assert out == {spark_node.node_id: None}
+    assert reg.events[-1].suggestions == out
+
+
 def test_allocator_excludes_departed_node_until_it_rejoins(spark_node, catalog, fresh_now):
     reg = MeshRegistry(catalog=catalog)
     req = HeartbeatPostRequest(heartbeat=make_heartbeat(spark_node, fresh_now, [], catalog))

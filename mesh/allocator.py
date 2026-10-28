@@ -256,7 +256,6 @@ def allocate_cluster(
                     fit_score=-math.inf,
                 )
                 continue
-            coverage.setdefault(primary.domain, set()).add(node.node_id)
             alternates = [s for sc, s in ranked[1:] if sc > -math.inf][:3]
             suggestions[node.node_id] = NodeSuggestion(
                 node_id=node.node_id,
@@ -391,11 +390,15 @@ def _allocate_tiered(
     # Promote replicas for nodes still unassigned: pick the most-trafficked
     # tier-1 domain (default "general") and let the node host a replica.
     if remaining:
+        replica_catalog = [
+            spec for spec in catalog
+            if _domain_tier(spec.domain) != 3 or spec.domain in hot_t3
+        ]
         heavy_domain = max(
             traffic_mix.items(), key=lambda kv: kv[1], default=("general", 0.0)
         )[0]
         for node in remaining:
-            ranked = _rank_specs_for_node(node, catalog, coverage)
+            ranked = _rank_specs_for_node(node, replica_catalog, coverage)
             chosen: SpecialistCard | None = None
             chosen_score = -math.inf
             # Prefer something in the hottest domain
@@ -485,6 +488,7 @@ def _fill_secondaries(
             and s.domain not in covered_domains
             and s.specialist_id != sugg.primary.specialist_id
             and s.runtime_gb <= remaining_mem
+            and s.storage_gb + sugg.primary.storage_gb <= node.disk_free_gb
         ]
         if not candidates:
             continue
