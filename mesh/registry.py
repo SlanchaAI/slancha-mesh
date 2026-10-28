@@ -248,8 +248,19 @@ class MeshRegistry:
         for env in self._store.replay():
             ev = _decode(env)
             self._events.append(ev)
-            if isinstance(ev, HeartbeatEvent) and ev.public_key_b64:
-                self._node_pubkeys.setdefault(ev.heartbeat.node_id, ev.public_key_b64)
+            if isinstance(ev, HeartbeatEvent):
+                if ev.public_key_b64:
+                    self._node_pubkeys.setdefault(ev.heartbeat.node_id, ev.public_key_b64)
+                if ev.node_url:
+                    self._node_urls[ev.heartbeat.node_id] = ev.node_url
+            elif isinstance(ev, QualityObservationEvent):
+                card = self._catalog.get(ev.specialist_id)
+                if card is not None:
+                    self._catalog[ev.specialist_id] = card.model_copy(update={
+                        "quality_router_observed": ev.score,
+                        "quality_sample_count": (card.quality_sample_count or 0) + ev.sample_count,
+                        "quality_observation_source": ev.observation_source,
+                    })
 
     def _record(self, ev: Event) -> None:
         """Durably persist `ev`, then add it to the in-memory read model.
@@ -264,8 +275,8 @@ class MeshRegistry:
     # --- ingestion ---
 
     def _check_node_identity(self, req: HeartbeatPostRequest) -> str | None:
-        """Verify + pin the node's identity cert (#102). Caller holds the lock.
-        Returns the pinned public key (so the caller can persist it in the
+        """Verify the node's identity cert (#102). Caller holds the lock.
+        Returns the verified public key (so the caller can persist and pin it in the
         heartbeat event), or None when the node presented no cert. Raises
         NodeIdentityError on an invalid cert, a pin violation (impersonation), a
         missing cert when required, or a cert-less heartbeat from a node that
@@ -279,7 +290,6 @@ class MeshRegistry:
             if pinned is not None and pinned != cert.public_key_b64:
                 raise NodeIdentityError(
                     f"node {node_id!r} is pinned to a different key — impersonation refused")
-            self._node_pubkeys[node_id] = cert.public_key_b64
             return cert.public_key_b64
         if self._require_node_identity:
             raise NodeIdentityError(f"node {node_id!r} must present an identity cert (required)")
@@ -292,8 +302,8 @@ class MeshRegistry:
     def record_heartbeat(self, req: HeartbeatPostRequest) -> HeartbeatPostResponse:
         with self._lock:
             pinned_pubkey = self._check_node_identity(req)
-            if req.node_url:
-                self._node_urls[req.heartbeat.node_id] = req.node_url
+            node_id = req.heartbeat.node_id
+            node_url = req.node_url or self._node_urls.get(node_id)
             self._record(
                 # SERVER-STAMP the event time (#102): a node controls
                 # `heartbeat.ts`, and using it for the unreachable/age calc let a
@@ -303,11 +313,17 @@ class MeshRegistry:
                 # ts is preserved in `heartbeat.heartbeat.ts` as telemetry.
                 HeartbeatEvent(
                     ts=self._clock(),
-                    node_url=req.node_url,
+                    # Persist the effective URL so compaction may safely drop
+                    # the earlier heartbeat that originally supplied it.
+                    node_url=node_url,
                     public_key_b64=pinned_pubkey,
                     heartbeat=req.heartbeat,
                 )
             )
+            if pinned_pubkey:
+                self._node_pubkeys[node_id] = pinned_pubkey
+            if node_url:
+                self._node_urls[node_id] = node_url
             if len(self._events) > self._max_events:
                 self._compact_heartbeats()
             return HeartbeatPostResponse(ack=True, next_due_seconds=5)

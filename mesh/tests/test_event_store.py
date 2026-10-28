@@ -167,3 +167,74 @@ def test_store_without_compact_still_works(spark_node, fresh_now, catalog):
         reg.record_heartbeat(HeartbeatPostRequest(heartbeat=hb, node_url="http://spark-1:8000/v1"))
     # in-memory compacted (bounded); durable store untouched by compaction → grew.
     assert len(reg._events) <= 2 and len(store.events) >= 4
+
+
+@pytest.mark.parametrize("store_type", [FakeStore, CompactingFakeStore])
+def test_omitted_heartbeat_url_survives_restart_and_compaction(
+    store_type, spark_node, fresh_now, catalog
+):
+    store = store_type()
+    reg = MeshRegistry(catalog, max_events=1, store=store, clock=lambda: fresh_now)
+    hb = make_heartbeat(spark_node, fresh_now, ["nemotron-math-7b-q4"], catalog)
+    url = "http://spark-1:8000/v1"
+    reg.record_heartbeat(HeartbeatPostRequest(heartbeat=hb, node_url=url))
+    reg.record_heartbeat(HeartbeatPostRequest(heartbeat=hb))
+
+    restarted = MeshRegistry(catalog, max_events=1, store=store, clock=lambda: fresh_now)
+    snap = restarted.snapshot(now=fresh_now)
+    assert snap.nodes[spark_node.node_id].node_url == url
+    assert snap.specialists["nemotron-math-7b-q4"][0].node_url == url
+
+    # The recovered fallback also survives another omitted URL and compaction.
+    restarted.record_heartbeat(HeartbeatPostRequest(heartbeat=hb))
+    again = MeshRegistry(catalog, store=store).snapshot(now=fresh_now)
+    assert again.nodes[spark_node.node_id].node_url == url
+
+
+def test_failed_heartbeat_does_not_replace_remembered_url(
+    monkeypatch, spark_node, fresh_now, catalog
+):
+    store = FakeStore()
+    reg = MeshRegistry(catalog, store=store, clock=lambda: fresh_now)
+    hb = make_heartbeat(spark_node, fresh_now, ["nemotron-math-7b-q4"], catalog)
+    original = "http://spark-1:8000/v1"
+    reg.record_heartbeat(HeartbeatPostRequest(heartbeat=hb, node_url=original))
+    reg.record_heartbeat(HeartbeatPostRequest(heartbeat=hb))
+
+    with monkeypatch.context() as patch:
+        patch.setattr(store, "append", RaisingStore().append)
+        with pytest.raises(RuntimeError, match="store down"):
+            reg.record_heartbeat(
+                HeartbeatPostRequest(heartbeat=hb, node_url="http://rejected:8000/v1")
+            )
+        assert reg.snapshot(now=fresh_now).nodes[spark_node.node_id].node_url == original
+
+    reg.record_heartbeat(HeartbeatPostRequest(heartbeat=hb))
+    assert reg.snapshot(now=fresh_now).nodes[spark_node.node_id].node_url == original
+
+
+def test_quality_observations_rebuild_catalog_after_restart(catalog):
+    store = FakeStore()
+    card = catalog[0].model_copy(
+        update={"quality_router_observed": 1.0, "quality_sample_count": 3}
+    )
+    reg = MeshRegistry([card], store=store)
+    for score, samples, source in [(2.5, 4, "synthetic"), (4.0, 7, "real_traffic")]:
+        reg.record_quality_observation(
+            specialist_id=card.specialist_id,
+            score=score,
+            sample_count=samples,
+            observation_source=source,
+        )
+
+    restarted = MeshRegistry([card], store=store)
+    recovered = restarted.snapshot().catalog[card.specialist_id]
+    assert recovered.quality_router_observed == 4.0
+    assert recovered.quality_sample_count == 14
+    assert recovered.quality_observation_source == "real_traffic"
+    prior, _ = restarted.record_quality_observation(
+        specialist_id=card.specialist_id, score=3.0, sample_count=1,
+        observation_source="shadow_traffic",
+    )
+    assert prior == 4.0
+    assert restarted.snapshot().catalog[card.specialist_id].quality_sample_count == 15

@@ -129,6 +129,34 @@ def test_pin_survives_registry_restart(spark_node, catalog, fresh_now):
         reg2.record_heartbeat(_req(spark_node, fresh_now, catalog, cert=None))
 
 
+def test_failed_durable_heartbeat_does_not_pin_identity(
+    monkeypatch, spark_node, catalog, fresh_now
+):
+    store = _MemStore()
+    reg = MeshRegistry(catalog, store=store)
+    rejected_key, _ = generate_node_keypair()
+
+    def fail_append(env):
+        raise RuntimeError("store down")
+
+    with monkeypatch.context() as patch:
+        patch.setattr(store, "append", fail_append)
+        with pytest.raises(RuntimeError, match="store down"):
+            reg.record_heartbeat(_req(
+                spark_node, fresh_now, catalog,
+                build_node_cert(spark_node.node_id, rejected_key),
+            ))
+    assert reg.events == []
+    assert store.envelopes == []
+
+    # No heartbeat was accepted, so another first identity may still join.
+    accepted_key, _ = generate_node_keypair()
+    assert reg.record_heartbeat(_req(
+        spark_node, fresh_now, catalog,
+        build_node_cert(spark_node.node_id, accepted_key),
+    )).ack
+
+
 # ── #108 peer challenge (sign/verify) ────────────────────────────────────────
 def test_challenge_sign_verify():
     from mesh.identity import sign_challenge, verify_challenge
