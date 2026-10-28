@@ -93,6 +93,20 @@ def test_discrete_nvidia_small_vram_picks_gguf():
     assert "gguf" in rec.quant
 
 
+def test_zero_free_vram_does_not_substitute_system_ram(monkeypatch):
+    from mesh.cli import build_plan
+
+    probe = _probe(cuda_capability="8.9", vram_available_gb=0.0)
+    monkeypatch.setattr("mesh.probe.probe_node", lambda: probe)
+    monkeypatch.setattr("mesh.cli.tailnet_status", lambda cfg: None)
+    monkeypatch.setattr("mesh.catalog.load_catalog", lambda: [])
+
+    plan = build_plan()
+
+    assert plan["recommended_engine"]["backend"] == "ollama"
+    assert "~0 GB" in plan["recommended_engine"]["rationale"]
+
+
 def test_cpu_only_picks_llamacpp():
     rec = recommend_engine(_probe(arch="x86_64", chip="xeon", cuda_capability=None))
     assert rec.backend in ("llamacpp", "ollama")

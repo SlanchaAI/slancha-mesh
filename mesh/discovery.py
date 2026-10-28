@@ -117,7 +117,8 @@ def parse_specialist_peers(
 
     if include_self:
         self_obj = data.get("Self")
-        if isinstance(self_obj, dict) and specialist_tag in (self_obj.get("Tags") or []):
+        self_tags = self_obj.get("Tags") if isinstance(self_obj, dict) else None
+        if isinstance(self_tags, list) and specialist_tag in self_tags:
             host = _host_of(self_obj)
             # Self is "this node"; treat as online (we're running on it).
             if host:
@@ -128,7 +129,8 @@ def parse_specialist_peers(
         for node in peer_map.values():
             if not isinstance(node, dict):
                 continue
-            if specialist_tag not in (node.get("Tags") or []):
+            tags = node.get("Tags")
+            if not isinstance(tags, list) or specialist_tag not in tags:
                 continue
             if not node.get("Online", False):
                 continue

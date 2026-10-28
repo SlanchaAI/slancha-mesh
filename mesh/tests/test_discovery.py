@@ -121,6 +121,27 @@ def test_parse_specialist_peers_empty_on_garbage():
     assert parse_specialist_peers({}) == []
 
 
+@pytest.mark.parametrize("tags", [1, True, "tag:specialist", "prefix-tag:specialist-suffix", {"tag:specialist": True}])
+@pytest.mark.parametrize("location", ["Self", "Peer"])
+def test_discover_skips_malformed_tags_without_losing_valid_peer(tags, location):
+    malformed = {"DNSName": "bad.ts.net.", "Online": True, "Tags": tags}
+    status = {"Peer": {"valid": _STATUS["Peer"]["nodekey:aaa"]}}
+    if location == "Self":
+        status["Self"] = malformed
+    else:
+        status["Peer"]["malformed"] = malformed
+    fetched = []
+
+    def fetch(host, port):
+        fetched.append(host)
+        return _models_payload("demo", 8000)
+
+    result = discover_specialists(status, fetch=fetch)
+
+    assert fetched == ["mac-mini.taila.ts.net"]
+    assert result.specialists["demo"].node_urls == ("http://mac-mini.taila.ts.net:8000",)
+
+
 # ---------------------------------------------------------------------------
 # pin_host — force the node_url host to the dialed peer
 # ---------------------------------------------------------------------------

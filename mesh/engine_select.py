@@ -58,7 +58,7 @@ class EngineRec:
 
 def _effective_gb(probe: NodeProbe) -> float:
     """Memory the model can actually use: discrete VRAM, else unified RAM."""
-    if probe.vram_available_gb:
+    if probe.vram_available_gb is not None:
         return probe.vram_available_gb
     if probe.unified_memory:
         return probe.ram_available_gb

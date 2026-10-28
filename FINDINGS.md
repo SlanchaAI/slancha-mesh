@@ -114,6 +114,18 @@ Baseline evidence: `mesh/allocator.py:259` updates cluster coverage while comput
 
 **Fixed:** keep independent rankings independent, filter replica candidates through the existing traffic gate, and check combined storage. Four regressions failed first. Seven new cases cover ordering, traffic threshold and exact disk boundaries; the real registry allocator caller records an unassigned node when only a cold tier-three model is available. Focused allocator/registry verification: 52 passed.
 
+### P2 — Zero available GPU memory is replaced with unrelated system RAM
+
+Baseline evidence: `mesh/engine_select.py:61` treats zero free VRAM as missing, then returns host RAM. A discrete NVIDIA node with zero free GPU memory and 48 GB RAM is recommended vLLM as though 48 GB GPU memory were available.
+
+**Fixed:** distinguish zero from None. Regression invokes the real onboarding `build_plan` caller with stubbed hardware/tailnet inputs and verifies the limited-memory recommendation and zero-GB rationale.
+
+### P2 — Malformed peer tags abort discovery or select untagged hosts
+
+Baseline evidence: `mesh/discovery.py:117` and `mesh/discovery.py:129` perform membership directly on unvalidated Tags values. Numeric values raise TypeError; strings use substring matching and dictionaries use keys, selecting malformed peer records as eligible specialists.
+
+**Fixed:** require the JSON array shape before tag membership for Self and Peer. Ten discovery regressions failed before the fix; tests verify a valid peer still fetches and aggregates while malformed peers are ignored. Combined engine/discovery/CLI checks: 78 passed.
+
 ### P3 — Corrupt sidecar encoding blocks classifier startup
 
 Baseline evidence: `mesh/classifier/cluster_head.py:220` reads UTF-8 but catches only OSError. Invalid UTF-8 escapes the documented inert-on-load-failure contract and reaches auto-router startup (`mesh/classifier/auto.py:122`).
