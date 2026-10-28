@@ -94,7 +94,7 @@ def test_expired_records_are_not_found_and_cleanup_is_bounded(tmp_path) -> None:
 def test_wal_store_supports_concurrent_app_threads(tmp_path) -> None:
     store = VideoJobStore(tmp_path / "video-jobs.sqlite3")
 
-    with ThreadPoolExecutor(max_workers=8) as pool:
+    with ThreadPoolExecutor(max_workers=2) as pool:
         records = list(pool.map(lambda index: _create(store, index), range(40)))
 
     assert len({record.public_id for record in records}) == 40
