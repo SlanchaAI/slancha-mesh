@@ -85,8 +85,15 @@ jobs:
         run: |
           set -euo pipefail
           mkdir .venv-router
-          trap 'rm -rf .venv-router' EXIT
+          core_scratch="$(mktemp -d .release-boundary.XXXXXX)"
+          tune_scratch="$(mktemp -d packages/slancha-mesh-tune/.release-boundary.XXXXXX)"
+          trap 'rm -rf .venv-router "$core_scratch" "$tune_scratch"' EXIT
           printf 'must-not-ship\n' > .venv-router/release-artifact-sentinel.txt
+          for scratch in "$core_scratch" "$tune_scratch"; do
+            mkdir -p "$scratch/tests/mesh"
+            printf 'must-not-ship\n' > "$scratch/tests/LICENSE"
+            printf 'must_not_ship = True\n' > "$scratch/tests/mesh/local_only.py"
+          done
           uv build --package slancha-mesh --out-dir dist/core
           uv build --package slancha-mesh-tune --out-dir dist/tune
 

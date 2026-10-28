@@ -156,6 +156,12 @@ Baseline evidence: `mesh/router_app.py:1454` creates an AsyncClient for producti
 
 **Fixed:** close the owned client during shutdown while preserving injected client ownership. A lifecycle regression failed before the fix; a companion case proves injected clients remain open for their caller. No network or live service involved.
 
+### P2 — Source archives include unrelated local files
+
+Baseline evidence: `pyproject.toml:118` and `packages/slancha-mesh-tune/pyproject.toml:67` use unanchored source-distribution include patterns. Hatch treats them as gitignore patterns: `mesh` matches nested directories anywhere, and `LICENSE` matches unrelated nested license files. Local build-cache licenses appeared in the core source archive. A private scratch tree containing `tests/mesh/local_only.py` was included in both source archives; the existing release validator rejected all three sentinel paths before the fix.
+
+**Fixed:** anchor source-distribution includes at each package root. Extend the existing CI package-boundary test with unrelated nested license and mesh sentinels. No build dependency changed. Rebuild both wheels from their source distributions and run the existing archive validator to verify the real release path.
+
 ### P3 — Corrupt sidecar encoding blocks classifier startup
 
 Baseline evidence: `mesh/classifier/cluster_head.py:220` reads UTF-8 but catches only OSError. Invalid UTF-8 escapes the documented inert-on-load-failure contract and reaches auto-router startup (`mesh/classifier/auto.py:122`).

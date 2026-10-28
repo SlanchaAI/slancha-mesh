@@ -52,7 +52,7 @@ packages = ["mesh"]
 "NOTICE" = "NOTICE"
 
 [tool.hatch.build.targets.sdist]
-include = ["mesh", "README.md", "pyproject.toml"]
+include = ["/mesh", "/README.md", "/pyproject.toml"]
 
 [tool.hatch.build.targets.sdist.force-include]
 "LICENSE" = "LICENSE"
