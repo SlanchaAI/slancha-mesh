@@ -243,6 +243,31 @@ def test_discover_keeps_valid_url_when_another_is_malformed():
     assert all("evil.example" not in u for u in spec.node_urls)  # still host-pinned
 
 
+@pytest.mark.parametrize("bad_data", [1, True, "not-a-list", {"id": "bad"}])
+def test_malformed_model_list_does_not_abort_other_peers(bad_data):
+    def fetch(host, port):
+        if host == "mac-mini.taila.ts.net":
+            return {"data": bad_data}
+        return _models_payload("good", 8003)
+
+    result = discover_specialists(_STATUS, fetch)
+    assert set(result.specialists) == {"good"}
+
+
+@pytest.mark.parametrize(("field", "value"), [
+    ("node_urls", 123), ("node_urls", "http://evil.example:8003"),
+    ("quality", 123), ("quality", ["not-a-mapping"]),
+    ("capabilities", 123), ("capabilities", "streaming"),
+])
+def test_malformed_model_metadata_does_not_discard_valid_entries(field, value):
+    payload = _models_payload("bad", 8003)
+    payload["data"][0]["routing_meta"][field] = value
+    payload["data"].extend(_models_payload("good", 8004)["data"])
+    result = discover_specialists(_STATUS, lambda host, port: payload)
+    assert set(result.specialists) == {"good"}
+    assert len(result.specialists["good"].node_urls) == 2
+
+
 # ---------------------------------------------------------------------------
 # LAN-only mode — `--peer` synthesizes a tailscale-status shape
 # ---------------------------------------------------------------------------

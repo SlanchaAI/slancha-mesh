@@ -124,6 +124,16 @@ def test_run_allocator_uses_latest_hardware(spark_node, catalog, fresh_now):
     assert out[spark_node.node_id] is not None
 
 
+def test_allocator_excludes_departed_node_until_it_rejoins(spark_node, catalog, fresh_now):
+    reg = MeshRegistry(catalog=catalog)
+    req = HeartbeatPostRequest(heartbeat=make_heartbeat(spark_node, fresh_now, [], catalog))
+    reg.record_heartbeat(req)
+    reg.record_node_left(spark_node.node_id)
+    assert reg.run_allocator(strategy="tiered") == {}
+    reg.record_heartbeat(req)
+    assert reg.run_allocator(strategy="tiered")[spark_node.node_id] is not None
+
+
 # ─── heartbeat-log compaction (unbounded-growth fix) ─────────────────────────
 
 

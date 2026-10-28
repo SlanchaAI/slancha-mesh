@@ -534,7 +534,7 @@ async def _proxy_json_media(
     if upstream.status_code >= 500:
         runtime_health.record_failure(key, f"http_{upstream.status_code}")
     elif upstream.status_code >= 400:
-        runtime_health.record_client_error()
+        runtime_health.record_client_error(key)
     else:
         runtime_health.record_success(key, latency_ms)
     return Response(
@@ -815,7 +815,7 @@ async def _proxy_multipart_media(
     if upstream.status_code >= 500:
         runtime_health.record_failure(key, f"http_{upstream.status_code}")
     elif upstream.status_code >= 400:
-        runtime_health.record_client_error()
+        runtime_health.record_client_error(key)
     else:
         runtime_health.record_success(key, latency_ms)
     response_headers = _media_audit_headers(
@@ -1314,7 +1314,7 @@ async def _proxy_stream_with_fallback(
         if upstream_status >= 500:
             runtime_health.record_failure(key, f"http_{upstream_status}")
         elif upstream_status >= 400:
-            runtime_health.record_client_error()
+            runtime_health.record_client_error(key)
         fallback_fired = idx > 0
         slancha_headers = {
             "X-Slancha-Specialist": specialist_id,
@@ -2111,7 +2111,7 @@ def create_router_app(
                         local_attempts=1,
                     )
                 if upstream.status_code >= 400:
-                    resolved_runtime.record_client_error()
+                    resolved_runtime.record_client_error(key)
                     return _video_upstream_error(
                         binding=binding,
                         status_code=upstream.status_code,
@@ -2261,7 +2261,7 @@ def create_router_app(
                     local_attempts=1,
                 )
             if upstream_status_code >= 400:
-                resolved_runtime.record_client_error()
+                resolved_runtime.record_client_error(key)
                 return _video_upstream_error(
                     binding=binding,
                     status_code=upstream_status_code,
@@ -2365,7 +2365,7 @@ def create_router_app(
             )
         if upstream.status_code >= 400:
             await upstream.aclose()
-            resolved_runtime.record_client_error()
+            resolved_runtime.record_client_error(key)
             return _video_upstream_error(
                 binding=owner,
                 status_code=upstream.status_code,
@@ -2576,7 +2576,7 @@ def create_router_app(
                     local_attempts=1,
                 )
             if upstream_status_code >= 400:
-                resolved_runtime.record_client_error()
+                resolved_runtime.record_client_error(key)
                 return _video_upstream_error(
                     binding=owner,
                     status_code=upstream_status_code,
@@ -2839,7 +2839,7 @@ def create_router_app(
             if upstream.status_code >= 500:
                 resolved_runtime.record_failure(key, f"http_{upstream.status_code}")
             elif upstream.status_code >= 400:
-                resolved_runtime.record_client_error()
+                resolved_runtime.record_client_error(key)
             else:
                 resolved_runtime.record_success(key, latency_ms)
             position = "primary" if idx == 0 else f"fallback#{idx}"

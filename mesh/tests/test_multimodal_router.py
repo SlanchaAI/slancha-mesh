@@ -109,6 +109,42 @@ def _client(snapshot: RegistrySnapshot, handler) -> TestClient:
     )
 
 
+@pytest.mark.parametrize("multipart", [False, True])
+def test_media_client_error_releases_half_open_binding(multipart):
+    from mesh.runtime_health import RouterRuntimeHealth, binding_key
+
+    now = [10.0]
+    runtime = RouterRuntimeHealth(failure_threshold=1, cooldown_s=5, clock=lambda: now[0])
+    runtime.record_failure(binding_key(SPECIALIST_ID, "media-node"), "timeout")
+    now[0] += 5
+    statuses = iter((400, 200))
+
+    def handler(request):
+        return httpx.Response(next(statuses), json={"text": "ok", "data": []})
+
+    protocol_id = "openai.audio.transcriptions.v1" if multipart else "openai.images.generations.v1"
+    snapshot = _snapshot(capabilities=[f"protocol:{protocol_id}"])
+    upstream = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    app = create_router_app(
+        snapshot_source=lambda: snapshot, http_client=upstream, runtime_health=runtime,
+    )
+    with TestClient(app) as client:
+        def send():
+            if multipart:
+                return client.post(
+                    "/v1/audio/transcriptions", data={"model": SPECIALIST_ID},
+                    files={"file": ("audio.wav", b"RIFF", "audio/wav")},
+                )
+            return client.post(
+                "/v1/images/generations", json={"model": SPECIALIST_ID, "prompt": "cube"},
+            )
+
+        assert send().status_code == 400
+        assert send().status_code == 200
+    assert runtime.snapshot()["client_errors"] == 1
+    assert runtime.snapshot()["open_circuits"] == 0
+
+
 def _multipart_parts(request: httpx.Request) -> list[dict[str, Any]]:
     """Decode an outbound multipart request with the stdlib MIME parser."""
 

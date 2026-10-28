@@ -195,7 +195,10 @@ def _specialists_from_models(payload: dict, peer_host: str) -> list[DiscoveredSp
     advertised port are skipped (a card with no live binding isn't routable).
     """
     out: list[DiscoveredSpecialist] = []
-    for entry in payload.get("data", []) or []:
+    entries = payload.get("data", [])
+    if not isinstance(entries, list):
+        return out
+    for entry in entries:
         if not isinstance(entry, dict):
             continue
         spec_id = entry.get("id")
@@ -205,6 +208,10 @@ def _specialists_from_models(payload: dict, peer_host: str) -> list[DiscoveredSp
         if not isinstance(meta, dict):
             continue
         raw_urls = meta.get("node_urls") or []
+        quality = meta.get("quality") or {}
+        capabilities = meta.get("capabilities") or []
+        if not isinstance(raw_urls, list) or not isinstance(quality, dict) or not isinstance(capabilities, list):
+            continue
         pinned_urls: list[str] = []
         for u in raw_urls:
             if not isinstance(u, str) or not u:
@@ -219,13 +226,12 @@ def _specialists_from_models(payload: dict, peer_host: str) -> list[DiscoveredSp
         pinned = tuple(dict.fromkeys(pinned_urls))
         if not pinned:
             continue  # advertised but no reachable binding
-        quality = meta.get("quality") or {}
         out.append(
             DiscoveredSpecialist(
                 specialist_id=spec_id,
                 model_id=meta.get("model_id"),
                 domain=meta.get("domain"),
-                capabilities=tuple(meta.get("capabilities") or []),
+                capabilities=tuple(capabilities),
                 quality_router_observed=quality.get("router_observed"),
                 node_urls=pinned,
             )

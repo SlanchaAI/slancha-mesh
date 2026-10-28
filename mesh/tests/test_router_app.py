@@ -1042,6 +1042,36 @@ def test_successful_half_open_request_restores_routable_capacity():
     assert health["requests_succeeded"] == 1
 
 
+@pytest.mark.parametrize("stream", [False, True])
+def test_client_error_during_half_open_probe_does_not_strand_binding(stream):
+    now = [10.0]
+    sid = "qwen2.5-coder-7b-q4-ollama"
+    snap = _snapshot(
+        cards=[_card(specialist_id=sid)],
+        bindings={sid: [_binding(specialist_id=sid)]},
+    )
+    runtime = RouterRuntimeHealth(failure_threshold=1, cooldown_s=5, clock=lambda: now[0])
+    statuses = iter((503, 400, 200))
+    calls = []
+
+    def handler(request):
+        code = next(statuses)
+        calls.append(code)
+        return httpx.Response(code, json={"id": "response"})
+
+    client = _client(snap, handler, runtime_health=runtime)
+    body = {"model": sid, "messages": [], "stream": stream}
+    assert client.post("/v1/chat/completions", json=body).status_code == 503
+    now[0] += 5
+    assert client.post("/v1/chat/completions", json=body).status_code == 400
+    assert client.post("/v1/chat/completions", json=body).status_code == 200
+    assert calls == [503, 400, 200]
+    health = client.get("/health").json()
+    assert health["open_circuits"] == 0
+    assert health["client_errors"] == 1
+    assert health["requests_succeeded"] == 1
+
+
 def test_upstream_content_type_is_allowlisted(monkeypatch):
     """#109: a malicious node's content-type (e.g. text/html) is not relayed —
     only known-safe OpenAI media types pass; else a safe default."""

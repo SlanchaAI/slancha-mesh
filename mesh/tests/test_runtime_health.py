@@ -68,6 +68,17 @@ def test_client_errors_do_not_penalize_node_and_counters_are_visible():
     assert health.snapshot()["punts"] == 1
 
 
+def test_local_validation_error_does_not_release_an_inflight_probe():
+    clock = FakeClock()
+    health = RouterRuntimeHealth(failure_threshold=1, cooldown_s=5, clock=clock)
+    key = binding_key("code", "node")
+    health.record_failure(key, "timeout")
+    clock.advance(5)
+    assert health.is_routable(key)
+    health.record_client_error()
+    assert not health.is_routable(key)
+
+
 def test_snapshot_is_bounded_and_never_contains_request_content():
     health = RouterRuntimeHealth(
         failure_threshold=1,

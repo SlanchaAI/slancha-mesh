@@ -46,6 +46,26 @@ Baseline evidence: `mesh/registry.py:249` replays events without applying qualit
 
 Verification for these three findings: five regression cases failed before fixes; focused registry/identity/API/concurrency tests passed (80); full suite passed (1,259 passed, 19 skipped, six existing stub-training warnings).
 
+### P2 — Malformed peer metadata aborts discovery or creates bogus routes
+
+Baseline evidence: `mesh/discovery.py:198` iterates an unchecked `data` value; baseline lines 212, 227 and 233 assume URL/capability lists and a quality mapping. Integer values raise; a URL string is iterated character by character and produces bogus pinned URLs. One peer can interrupt refresh for every specialist.
+
+**Fixed:** check container shapes before parsing, discard malformed entries, and continue with valid entries/peers. Eight cases failed before fixing; expanded discovery tests now cover scalar model lists and malformed metadata alongside healthy models.
+
+### P2 — Client errors permanently strand half-open circuit probes
+
+Baseline evidence: `mesh/runtime_health.py:87` refuses every further request in `half_open`; baseline `mesh/runtime_health.py:129` counts client errors without releasing a probe. Chat/media upstream 4xx call that unkeyed method (baseline `mesh/router_app.py:1317`, `mesh/router_app.py:2842`). Once a recovering backend returns a request-specific 400, it stays unavailable indefinitely.
+
+**Fixed:** carry the binding key for upstream client errors and close a responding half-open circuit without counting a successful inference. Local validation errors remain unkeyed. Streaming/non-streaming chat regressions failed before fixing; JSON/multipart media caller tests and a local-error isolation test expand coverage.
+
+### P2 — Allocator assigns specialists to departed nodes
+
+Baseline evidence: `mesh/registry.py:545` reconstructs hardware from heartbeats but ignores subsequent `NodeLeftEvent`, although snapshot replay removes those nodes. This can consume allocation coverage on a machine that left.
+
+**Fixed:** remove departed hardware during allocator replay; a later heartbeat restores eligibility. Depart/rejoin regression failed before fixing.
+
+Verification for discovery, circuit recovery and departed-node allocation: 11 cases failed before fixes; full suite now passes (1,291 passed, 19 skipped, six existing warnings). Changed-file lint and whitespace checks pass.
+
 ## Module map
 
 - Entry points: `mesh/cli.py`, `mesh/serve.py`, `mesh/service_install.py`, `mesh/router_bootstrap.py`.

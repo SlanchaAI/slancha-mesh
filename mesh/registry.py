@@ -541,6 +541,8 @@ class MeshRegistry:
             for ev in self._events:
                 if isinstance(ev, HeartbeatEvent):
                     latest_hardware[ev.heartbeat.node_id] = ev.heartbeat.hardware
+                elif isinstance(ev, NodeLeftEvent):
+                    latest_hardware.pop(ev.node_id, None)
             nodes = list(latest_hardware.values())
             catalog = list(self._catalog.values())
         suggestions = allocate_cluster(

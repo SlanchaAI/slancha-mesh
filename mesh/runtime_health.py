@@ -126,9 +126,21 @@ class RouterRuntimeHealth:
                 state.opened_at = now
             self._requests_failed += 1
 
-    def record_client_error(self) -> None:
+    def record_client_error(self, key: str | None = None) -> None:
+        """Count a rejected request, releasing an upstream's half-open probe.
+
+        An upstream 4xx proves that it can respond, without counting the
+        rejected request as a successful inference. Local validation errors
+        have no binding and only increment the counter.
+        """
         with self._lock:
             self._client_errors += 1
+            state = self._bindings.get(key) if key is not None else None
+            if state is not None and state.state == "half_open":
+                state.state = "closed"
+                state.consecutive_failures = 0
+                state.opened_at = None
+                state.last_failure_class = ""
 
     def record_punt(self) -> None:
         with self._lock:
