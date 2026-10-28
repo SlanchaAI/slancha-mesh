@@ -133,6 +133,35 @@ def test_require_signature_with_valid_signature_accepts(tmp_path: Path):
     assert len(seed.records) == 4
 
 
+def test_signed_seed_uses_the_bytes_whose_hash_was_verified(tmp_path, monkeypatch):
+    import mesh.eval.seed_verify as verifier
+
+    nacl = pytest.importorskip("nacl.signing")
+    jsonl, manifest_path, manifest = _write_seed(tmp_path)
+    original_records = [json.loads(line) for line in jsonl.read_text().splitlines()]
+    signing = nacl.SigningKey.generate()
+    signer = "did:example:trusted"
+    manifest["signature"] = {
+        "signer_did": signer,
+        "sig_b64": base64.b64encode(signing.sign(_canonical_manifest_bytes(manifest)).signature).decode("ascii"),
+    }
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    verify = verifier._verify_ed25519
+
+    def verify_then_replace(**kwargs):
+        verify(**kwargs)
+        jsonl.write_text('{"prompt_id":"unverified","prompt_text":"replacement"}\n', encoding="utf-8")
+
+    monkeypatch.setattr(verifier, "_verify_ed25519", verify_then_replace)
+
+    seed = load_verified_holdout(
+        jsonl, manifest_path, require_signature=True,
+        trusted_signers={signer: bytes(signing.verify_key)},
+    )
+
+    assert seed.records == original_records
+
+
 def test_require_signature_with_tampered_signature_refuses(tmp_path: Path):
     nacl = pytest.importorskip("nacl.signing")
     jsonl, manifest_path, manifest = _write_seed(tmp_path)

@@ -58,14 +58,6 @@ def _canonical_manifest_bytes(manifest: dict[str, Any]) -> bytes:
     return json.dumps(canon, sort_keys=True, separators=(",", ":")).encode("utf-8")
 
 
-def _sha256_file(path: Path) -> str:
-    h = hashlib.sha256()
-    with path.open("rb") as f:
-        for chunk in iter(lambda: f.read(1 << 16), b""):
-            h.update(chunk)
-    return h.hexdigest()
-
-
 def _verify_ed25519(
     signer_did: str,
     sig_b64: str,
@@ -141,7 +133,10 @@ def load_verified_holdout(
         raise SeedVerificationError(
             "manifest is missing output_sha256 — refusing to load"
         )
-    got_sha = _sha256_file(jsonl_path)
+    # Parse this exact immutable snapshot after verification. Reopening the
+    # path would let a concurrent replacement supply unverified records.
+    content = jsonl_path.read_bytes()
+    got_sha = hashlib.sha256(content).hexdigest()
     if got_sha != expected_sha:
         raise SeedVerificationError(
             f"holdout sha256 mismatch: manifest says {expected_sha[:16]}…, "
@@ -171,10 +166,15 @@ def load_verified_holdout(
             trusted_signers=trusted_signers,
         )
 
-    # Re-use the existing loader for record parsing
-    from mesh.eval.holdout import iter_jsonl
-
-    records = iter_jsonl(jsonl_path)
+    records = []
+    for i, raw in enumerate(content.decode("utf-8").split("\n"), start=1):
+        raw = raw.strip()
+        if not raw:
+            continue
+        try:
+            records.append(json.loads(raw))
+        except json.JSONDecodeError as exc:
+            raise ValueError(f"{jsonl_path}: invalid JSON at line {i} ({exc})") from exc
     return VerifiedSeed(
         records=records,
         manifest=manifest,

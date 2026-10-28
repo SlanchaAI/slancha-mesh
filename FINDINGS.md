@@ -84,6 +84,12 @@ Baseline evidence: `packages/slancha-mesh-tune/mesh/eval/gate.py:198` compares s
 
 **Fixed:** reject non-finite mean and domain scores on either side. Tests cover NaN and both infinities for both records and exercise the CLI's recorded rejection. No training or promotion executed.
 
+### P2 — Verified holdout parsing reopens mutable input after integrity checks
+
+Baseline evidence: `packages/slancha-mesh-tune/mesh/eval/seed_verify.py:144` hashes the JSONL path, verifies the signed manifest, then line 179 reopens the path through `iter_jsonl`. Replacing the file between verification and parsing loads records whose bytes never matched the trusted manifest. The evaluation CLI consumes this result at `eval/runner.py:468`.
+
+**Fixed:** hash and parse one immutable byte snapshot. Deterministic regression verifies a genuine Ed25519 signature, replaces the file immediately afterward, and proves the returned records still match the verified bytes. It failed before the fix. Holdout/verification/runner checks: 50 passed. Read-only security review confirmed no second JSONL read remains; memory now includes the raw seed bytes alongside parsed records.
+
 ### P2 — Malformed node ports pass ingest validation
 
 Baseline evidence: `mesh/url_guard.py:87` parses URLs without reading the lazily validated `port`. Non-numeric/out-of-range ports enter routing state and can raise client URL errors during requests. Invalid IPv6 instead leaks a generic ValueError from a function promising NodeUrlError.
