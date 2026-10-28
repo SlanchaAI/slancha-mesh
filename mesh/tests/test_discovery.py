@@ -335,3 +335,21 @@ def test_discover_via_synthesized_lan_status_honors_custom_tag():
     peers_lab = parse_specialist_peers(status, specialist_tag="tag:lab-host")
     assert len(peers_lab) == 1
     assert peers_lab[0].host == "10.0.0.5"
+
+
+@pytest.mark.parametrize('host', ['2001:db8::1', '[2001:db8::1]'])
+def test_ipv6_lan_peer_uses_bracketed_urls(monkeypatch, host):
+    import httpx
+    from mesh.discovery import make_http_fetch, synthesize_lan_status
+
+    urls = []
+
+    def get_stub(url, **kwargs):
+        urls.append(url)
+        return httpx.Response(200, json={'data': [{'id': 'spec', 'routing_meta': {
+            'node_urls': ['http://127.0.0.1:8001/v1']}}]})
+
+    monkeypatch.setattr(httpx, 'get', get_stub)
+    result = discover_specialists(synthesize_lan_status([host]), make_http_fetch())
+    assert urls == ['http://[2001:db8::1]:8088/models']
+    assert result.specialists['spec'].node_urls == ('http://[2001:db8::1]:8001/v1',)

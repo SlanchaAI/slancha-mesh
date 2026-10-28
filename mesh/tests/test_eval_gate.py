@@ -253,3 +253,26 @@ def test_append_verdict_writes_jsonl(tmp_path: Path):
 
 # pytest import is at the bottom so the helpers above stay near the top
 import pytest  # noqa: E402
+
+
+@pytest.mark.parametrize('value', [float('nan'), float('inf'), float('-inf')])
+@pytest.mark.parametrize('side', ['champion', 'challenger'])
+@pytest.mark.parametrize('field', ['mean_score', 'per_domain_mean'])
+def test_rejects_nonfinite_scores(value, side, field):
+    champ = _row('v1', 3.5, {'code': 3.5})
+    chall = _row('v2', 3.8, {'code': 3.8})
+    row = champ if side == 'champion' else chall
+    row[field] = value if field == 'mean_score' else {'code': value}
+    verdict = decide(champ, chall)
+    assert verdict.accept is False
+    assert any('finite' in reason for reason in verdict.reject_reasons)
+
+
+def test_gate_cli_rejects_nonfinite_challenger(tmp_path):
+    from mesh.eval.gate import main
+
+    source, log = tmp_path / 'eval.jsonl', tmp_path / 'promotions.jsonl'
+    source.write_text('\n'.join(json.dumps(row) for row in [_row('v1', 3.5), _row('v2', float('nan'))]))
+    assert main(['--eval-jsonl', str(source), '--champion', 'v1', '--challenger', 'v2',
+                 '--promotions-log', str(log)]) == 1
+    assert json.loads(log.read_text())['accept'] is False

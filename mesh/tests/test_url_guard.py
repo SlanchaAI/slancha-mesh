@@ -110,3 +110,9 @@ def test_loaded_model_ingest_rejects_poisoned_node_url():
     for bad in ("http://169.254.169.254/", "file:///etc/passwd"):
         with pytest.raises(ValidationError):
             LoadedModel(**base, node_url=bad)
+
+
+@pytest.mark.parametrize('url', ['http://node.test:bad', 'http://node.test:65536', 'http://node.test:-1', 'http://[::1', 'http://::1:8001'])
+def test_malformed_url_raises_domain_error(url):
+    with pytest.raises(NodeUrlError):
+        validate_node_url(url)

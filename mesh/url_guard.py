@@ -67,7 +67,12 @@ def _as_ip(host: str) -> ipaddress._BaseAddress | None:
 
 def validate_node_url(url: str) -> str:
     """Return ``url`` unchanged if safe to dial, else raise ``NodeUrlError``."""
-    parts = urlsplit(url)
+    try:
+        parts = urlsplit(url)
+        # urlsplit defers validation of the port until this property is read.
+        _ = parts.port
+    except ValueError as exc:
+        raise NodeUrlError(f"node_url is malformed: {exc}") from exc
     if parts.scheme not in ("http", "https"):
         raise NodeUrlError(f"node_url scheme must be http/https, got {parts.scheme or '(none)'!r}")
     host = parts.hostname

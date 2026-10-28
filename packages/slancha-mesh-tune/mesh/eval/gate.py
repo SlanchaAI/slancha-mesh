@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import os
 import sys
 import time
@@ -172,6 +173,15 @@ def decide(
     )
 
     reasons: list[str] = []
+    for label, mean, domains in (
+        ("champion", champion_mean, champion_per_dom),
+        ("challenger", challenger_mean, challenger_per_dom),
+    ):
+        if not math.isfinite(mean):
+            reasons.append(f"{label} mean_score must be finite")
+        for domain, score in domains.items():
+            if not math.isfinite(float(score)):
+                reasons.append(f"{label} per_domain_mean[{domain!r}] must be finite")
 
     if champ_stub:
         reasons.append("champion stub artifact cannot be promoted")

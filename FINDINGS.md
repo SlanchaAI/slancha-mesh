@@ -78,6 +78,24 @@ Baseline evidence: `mesh/quality_probe.py:153` matches individual digits inside 
 
 **Fixed:** tokenize the first number and require an exact 0–5 integer token. This is output syntax validation, not semantic grading or an adversarial-output defense. Existing supported prose remains accepted. Fourteen regressions across these quality-probe findings failed before fixes.
 
+### P2 — Non-finite evaluation scores bypass promotion checks
+
+Baseline evidence: `packages/slancha-mesh-tune/mesh/eval/gate.py:198` compares score deltas without checking finiteness. NaN comparisons are false, allowing a NaN challenger mean or domain score to produce ACCEPT. The CLI accepts JSON NaN; `loop_runner.py:471` invokes promotion on an accepting verdict.
+
+**Fixed:** reject non-finite mean and domain scores on either side. Tests cover NaN and both infinities for both records and exercise the CLI's recorded rejection. No training or promotion executed.
+
+### P2 — Malformed node ports pass ingest validation
+
+Baseline evidence: `mesh/url_guard.py:87` parses URLs without reading the lazily validated `port`. Non-numeric/out-of-range ports enter routing state and can raise client URL errors during requests. Invalid IPv6 instead leaks a generic ValueError from a function promising NodeUrlError.
+
+**Fixed:** force port validation and normalize parse errors to NodeUrlError. Regression covers malformed IPv6, non-numeric, negative and oversized ports.
+
+### P2 — IPv6 LAN discovery produces invalid authorities
+
+Baseline evidence: `mesh/discovery.py:153` and `mesh/discovery.py:321` interpolate raw peer hosts into URL authorities without IPv6 brackets. Explicit IPv6 LAN peers therefore cannot be fetched or routed.
+
+**Fixed:** bracket bare IPv6 hosts at both seams; retain already bracketed hosts. Caller test runs synthesized LAN status through HTTP discovery and verifies both fetch and routed URLs.
+
 ## Module map
 
 - Entry points: `mesh/cli.py`, `mesh/serve.py`, `mesh/service_install.py`, `mesh/router_bootstrap.py`.

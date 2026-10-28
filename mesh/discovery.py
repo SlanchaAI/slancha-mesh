@@ -158,6 +158,8 @@ def pin_host(node_url: str, peer_host: str) -> str:
     """
     parts = urlsplit(node_url)
     port = parts.port
+    if ":" in peer_host and not peer_host.startswith("["):
+        peer_host = f"[{peer_host}]"
     netloc = f"{peer_host}:{port}" if port is not None else peer_host
     return urlunsplit((parts.scheme or "http", netloc, parts.path, parts.query, parts.fragment))
 
@@ -307,7 +309,8 @@ def make_http_fetch(
     pins: dict[str, str] = {}  # host -> pinned public_key_b64 (TOFU, per fetcher)
 
     def fetch(host: str, port: int) -> dict | None:
-        url = f"{scheme}://{host}:{port}{path}"
+        url_host = f"[{host}]" if ":" in host and not host.startswith("[") else host
+        url = f"{scheme}://{url_host}:{port}{path}"
         req_headers = dict(headers)
         nonce = None
         if verify_peers:
