@@ -121,6 +121,14 @@ class TrafficReplayStore:
         with self._lock:
             if h in self._entries:
                 existing = self._entries[h]
+                if (
+                    existing.oracle_response != oracle_response
+                    or existing.domain != domain
+                    or (served_by_specialist is not None
+                        and existing.served_by_specialist != served_by_specialist)
+                ):
+                    existing.judge_score = None
+                    existing.judge_source = None
                 # Update fields but keep original insertion slot
                 existing.oracle_response = oracle_response
                 existing.domain = domain

@@ -180,6 +180,12 @@ Baseline evidence: `packages/slancha-mesh-tune/mesh/feedback.py:77` compares num
 
 **Fixed:** reject non-finite float values, revalidate values at application, and match the proposal hash against the accepted verdict before any registry write. Five regressions failed first, including gate → diff mutation → promotion against a private registry. Focused feedback/gate/loop checks: 87 passed. This existing optional API currently has test callers only; no new production integration or auto-promotion added.
 
+### P2 — Replay updates retain grades for a different answer or owner
+
+Baseline evidence: `packages/slancha-mesh-tune/mesh/replay_store.py:133` replaces a duplicate prompt's response/domain/specialist without clearing judge fields. `mesh/grading.py:93` skips every labeled entry, so replacement answers are never graded and may train with the old answer's quality label.
+
+**Fixed:** invalidate the cached grade when its response, domain or explicit specialist changes; preserve it for identical observations. Three regressions failed first through the real replay/grading API. Grading/replay/training checks: 56 passed, six existing stub warnings. Scorers and registry outputs use test doubles; no model call or training occurred.
+
 ### P3 — Corrupt sidecar encoding blocks classifier startup
 
 Baseline evidence: `mesh/classifier/cluster_head.py:220` reads UTF-8 but catches only OSError. Invalid UTF-8 escapes the documented inert-on-load-failure contract and reaches auto-router startup (`mesh/classifier/auto.py:122`).
