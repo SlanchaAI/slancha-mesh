@@ -796,7 +796,9 @@ class LlamaCppBackend:
             return out
         if isinstance(data, dict):
             processing = data.get("slots_processing")
-            if isinstance(processing, (int, float)):
+            if isinstance(processing, int) or (
+                isinstance(processing, float) and math.isfinite(processing)
+            ):
                 out["running"] = int(processing)
         return out
 

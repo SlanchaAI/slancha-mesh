@@ -136,7 +136,7 @@ Baseline evidence: `mesh/discovery.py:117` and `mesh/discovery.py:129` perform m
 
 Baseline evidence: `mesh/backends.py:317` accepts NaN/infinity as floats, then lines 338/342 convert them to integers. ValueError/OverflowError escapes `ServeDaemon.heartbeat` at `mesh/serve.py:196`, interrupting heartbeat updates. Non-finite cache ratios also leak into utilization output.
 
-**Fixed:** ignore non-finite metric values. Twelve cases first failed through the real daemon heartbeat caller, using stubbed HTTP responses; ordinary valid metrics retain existing coverage.
+**Fixed:** ignore non-finite metric values. Twelve cases first failed through the real daemon heartbeat caller, using stubbed HTTP responses; ordinary valid metrics retain existing coverage. Further inspection found the same conversion failure in llama.cpp's `slots_processing` handling at baseline `mesh/backends.py:779`: three additional NaN/infinity regressions failed through the heartbeat caller before adding its finite-value guard. Combined discovery/live-socket/backend/daemon checks passed (61).
 
 ### P2 — Malformed Ollama model lists escape best-effort polling
 

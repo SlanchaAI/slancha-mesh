@@ -77,6 +77,38 @@ def test_llamacpp_construction_exposes_urls_and_name():
     assert be.name == "llamacpp"
 
 
+@pytest.mark.parametrize("processing", [float("nan"), float("inf"), float("-inf")])
+def test_llamacpp_nonfinite_utilization_does_not_break_heartbeat(monkeypatch, spark_node, processing):
+    import httpx
+
+    from mesh.serve import ServeDaemon
+
+    # A permissive JSON decoder can receive these non-standard numeric tokens.
+    class Response:
+        status_code = 200
+
+        def json(self):
+            return {"slots_processing": processing}
+
+    monkeypatch.setattr(httpx, "get", lambda *a, **k: Response())
+    monkeypatch.setattr(LlamaCppBackend, "is_alive", lambda self: True)
+    backend = LlamaCppBackend(card=_card())
+    heartbeat = ServeDaemon(backends=[backend], probe=spark_node).heartbeat()
+    assert heartbeat.health == "healthy"
+    assert backend.utilization() == {"queue_depth": 0, "running": 0}
+
+
+def test_llamacpp_large_integer_gauge_does_not_overflow_float_conversion(monkeypatch):
+    class Response:
+        status_code = 200
+
+        def json(self):
+            return {"slots_processing": 10 ** 400}
+
+    monkeypatch.setattr("mesh.backends.httpx.get", lambda *a, **k: Response())
+    assert LlamaCppBackend(card=_card()).utilization()["running"] == 10 ** 400
+
+
 def test_llamacpp_start_refuses_without_gguf_path():
     """No GGUF → clear error, just like Ollama refuses without ollama_tag."""
     be = LlamaCppBackend(card=_card(gguf_path=None), port=9001)
