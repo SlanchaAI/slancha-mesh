@@ -141,3 +141,14 @@ def test_write_holdout_sha_matches_disk(tmp_path: Path):
         for chunk in iter(lambda: f.read(1 << 16), b""):
             h.update(chunk)
     assert manifest["output_sha256"] == h.hexdigest()
+
+
+@pytest.mark.parametrize('size', [1, 2, 3, 11, 17, 499, 501])
+def test_fractional_quotas_preserve_requested_total(size):
+    records = [record for domain in DEFAULT_HOLDOUT_DISTRIBUTION
+               for record in _records_domain(domain, 600)]
+    samples, counts = sample_holdout(records, size, DEFAULT_HOLDOUT_DISTRIBUTION, seed=42)
+    assert len(samples) == sum(counts.values()) == size
+    assert len({row['prompt_id'] for row in samples}) == size
+    for domain, fraction in DEFAULT_HOLDOUT_DISTRIBUTION.items():
+        assert abs(counts.get(domain, 0) - fraction * size) < 1

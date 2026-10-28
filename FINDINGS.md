@@ -96,6 +96,18 @@ Baseline evidence: `mesh/discovery.py:153` and `mesh/discovery.py:321` interpola
 
 **Fixed:** bracket bare IPv6 hosts at both seams; retain already bracketed hosts. Caller test runs synthesized LAN status through HTTP discovery and verifies both fetch and routed URLs.
 
+### P2 — Independent holdout rounding changes the requested sample total
+
+Baseline evidence: `packages/slancha-mesh-tune/mesh/eval/holdout.py:107` rounds every domain quota independently. With the default distribution, requesting one, two or three rows returns zero, one or two even with ample data; requesting 17 oversamples. Frozen evaluation size therefore differs from operator intent without a bucket shortfall.
+
+**Fixed:** allocate fractional remainders together with deterministic tie order. Tests cover small/large odd sizes, exact totals, quota error below one and unique sampling; existing insufficient-bucket behavior remains covered.
+
+### P3 — Malformed signatures escape the verifier error contract
+
+Baseline evidence: `packages/slancha-mesh-tune/mesh/eval/row_sign.py:40` passes non-ASCII strings to `hmac.compare_digest`, which raises TypeError instead of returning False. `eval/seed_verify.py:100` catches only bad signature contents; a wrong-length Ed25519 signature raises ValueError instead of SeedVerificationError. Both fail closed, but callers receive unhandled exceptions rather than their documented rejection paths.
+
+**Fixed:** reject non-ASCII HMAC values before comparison and normalize wrong-length signature failures. Four signature cases failed first; holdout tests exposed four additional failures.
+
 ## Module map
 
 - Entry points: `mesh/cli.py`, `mesh/serve.py`, `mesh/service_install.py`, `mesh/router_bootstrap.py`.

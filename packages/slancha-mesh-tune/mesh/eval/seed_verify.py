@@ -97,7 +97,7 @@ def _verify_ed25519(
         raise SeedVerificationError(f"signature is not valid base64: {exc}") from exc
     try:
         VerifyKey(trusted_signers[signer_did]).verify(payload, sig)
-    except BadSignatureError as exc:
+    except (BadSignatureError, ValueError) as exc:
         raise SeedVerificationError("ed25519 signature does not verify") from exc
 
 

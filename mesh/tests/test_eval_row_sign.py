@@ -66,3 +66,7 @@ def test_gate_refuses_forged_row_when_required(tmp_path: Path, monkeypatch):
     rc = gate_main(["--eval-jsonl", str(p), "--champion", "v1", "--challenger", "v2",
                     "--require-signed-rows", "--promotions-log", str(tmp_path / "promo.jsonl")])
     assert rc == 2  # forged challenger row refused
+
+
+def test_non_ascii_hmac_is_rejected():
+    assert verify_eval_row({'row_hmac': '\N{SNOWMAN}'}, b'test-key') is False

@@ -100,10 +100,13 @@ def sample_holdout(
     """
     rng = random.Random(seed)
     by_domain = stratify_by_domain(records)
-    needed: dict[str, int] = {
-        d: int(round(pct * size))
-        for d, pct in target_distribution.items()
-    }
+    quotas = {d: pct * size for d, pct in target_distribution.items()}
+    needed = {d: int(quota) for d, quota in quotas.items()}
+    # Allocate fractional remainders together so independent rounding cannot
+    # underfill or overfill the total (ties follow distribution order).
+    remainder = round(sum(quotas.values())) - sum(needed.values())
+    for domain in sorted(needed, key=lambda d: quotas[d] - needed[d], reverse=True)[:remainder]:
+        needed[domain] += 1
     samples: list[dict[str, Any]] = []
     counts: dict[str, int] = {}
     for domain, want in needed.items():

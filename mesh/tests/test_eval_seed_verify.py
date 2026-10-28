@@ -150,3 +150,14 @@ def test_require_signature_with_tampered_signature_refuses(tmp_path: Path):
             require_signature=True,
             trusted_signers={signer_did: bytes(signing.verify_key)},
         )
+
+
+@pytest.mark.parametrize('signature', [b'', b'short', b'x' * 65])
+def test_wrong_signature_length_has_verification_error(tmp_path, signature):
+    jsonl, manifest_path, manifest = _write_seed(tmp_path)
+    manifest['signature'] = {'signer_did': 'did:example:trusted',
+                             'sig_b64': base64.b64encode(signature).decode('ascii')}
+    manifest_path.write_text(json.dumps(manifest))
+    with pytest.raises(SeedVerificationError):
+        load_verified_holdout(jsonl, manifest_path, require_signature=True,
+                              trusted_signers={'did:example:trusted': b'\x00' * 32})

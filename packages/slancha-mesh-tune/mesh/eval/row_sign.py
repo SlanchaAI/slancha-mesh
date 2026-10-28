@@ -35,7 +35,7 @@ def eval_row_hmac(row: dict[str, Any], key: bytes) -> str:
 def verify_eval_row(row: dict[str, Any], key: bytes) -> bool:
     """True iff the row carries a valid keyed HMAC over its content."""
     stored = row.get(_HMAC_FIELD)
-    if not isinstance(stored, str):
+    if not isinstance(stored, str) or not stored.isascii():
         return False
     return hmac.compare_digest(stored, eval_row_hmac(row, key))
 
